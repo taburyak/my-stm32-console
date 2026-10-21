@@ -1,0 +1,24 @@
+build
+mx.scratch
+!.settings
+
+# Build Folders CMake / Ninja / VS Code
+Libs/
+build/
+cmake-build-*/
+.vscode/
+.idea/
+.clangd/
+
+# Binary and intermediate files
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.d
+
+# CubeMX Logs and Temporary Files
+*.log
+.mxproject
