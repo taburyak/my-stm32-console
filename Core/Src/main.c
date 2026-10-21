@@ -866,7 +866,7 @@ void StartDefaultTask(void *argument)
           g_key0_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
           backlight_state = !backlight_state;
-          if (backlight_state) LCD_BL_ON(); else LCD_BL_OFF();
+          if (backlight_state) lcdBacklightOn(); else lcdBacklightOff();
       }
 
       // KEY1 processing: Change gradient palette

@@ -128,7 +128,7 @@ static void USBH_UserProcess  (USBH_HandleTypeDef *phost, uint8_t id)
   case HOST_USER_SELECT_CONFIGURATION:
     break;
 
-    case HOST_USER_DISCONNECTION:
+  case HOST_USER_DISCONNECTION:
     Appli_state = APPLICATION_DISCONNECT;
     g_usb_kbd_ready = 0;
     HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET); // Turn off LD0
