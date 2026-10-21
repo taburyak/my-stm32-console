@@ -29,6 +29,7 @@
 #include "XPT2046_touch.h"
 #include "AT24Cxx.h"
 #include "w25qxx.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
