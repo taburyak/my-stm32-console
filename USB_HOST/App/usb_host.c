@@ -62,11 +62,11 @@ static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
  * -- Insert your external function declaration here --
  */
 /* USER CODE BEGIN 1 */
-/**
-  * @brief  Колбек події HID (викликається автоматично при натисканні/відпусканні клавіш)
-  * @param  phost: Вказівник на хендл USB Host
-  * @retval None
-  */
+  /**
+    * @brief  HID Event Callback (called automatically on key press/release)
+    * @param  phost: Pointer to USB Host handle
+    * @retval None
+    */
 void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
 {
     if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
@@ -74,14 +74,14 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
         HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
         if (k_pinfo != NULL)
         {
-            // Якщо натиснута клавіша (не порожній пакет відпускання)
+            // If key is pressed (not an empty release packet)
             if (k_pinfo->keys[0] != 0)
             {
                 g_usb_last_scancode = k_pinfo->keys[0];
                 g_usb_last_ascii    = USBH_HID_GetASCIICode(k_pinfo);
                 g_usb_key_count++;
 
-                // Мигаємо світлодіодом LD0 при кожному натисканні!
+                // Toggle LD0 LED on every press!
                 HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
             }
         }
@@ -128,10 +128,10 @@ static void USBH_UserProcess  (USBH_HandleTypeDef *phost, uint8_t id)
   case HOST_USER_SELECT_CONFIGURATION:
     break;
 
-  case HOST_USER_DISCONNECTION:
+    case HOST_USER_DISCONNECTION:
     Appli_state = APPLICATION_DISCONNECT;
     g_usb_kbd_ready = 0;
-    HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET); // Гасимо LD0
+    HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET); // Turn off LD0
     break;
 
   case HOST_USER_CLASS_ACTIVE:
@@ -139,7 +139,7 @@ static void USBH_UserProcess  (USBH_HandleTypeDef *phost, uint8_t id)
     if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
     {
         g_usb_kbd_ready = 1;
-        // Вмикаємо LD0, коли клавіатура успішно розпізнана!
+        // Turn on LD0 when keyboard is successfully recognized!
         HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
     }
     break;

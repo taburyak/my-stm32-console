@@ -46,7 +46,7 @@
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-extern void vPortSVCHandler(void); // Оригінальний обробник FreeRTOS
+extern void vPortSVCHandler(void); // Original FreeRTOS handler
 void Custom_SVC_Handler_C(uint32_t *svc_args);
 /* USER CODE END PFP */
 
@@ -168,7 +168,7 @@ void DebugMon_Handler(void)
 void EXTI9_5_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI9_5_IRQn 0 */
-// Очищаємо прапорці переривань для ліній кнопок KEY0..KEY3 та викликаємо HAL Callback
+// Clear interrupt flags for button lines KEY0..KEY3 and call HAL Callback
   HAL_GPIO_EXTI_IRQHandler(KEY_0_Pin);
   HAL_GPIO_EXTI_IRQHandler(KEY_1_Pin);
   HAL_GPIO_EXTI_IRQHandler(KEY_2_Pin);
@@ -236,7 +236,7 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-// Асемблерна обгортка для перехоплення контексту
+// Assembly wrapper to catch context
 __attribute__((naked)) void SVC_Handler(void)
 {
     __asm volatile(
@@ -248,31 +248,31 @@ __attribute__((naked)) void SVC_Handler(void)
     );
 }
 
-// C-обробник системних викликів
+// C-handler for system calls
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
-    // Отримуємо номер SVC (він лежить в коді інструкції перед адресою повернення)
+    // Get SVC number (it's in the instruction code before return address)
     uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
 
     if (svc_number == 0) 
     {
-        // Це старт FreeRTOS. Передаємо керування їй.
+        // This is FreeRTOS start. Pass control to it.
         vPortSVCHandler();
     } 
     else 
     {
-        // Це виклик з вашого користувацького скрипта!
+        // This is a call from your user script!
         switch(svc_number) {
             case 1:
-                // Приклад: sys_led_toggle
+                // Example: sys_led_toggle
                 HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
                 break;
             case 2:
-                // Приклад: sys_draw_pixel
-                // Ваш код виклику графічного рушія
+                // Example: sys_draw_pixel
+                // Your graphics engine call code
                 break;
             default:
-                break; // Невідомий виклик
+                break; // Unknown call
         }
     }
 }

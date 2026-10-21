@@ -37,7 +37,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* Параметри пам'яті для Кроку 2 */
+/* Memory parameters for Step 2 */
 #define INTERNAL_HEAP_SIZE    (configTOTAL_HEAP_SIZE)   /* According to the CubeMX settings */
 #define EXTERNAL_SRAM_BASE    (0x68000000UL)            /* Bank 3's main address */
 #define EXTERNAL_SRAM_SIZE    (1024 * 1024)             /* 1 megabyte */
@@ -160,7 +160,7 @@ void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
     }
 }
 
-// Допоміжна функція малювання зафарбованого прямокутника у frame_buffer (RGB565)
+// Helper function to draw a filled rectangle in the frame_buffer (RGB565)
 static void FB_FillRect(uint16_t *buf, int x, int y, int w, int h, uint16_t color)
 {
     for (int row = y; row < y + h; row++) {
@@ -172,10 +172,10 @@ static void FB_FillRect(uint16_t *buf, int x, int y, int w, int h, uint16_t colo
     }
 }
 
-// Візуальна панель діагностики USB без UART
+// Visual USB diagnostics panel without UART
 static void LCD_DrawDebugHUD(uint16_t *buf)
 {
-    // Кольори у форматі RGB565
+    // Colors in RGB565 format
     const uint16_t C_BLACK  = 0x0000;
     const uint16_t C_WHITE  = 0xFFFF;
     const uint16_t C_RED    = 0xF800;
@@ -185,28 +185,28 @@ static void LCD_DrawDebugHUD(uint16_t *buf)
     const uint16_t C_CYAN   = 0x07FF;
     const uint16_t C_GRAY   = 0x4208;
 
-    // 1. Чорна підкладка верхньої панелі (висота 44 пікселі)
+    // 1. Black background for the top panel (height 44 pixels)
     FB_FillRect(buf, 0, 0, 320, 44, C_BLACK);
 
-    // 2. Лівий квадрат: Стан підключення USB (Appli_state)
-    uint16_t state_color = C_BLUE; // IDLE = Синій
-    if (Appli_state == APPLICATION_START)      state_color = C_YELLOW; // Підключено, енумерація = Жовтий
-    if (Appli_state == APPLICATION_READY)      state_color = g_usb_kbd_ready ? C_GREEN : C_CYAN; // Клавіатура готова = Зелений!
-    if (Appli_state == APPLICATION_DISCONNECT) state_color = C_RED;    // Відключено = Червоний
+    // 2. Left square: USB connection state (Appli_state)
+    uint16_t state_color = C_BLUE; // IDLE = Blue
+    if (Appli_state == APPLICATION_START)      state_color = C_YELLOW; // Connected, enumeration = Yellow
+    if (Appli_state == APPLICATION_READY)      state_color = g_usb_kbd_ready ? C_GREEN : C_CYAN; // Keyboard ready = Green!
+    if (Appli_state == APPLICATION_DISCONNECT) state_color = C_RED;    // Disconnected = Red
 
     FB_FillRect(buf, 8, 8, 40, 28, state_color);
 
-    // 3. Середня зона: Смужка скан-коду + 8 бітів ASCII/ScanCode
-    // Малюємо сіру рамку-шкалу (довжина 160 пікселів)
+    // 3. Middle area: Scancode bar + 8 bits of ASCII/ScanCode
+    // Draw grey scale frame (length 160 pixels)
     FB_FillRect(buf, 60, 8, 160, 10, C_GRAY);
-    // Заповнюємо білим пропорційно скан-коду натиснутої клавіші
+    // Fill with white proportionally to the pressed key scancode
     int bar_w = (g_usb_last_scancode * 2);
     if (bar_w > 160) bar_w = 160;
     if (bar_w > 0) {
         FB_FillRect(buf, 60, 8, bar_w, 10, C_WHITE);
     }
 
-    // Малюємо 8 квадратиків (по 16x12 пікселів) — біти поточного ASCII коду (від старшого до молодшого)
+    // Draw 8 squares (16x12 pixels each) — bits of the current ASCII code (from MSB to LSB)
     uint8_t val = (g_usb_last_ascii != 0) ? g_usb_last_ascii : g_usb_last_scancode;
     for (int bit = 0; bit < 8; bit++) {
         uint8_t is_set = (val >> (7 - bit)) & 0x01;
@@ -214,7 +214,7 @@ static void LCD_DrawDebugHUD(uint16_t *buf)
         FB_FillRect(buf, 60 + bit * 20, 24, 16, 12, bit_color);
     }
 
-    // 4. Правий квадрат: Індикатор натискань (змінює колір при кожному натисканні клавіші)
+    // 4. Right square: Keystroke indicator (changes color on every key press)
     if (g_usb_key_count > 0) {
         uint16_t dynamic_color = (uint16_t)((g_usb_key_count * 9123) | 0x0821);
         FB_FillRect(buf, 240, 8, 70, 28, dynamic_color);
@@ -222,7 +222,7 @@ static void LCD_DrawDebugHUD(uint16_t *buf)
         FB_FillRect(buf, 240, 8, 70, 28, C_GRAY);
     }
 
-    // Правий нижній кут панелі: пульсар активності ОС (блимає білим/чорним у кожному кадрі)
+    // Bottom right corner of the panel: OS activity pulsar (flashes white/black in every frame)
     static uint8_t heartbeat = 0;
     heartbeat = !heartbeat;
     FB_FillRect(buf, 300, 36, 12, 6, heartbeat ? C_WHITE : C_BLACK);
@@ -725,8 +725,8 @@ void MPU_Config_UserSandbox(void)
     MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
     MPU_InitStruct.SubRegionDisable = 0x0;
     MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
-    MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO_URO; // Читання для всіх
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE; // Можна виконувати
+    MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO_URO; // Read-only for all
+    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE; // Executable
     MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
     MPU_InitStruct.IsCacheable = MPU_ACCESS_CACHEABLE;
     MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
@@ -737,7 +737,7 @@ void MPU_Config_UserSandbox(void)
     MPU_InitStruct.BaseAddress = 0x20000000;
     MPU_InitStruct.Size = MPU_REGION_SIZE_128KB;
     MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Заборона виконання з RAM (безпека)
+    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
     // Region 2: External SRAM (Sandbox) — Read, Write, Execute
@@ -773,7 +773,7 @@ void SandboxTask(void *argument)
     }
 }
 
-// Прапорці подій від кнопок для головного циклу
+// Button event flags for the main loop
 volatile uint8_t g_key0_pressed = 0;
 volatile uint8_t g_key1_pressed = 0;
 volatile uint8_t g_key2_pressed = 0;
@@ -785,14 +785,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     uint32_t current_tick = HAL_GetTick();
     
-    // Програмний антибрязкіт контактів: 200 мс
+    // Software debouncing: 200 ms
     if (current_tick - last_exti_tick < 200)
     {
         return;
     }
     last_exti_tick = current_tick;
 
-    // Вмикаємо LD0 для візуальної індикації натискання (Active-Low)
+    // Turn on LD0 for visual indication of press (Active-Low)
     HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
 
     switch (GPIO_Pin)
@@ -855,35 +855,35 @@ void StartDefaultTask(void *argument)
     {
       HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
 
-      // Автоматичне вимкнення індикатора натискання LD0 через 100 мс
+      // Automatic turn off of LD0 press indicator after 100 ms
       if (HAL_GetTick() > led0_turnoff_tick && led0_turnoff_tick != 0) {
           HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET);
           led0_turnoff_tick = 0;
       }
 
-      // Обробка KEY0: Керування підсвіткою екрана
+      // KEY0 processing: LCD Backlight control
       if (g_key0_pressed) {
           g_key0_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
           backlight_state = !backlight_state;
-          if (backlight_state) lcdBacklightOn(); else lcdBacklightOff();
+          if (backlight_state) LCD_BL_ON(); else LCD_BL_OFF();
       }
 
-      // Обробка KEY1: Зміна палітри градієнта
+      // KEY1 processing: Change gradient palette
       if (g_key1_pressed) {
           g_key1_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
           color_scheme = (color_scheme + 1) % 3;
       }
 
-      // Обробка KEY2: Заповнення випадковим кольором або очищення
+      // KEY2 processing: Shift color offset
       if (g_key2_pressed) {
           g_key2_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
           color_offset += 50;
       }
 
-      // Обробка KEY3: Тест EEPROM (AT24C02) та зовнішньої SRAM
+      // KEY3 processing: EEPROM (AT24C02) and external SRAM test
       if (g_key3_pressed) {
           g_key3_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
@@ -894,7 +894,7 @@ void StartDefaultTask(void *argument)
           if (conn_status == HAL_OK) {
               printf("Device detected at I2C address 0x%02X\r\n", EEPROM_ADDRESS);
 
-              // 1. Тест зміни слова (динамічне значення щоразу)
+              // 1. Word Test (dynamic value each time)
               static uint32_t write_counter = 0x11223344;
               write_counter += 0x01010101;
               uint32_t read_val = 0;
@@ -914,7 +914,7 @@ void StartDefaultTask(void *argument)
                   printf("FAIL (Write error)\r\n");
               }
 
-              // 2. Тест перетину межі 8-байтової сторінки (адреси 0x06..0x0F)
+              // 2. Page boundary crossing test (addresses 0x06..0x0F)
               uint8_t tx_buf[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
               uint8_t rx_buf[10] = {0};
               bool page_cross_ok = true;
@@ -937,33 +937,33 @@ void StartDefaultTask(void *argument)
               printf("NOT DETECTED (HAL Status: %d)\r\n", conn_status);
           }
 
-          // Перевірка зовнішньої SRAM
+          // External SRAM check
           *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
       }
 
-      // 1. РЕНДЕРИНГ ГРАДІЄНТА З УРАХУВАННЯМ ВИБРАНОЇ ПАЛІТРИ
+      // 1. GRADIENT RENDERING BASED ON SELECTED PALETTE
       for (int y = 0; y < 240; y++) {
           uint16_t base_color = (y + color_offset) & 0x1F;
           for (int x = 0; x < 320; x++) {
               if (color_scheme == 0) {
-                  // Початковий градієнт
+                  // Initial gradient
                   frame_buffer[y * 320 + x] = (base_color << 11) | (((x >> 2) & 0x3F) << 5) | (x & 0x1F);
               } else if (color_scheme == 1) {
-                  // Вогняний/червоно-жовтий спектр
+                  // Fire/Red-Yellow spectrum
                   frame_buffer[y * 320 + x] = ((x & 0x1F) << 11) | (((y >> 2) & 0x3F) << 5);
               } else {
-                  // Холодний синьо-бірюзовий спектр
+                  // Cold Blue-Cyan spectrum
                   frame_buffer[y * 320 + x] = (((x >> 2) & 0x3F) << 5) | (y & 0x1F);
               }
           }
       }
       color_offset++;
 
-      // Панель статусу поверх зображення
-      LCD_DrawDebugHUD(frame_buffer);
+    // Status panel on top of the image
+    LCD_DrawDebugHUD(frame_buffer);
 
-      // Виведення кадру через DMA
-      LCD_FlushFrameBuffer(frame_buffer, 320 * 240);
+    // Frame output via DMA
+    LCD_FlushFrameBuffer(frame_buffer, 320 * 240);
 
       osDelay(20); 
     }
