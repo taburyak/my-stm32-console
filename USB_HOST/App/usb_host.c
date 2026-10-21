@@ -25,12 +25,16 @@
 #include "usbh_hid.h"
 
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include "usbh_hid_keybd.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-
+volatile uint8_t  g_usb_last_scancode = 0;
+volatile uint8_t  g_usb_last_ascii    = 0;
+volatile uint32_t g_usb_key_count     = 0;
+volatile uint8_t  g_usb_kbd_ready     = 0;
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
@@ -58,7 +62,31 @@ static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
  * -- Insert your external function declaration here --
  */
 /* USER CODE BEGIN 1 */
+/**
+  * @brief  Колбек події HID (викликається автоматично при натисканні/відпусканні клавіш)
+  * @param  phost: Вказівник на хендл USB Host
+  * @retval None
+  */
+void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
+{
+    if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
+    {
+        HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
+        if (k_pinfo != NULL)
+        {
+            // Якщо натиснута клавіша (не порожній пакет відпускання)
+            if (k_pinfo->keys[0] != 0)
+            {
+                g_usb_last_scancode = k_pinfo->keys[0];
+                g_usb_last_ascii    = USBH_HID_GetASCIICode(k_pinfo);
+                g_usb_key_count++;
 
+                // Мигаємо світлодіодом LD0 при кожному натисканні!
+                HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
+            }
+        }
+    }
+}
 /* USER CODE END 1 */
 
 /**
@@ -98,22 +126,30 @@ static void USBH_UserProcess  (USBH_HandleTypeDef *phost, uint8_t id)
   switch(id)
   {
   case HOST_USER_SELECT_CONFIGURATION:
-  break;
+    break;
 
   case HOST_USER_DISCONNECTION:
-  Appli_state = APPLICATION_DISCONNECT;
-  break;
+    Appli_state = APPLICATION_DISCONNECT;
+    g_usb_kbd_ready = 0;
+    HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET); // Гасимо LD0
+    break;
 
   case HOST_USER_CLASS_ACTIVE:
-  Appli_state = APPLICATION_READY;
-  break;
+    Appli_state = APPLICATION_READY;
+    if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
+    {
+        g_usb_kbd_ready = 1;
+        // Вмикаємо LD0, коли клавіатура успішно розпізнана!
+        HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
+    }
+    break;
 
   case HOST_USER_CONNECTION:
-  Appli_state = APPLICATION_START;
-  break;
+    Appli_state = APPLICATION_START;
+    break;
 
   default:
-  break;
+    break;
   }
   /* USER CODE END CALL_BACK_1 */
 }

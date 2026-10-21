@@ -168,7 +168,11 @@ void DebugMon_Handler(void)
 void EXTI9_5_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI9_5_IRQn 0 */
-
+// Очищаємо прапорці переривань для ліній кнопок KEY0..KEY3 та викликаємо HAL Callback
+  HAL_GPIO_EXTI_IRQHandler(KEY_0_Pin);
+  HAL_GPIO_EXTI_IRQHandler(KEY_1_Pin);
+  HAL_GPIO_EXTI_IRQHandler(KEY_2_Pin);
+  HAL_GPIO_EXTI_IRQHandler(KEY_3_Pin);
   /* USER CODE END EXTI9_5_IRQn 0 */
   /* USER CODE BEGIN EXTI9_5_IRQn 1 */
 
