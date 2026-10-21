@@ -28,6 +28,7 @@
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
 #include "AT24Cxx.h"
+#include "w25qxx.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,6 +57,8 @@
 CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
+
+SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart3;
 
@@ -107,6 +110,7 @@ static void MX_CRC_Init(void);
 static void MX_FSMC_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_SPI1_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -263,6 +267,7 @@ int main(void)
   MX_FSMC_Init();
   MX_USART3_UART_Init();
   MX_I2C1_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   
     // Turn off all LEDs before starting the test (they are active-low, so we use SET)
@@ -292,9 +297,16 @@ int main(void)
     MPU_Config_UserSandbox();
     printf("MPU Sandbox Initialized.\r\n");
 
-    // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
+        // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
     vPortDefineHeapRegions(xHeapRegions);
     printf("Heap_5 Initialized Manually.\r\n");
+
+    // Initialize W25QXX Flash
+    if (W25qxx_Init()) {
+        printf("W25QXX Flash Initialized.\r\n");
+    } else {
+        printf("W25QXX Flash Initialization FAILED.\r\n");
+    }
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -454,6 +466,44 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -553,6 +603,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, T_CS_Pin|T_MOSI_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(W25_CS_GPIO_Port, W25_CS_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DS18B20_GPIO_Port, DS18B20_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
@@ -604,12 +657,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(T_PEN_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : W25_CS_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = W25_CS_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
@@ -939,6 +992,24 @@ void StartDefaultTask(void *argument)
 
           // External SRAM check
           *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
+
+          // W25QXX Flash Quick Test
+          printf("\r\n--- [W25QXX Flash Test] ---\r\n");
+          if (w25qxx.ID != 0) {
+              uint8_t flash_tx[16] = "Flash Test OK!";
+              uint8_t flash_rx[16] = {0};
+              printf("Writing to Sector 0... ");
+              W25qxx_EraseSector(0);
+              W25qxx_WriteSector(flash_tx, 0, 0, 16);
+              W25qxx_ReadSector(flash_rx, 0, 0, 16);
+              if (memcmp(flash_tx, flash_rx, 16) == 0) {
+                  printf("PASS: %s\r\n", (char*)flash_rx);
+              } else {
+                  printf("FAIL: Data mismatch\r\n");
+              }
+          } else {
+              printf("Flash not ready\r\n");
+          }
       }
 
       // 1. GRADIENT RENDERING BASED ON SELECTED PALETTE
