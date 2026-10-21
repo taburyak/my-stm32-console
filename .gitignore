@@ -5,10 +5,14 @@ mx.scratch
 # Build Folders CMake / Ninja / VS Code
 Libs/
 build/
-cmake-build-*/
+Middlewares/
+cmake/
+docs/
+Drivers/
 .vscode/
 .idea/
 .clangd/
+.settings/
 
 # Binary and intermediate files
 *.o
@@ -22,3 +26,6 @@ cmake-build-*/
 # CubeMX Logs and Temporary Files
 *.log
 .mxproject
+
+# Diferent files
+my-stm32-console-rule.md
