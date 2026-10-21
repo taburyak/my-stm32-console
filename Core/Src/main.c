@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
+#include "AT24Cxx.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,6 +54,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 CRC_HandleTypeDef hcrc;
+
+I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef huart3;
 
@@ -88,6 +91,12 @@ const HeapRegion_t xHeapRegions[] =
 
 /* Framebuffer in External SRAM (Bank 3) */
 uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
+
+extern ApplicationTypeDef Appli_state;
+extern volatile uint8_t  g_usb_last_scancode;
+extern volatile uint8_t  g_usb_last_ascii;
+extern volatile uint32_t g_usb_key_count;
+extern volatile uint8_t  g_usb_kbd_ready;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,6 +106,7 @@ static void MX_DMA_Init(void);
 static void MX_CRC_Init(void);
 static void MX_FSMC_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_I2C1_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -149,6 +159,74 @@ void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
         pixels_count -= chunk;
     }
 }
+
+// Допоміжна функція малювання зафарбованого прямокутника у frame_buffer (RGB565)
+static void FB_FillRect(uint16_t *buf, int x, int y, int w, int h, uint16_t color)
+{
+    for (int row = y; row < y + h; row++) {
+        if (row < 0 || row >= 240) continue;
+        for (int col = x; col < x + w; col++) {
+            if (col < 0 || col >= 320) continue;
+            buf[row * 320 + col] = color;
+        }
+    }
+}
+
+// Візуальна панель діагностики USB без UART
+static void LCD_DrawDebugHUD(uint16_t *buf)
+{
+    // Кольори у форматі RGB565
+    const uint16_t C_BLACK  = 0x0000;
+    const uint16_t C_WHITE  = 0xFFFF;
+    const uint16_t C_RED    = 0xF800;
+    const uint16_t C_GREEN  = 0x07E0;
+    const uint16_t C_BLUE   = 0x001F;
+    const uint16_t C_YELLOW = 0xFFE0;
+    const uint16_t C_CYAN   = 0x07FF;
+    const uint16_t C_GRAY   = 0x4208;
+
+    // 1. Чорна підкладка верхньої панелі (висота 44 пікселі)
+    FB_FillRect(buf, 0, 0, 320, 44, C_BLACK);
+
+    // 2. Лівий квадрат: Стан підключення USB (Appli_state)
+    uint16_t state_color = C_BLUE; // IDLE = Синій
+    if (Appli_state == APPLICATION_START)      state_color = C_YELLOW; // Підключено, енумерація = Жовтий
+    if (Appli_state == APPLICATION_READY)      state_color = g_usb_kbd_ready ? C_GREEN : C_CYAN; // Клавіатура готова = Зелений!
+    if (Appli_state == APPLICATION_DISCONNECT) state_color = C_RED;    // Відключено = Червоний
+
+    FB_FillRect(buf, 8, 8, 40, 28, state_color);
+
+    // 3. Середня зона: Смужка скан-коду + 8 бітів ASCII/ScanCode
+    // Малюємо сіру рамку-шкалу (довжина 160 пікселів)
+    FB_FillRect(buf, 60, 8, 160, 10, C_GRAY);
+    // Заповнюємо білим пропорційно скан-коду натиснутої клавіші
+    int bar_w = (g_usb_last_scancode * 2);
+    if (bar_w > 160) bar_w = 160;
+    if (bar_w > 0) {
+        FB_FillRect(buf, 60, 8, bar_w, 10, C_WHITE);
+    }
+
+    // Малюємо 8 квадратиків (по 16x12 пікселів) — біти поточного ASCII коду (від старшого до молодшого)
+    uint8_t val = (g_usb_last_ascii != 0) ? g_usb_last_ascii : g_usb_last_scancode;
+    for (int bit = 0; bit < 8; bit++) {
+        uint8_t is_set = (val >> (7 - bit)) & 0x01;
+        uint16_t bit_color = is_set ? C_GREEN : C_GRAY;
+        FB_FillRect(buf, 60 + bit * 20, 24, 16, 12, bit_color);
+    }
+
+    // 4. Правий квадрат: Індикатор натискань (змінює колір при кожному натисканні клавіші)
+    if (g_usb_key_count > 0) {
+        uint16_t dynamic_color = (uint16_t)((g_usb_key_count * 9123) | 0x0821);
+        FB_FillRect(buf, 240, 8, 70, 28, dynamic_color);
+    } else {
+        FB_FillRect(buf, 240, 8, 70, 28, C_GRAY);
+    }
+
+    // Правий нижній кут панелі: пульсар активності ОС (блимає білим/чорним у кожному кадрі)
+    static uint8_t heartbeat = 0;
+    heartbeat = !heartbeat;
+    FB_FillRect(buf, 300, 36, 12, 6, heartbeat ? C_WHITE : C_BLACK);
+}
 /* USER CODE END 0 */
 
 /**
@@ -184,6 +262,7 @@ int main(void)
   MX_CRC_Init();
   MX_FSMC_Init();
   MX_USART3_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   
     // Turn off all LEDs before starting the test (they are active-low, so we use SET)
@@ -337,6 +416,40 @@ static void MX_CRC_Init(void)
   /* USER CODE BEGIN CRC_Init 2 */
 
   /* USER CODE END CRC_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -659,6 +772,51 @@ void SandboxTask(void *argument)
         // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     }
 }
+
+// Прапорці подій від кнопок для головного циклу
+volatile uint8_t g_key0_pressed = 0;
+volatile uint8_t g_key1_pressed = 0;
+volatile uint8_t g_key2_pressed = 0;
+volatile uint8_t g_key3_pressed = 0;
+
+static volatile uint32_t last_exti_tick = 0;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    uint32_t current_tick = HAL_GetTick();
+    
+    // Програмний антибрязкіт контактів: 200 мс
+    if (current_tick - last_exti_tick < 200)
+    {
+        return;
+    }
+    last_exti_tick = current_tick;
+
+    // Вмикаємо LD0 для візуальної індикації натискання (Active-Low)
+    HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
+
+    switch (GPIO_Pin)
+    {
+        case KEY_0_Pin: // PF6
+            g_key0_pressed = 1;
+            break;
+
+        case KEY_1_Pin: // PF7
+            g_key1_pressed = 1;
+            break;
+
+        case KEY_2_Pin: // PF8
+            g_key2_pressed = 1;
+            break;
+
+        case KEY_3_Pin: // PF9
+            g_key3_pressed = 1;
+            break;
+
+        default:
+            break;
+    }
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -688,31 +846,125 @@ void StartDefaultTask(void *argument)
 
     uint16_t color_offset = 0;
 
+    static uint8_t backlight_state = 1;
+    static uint8_t color_scheme = 0;
+    static uint32_t led0_turnoff_tick = 0;
+
     /* Infinite loop */
     for(;;)
     {
       HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
-      
-      // 1. DRAWING: Generating a new gradient in external SRAM
+
+      // Автоматичне вимкнення індикатора натискання LD0 через 100 мс
+      if (HAL_GetTick() > led0_turnoff_tick && led0_turnoff_tick != 0) {
+          HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET);
+          led0_turnoff_tick = 0;
+      }
+
+      // Обробка KEY0: Керування підсвіткою екрана
+      if (g_key0_pressed) {
+          g_key0_pressed = 0;
+          led0_turnoff_tick = HAL_GetTick() + 100;
+          backlight_state = !backlight_state;
+          if (backlight_state) lcdBacklightOn(); else lcdBacklightOff();
+      }
+
+      // Обробка KEY1: Зміна палітри градієнта
+      if (g_key1_pressed) {
+          g_key1_pressed = 0;
+          led0_turnoff_tick = HAL_GetTick() + 100;
+          color_scheme = (color_scheme + 1) % 3;
+      }
+
+      // Обробка KEY2: Заповнення випадковим кольором або очищення
+      if (g_key2_pressed) {
+          g_key2_pressed = 0;
+          led0_turnoff_tick = HAL_GetTick() + 100;
+          color_offset += 50;
+      }
+
+      // Обробка KEY3: Тест EEPROM (AT24C02) та зовнішньої SRAM
+      if (g_key3_pressed) {
+          g_key3_pressed = 0;
+          led0_turnoff_tick = HAL_GetTick() + 100;
+
+          printf("\r\n--- [AT24C02 EEPROM Test] ---\r\n");
+
+          HAL_StatusTypeDef conn_status = AT24Cxx_IsConnected();
+          if (conn_status == HAL_OK) {
+              printf("Device detected at I2C address 0x%02X\r\n", EEPROM_ADDRESS);
+
+              // 1. Тест зміни слова (динамічне значення щоразу)
+              static uint32_t write_counter = 0x11223344;
+              write_counter += 0x01010101;
+              uint32_t read_val = 0;
+
+              printf("1. Word Test @ addr 0x00: Wrote 0x%08lX... ", write_counter);
+              if (AT24Cxx_WriteEEPROM(0x00, &write_counter, sizeof(write_counter)) == HAL_OK) {
+                  if (AT24Cxx_ReadEEPROM(0x00, &read_val, sizeof(read_val)) == HAL_OK) {
+                      if (read_val == write_counter) {
+                          printf("PASS (Read 0x%08lX)\r\n", read_val);
+                      } else {
+                          printf("FAIL (Data mismatch: 0x%08lX)\r\n", read_val);
+                      }
+                  } else {
+                      printf("FAIL (Read error)\r\n");
+                  }
+              } else {
+                  printf("FAIL (Write error)\r\n");
+              }
+
+              // 2. Тест перетину межі 8-байтової сторінки (адреси 0x06..0x0F)
+              uint8_t tx_buf[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+              uint8_t rx_buf[10] = {0};
+              bool page_cross_ok = true;
+
+              printf("2. Page boundary test (10 bytes @ addr 0x06)... ");
+              if (AT24Cxx_WriteEEPROM(0x06, tx_buf, sizeof(tx_buf)) == HAL_OK &&
+                  AT24Cxx_ReadEEPROM(0x06, rx_buf, sizeof(rx_buf)) == HAL_OK) {
+                  for (int i = 0; i < sizeof(tx_buf); i++) {
+                      if (rx_buf[i] != tx_buf[i]) {
+                          page_cross_ok = false;
+                          break;
+                      }
+                  }
+                  printf(page_cross_ok ? "PASS\r\n" : "FAIL (Wrap-around mismatch)\r\n");
+              } else {
+                  printf("FAIL (I2C transfer failed)\r\n");
+              }
+
+          } else {
+              printf("NOT DETECTED (HAL Status: %d)\r\n", conn_status);
+          }
+
+          // Перевірка зовнішньої SRAM
+          *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
+      }
+
+      // 1. РЕНДЕРИНГ ГРАДІЄНТА З УРАХУВАННЯМ ВИБРАНОЇ ПАЛІТРИ
       for (int y = 0; y < 240; y++) {
           uint16_t base_color = (y + color_offset) & 0x1F;
           for (int x = 0; x < 320; x++) {
-              frame_buffer[y * 320 + x] = (base_color << 11) | (((x >> 2) & 0x3F) << 5) | (x & 0x1F);
+              if (color_scheme == 0) {
+                  // Початковий градієнт
+                  frame_buffer[y * 320 + x] = (base_color << 11) | (((x >> 2) & 0x3F) << 5) | (x & 0x1F);
+              } else if (color_scheme == 1) {
+                  // Вогняний/червоно-жовтий спектр
+                  frame_buffer[y * 320 + x] = ((x & 0x1F) << 11) | (((y >> 2) & 0x3F) << 5);
+              } else {
+                  // Холодний синьо-бірюзовий спектр
+                  frame_buffer[y * 320 + x] = (((x >> 2) & 0x3F) << 5) | (y & 0x1F);
+              }
           }
       }
       color_offset++;
 
-      // 2. RENDERING: We send the finished frame via DMA (without VSYNC signals)
+      // Панель статусу поверх зображення
+      LCD_DrawDebugHUD(frame_buffer);
+
+      // Виведення кадру через DMA
       LCD_FlushFrameBuffer(frame_buffer, 320 * 240);
-      
-      // 3. Touchscreen Survey
-      uint16_t tx, ty;
-      if (XPT2046_TouchGetCoordinates(&tx, &ty))
-      {
-          // printf("Touch: X=%u, Y=%u\r\n", tx, ty);
-      }
-      
-      // 4. Fixed latency for a stable ~50 FPS without bus drops
+
       osDelay(20); 
     }
   }
