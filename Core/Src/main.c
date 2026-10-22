@@ -36,6 +36,7 @@
 #include "status_led.h"
 #include "buttons_manager.h"
 #include "beeper.h"
+#include "system_post.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -272,32 +273,14 @@ int main(void)
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-    printf("\r\n----------------------------------------\r\n");
-    printf("  STM32F407 Console OS - Step 1 Boot\r\n");
-    printf("----------------------------------------\r\n");
-  
-    uint32_t sys_freq = HAL_RCC_GetSysClockFreq();
-    printf("System Clock Frequency: %lu MHz\r\n", sys_freq / 1000000);
 
-    // Run the memory test
-    if (SRAM_RunFullDiagnostics()) 
-    {
-        printf("System Hardware Ready.\r\n");
-    }
-    else
-    {
-        printf("CRITICAL: Hardware failure detected!\r\n");
-        StatusLED_Set(STATUS_LED_ERROR, STATUS_LED_ON);
-        while (1) {}
-    }
+  // IMPORTANT: Configure and enable the MPU before the OS starts
+  MPU_Config_UserSandbox();
+  printf("MPU Sandbox Initialized.\r\n");
 
-    // IMPORTANT: Configure and enable the MPU before the OS starts
-    MPU_Config_UserSandbox();
-    printf("MPU Sandbox Initialized.\r\n");
-
-    // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
-    vPortDefineHeapRegions(xHeapRegions);
-    printf("Heap_5 Initialized Manually.\r\n");
+  // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
+  vPortDefineHeapRegions(xHeapRegions);
+  printf("Heap_5 Initialized Manually.\r\n");
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -1013,21 +996,51 @@ void StartDefaultTask(void *argument)
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 5 */
   printf("[OS] Kernel Task Started.\r\n");
-  StatusLED_Init(); /* LEDs off at startup */
-  Buttons_Init();   /* Buttons configured as input with pull-up */
-  Beeper_Init();    /* Beeper configured as output */
+
+  printf("\r\n----------------------------------------\r\n");
+  printf("  STM32F407 Console OS - Step 1 Boot\r\n");
+  printf("----------------------------------------\r\n");
+  
+  uint32_t sys_freq = HAL_RCC_GetSysClockFreq();
+  printf("System Clock Frequency: %lu MHz\r\n", sys_freq / 1000000);
+
+    /* 1. Run Power-On Self-Test (POST) */
+  POST_Status_t post_status = POST_RunSelfTest();
+
+  /* 2. Initialize feedback subsystems */
+  StatusLED_Init();
+  Buttons_Init();
+  Beeper_Init();
   lcdInit();
   lcdBacklightOn();
   lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
 
-  // Initialize W25QXX Flash
-  if (W25qxx_Init()) 
+  /* 3. Output diagnostic report to UART3 terminal */
+  POST_PrintSummary();
+
+  /* 4. Process POST status result */
+  if (post_status == POST_ERR_SRAM || post_status == POST_ERR_CCMRAM || post_status == POST_ERR_DISPLAY) 
   {
-      printf("W25QXX Flash Initialized.\r\n");
+    /* Critical hardware failure */
+    StatusLED_Set(STATUS_LED_ERROR, STATUS_LED_ON);
+    Beeper_ErrorAlert();
   } 
   else 
   {
-      printf("W25QXX Flash Initialization FAILED.\r\n");
+    /* All critical checks passed (POST_OK or POST_WARN_OPTIONAL) */
+    Beeper_BootMelody();
+  }
+
+  /* 5. Full Peripherals Initialization */
+  
+  // Initialize W25QXX Flash
+  if (W25qxx_Init()) 
+  {
+      printf("[INIT] W25QXX Flash Ready.\r\n");
+  } 
+  else 
+  {
+      printf("[INIT] W25QXX Flash FAILED.\r\n");
   }
 
   /* --- SD Card structure initialization --- */
@@ -1035,13 +1048,14 @@ void StartDefaultTask(void *argument)
 
   /* --- LVGL Initialization --- */
   LVGL_Port_Init();
-  printf("LVGL Initialized Successfully.\r\n");
+  printf("[INIT] LVGL Ready.\r\n");
+
 
   /* Create file list from root directory */
   Create_File_List(lv_scr_act(), "/");
 
   /* Process Beeper state */
-  Beeper_BootMelody();
+  // Beeper_BootMelody();
 
   uint32_t last_heartbeat_tick = 0;
   Button_Message_t btn_msg;

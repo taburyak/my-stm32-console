@@ -65,6 +65,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/status_led.c
     Core/Src/buttons_manager.c
     Core/Src/beeper.c
+    Core/Src/system_post.c
 )
 
 # Add include paths
