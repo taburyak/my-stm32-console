@@ -34,6 +34,7 @@
 #include "lvgl.h"
 #include "lv_port_console.h"
 #include "status_led.h"
+#include "buttons_manager.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -189,7 +190,7 @@ static void list_btn_event_cb(lv_event_t * e)
 }
 
 /**
- * @brief Сканує папку на SD-картці та відображає її вміст у віджеті списку LVGL
+ * @brief Scans folder on SD card and displays its contents in LVGL list widget
  */
 static void Create_File_List(lv_obj_t *parent, const char *path)
 {
@@ -229,6 +230,7 @@ static void Create_File_List(lv_obj_t *parent, const char *path)
         lv_list_add_text(list, "(Empty directory)");
     }
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -849,60 +851,25 @@ void SandboxTask(void *argument)
     }
 }
 
-// Button event flags for the main loop
-volatile uint8_t g_key0_pressed = 0;
-volatile uint8_t g_key1_pressed = 0;
-volatile uint8_t g_key2_pressed = 0;
-volatile uint8_t g_key3_pressed = 0;
-
-static volatile uint32_t last_exti_tick = 0;
-
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    uint32_t current_tick = HAL_GetTick();
-    
-    // Software debouncing: 200 ms
-    if (current_tick - last_exti_tick < 200)
+    /* Filter interrupts: process ONLY our 4 buttons KEY_0..KEY_3 */
+    if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin || 
+        GPIO_Pin == KEY_2_Pin || GPIO_Pin == KEY_3_Pin)
     {
-        return;
-    }
-    last_exti_tick = current_tick;
-
-    // Turn on LD0 for visual indication of press (Active-Low)
-    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
-
-    switch (GPIO_Pin)
-    {
-        case KEY_0_Pin: // PF6
-            g_key0_pressed = 1;
-            break;
-
-        case KEY_1_Pin: // PF7
-            g_key1_pressed = 1;
-            break;
-
-        case KEY_2_Pin: // PF8
-            g_key2_pressed = 1;
-            break;
-
-        case KEY_3_Pin: // PF9
-            g_key3_pressed = 1;
-            break;
-
-        default:
-            break;
+        Buttons_EXTI_Callback(GPIO_Pin);
     }
 }
 
 void Test_SDCard_FatFS(void)
 {
-    // Статичні об'єкти, щоб не перевантажувати стек таски FreeRTOS (кожен займає >500 байт!)
+    // Static objects to avoid overflowing FreeRTOS stack (each takes >500 bytes!)
     static FATFS fs;
     static FIL fil;
     FRESULT fr;
     UINT bytes_written = 0, bytes_read = 0;
     
-    // DMA вимагає вирівнювання адреси по 4 байти!
+    // DMA requires 4-byte address alignment!
     __attribute__((aligned(4))) static char write_buf[64];
     __attribute__((aligned(4))) static char read_buf[64];
     
@@ -913,7 +880,7 @@ void Test_SDCard_FatFS(void)
 
     printf("\r\n--- [MicroSD Card FatFS Test] ---\r\n");
 
-    // 1. Монтування диска (force mount = 1)
+    // 1. Mount disk (force mount = 1)
     fr = f_mount(&fs, SDPath, 1);
     if (fr != FR_OK) {
         printf("f_mount FAIL: Error %d\r\n", fr);
@@ -921,7 +888,7 @@ void Test_SDCard_FatFS(void)
     }
     printf("f_mount: PASS\r\n");
 
-    // 2. Створення/відкриття тестового файлу
+    // 2. Create/open test file
     fr = f_open(&fil, "test.txt", FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
     if (fr != FR_OK) {
         printf("f_open FAIL: Error %d\r\n", fr);
@@ -929,7 +896,7 @@ void Test_SDCard_FatFS(void)
         return;
     }
 
-    // 3. Запис рядка
+    // 3. Write string
     snprintf(write_buf, sizeof(write_buf), "STM32 Console SD Run #%lu\r\n", sd_counter);
     fr = f_write(&fil, write_buf, strlen(write_buf), &bytes_written);
     if (fr != FR_OK || bytes_written != strlen(write_buf)) {
@@ -940,10 +907,10 @@ void Test_SDCard_FatFS(void)
     }
     printf("f_write: PASS (%u bytes written)\r\n", bytes_written);
 
-    // 4. Синхронізація (скидання кешу на карту перед читанням)
+    // 4. Sync (flush cache to card before reading)
     f_sync(&fil);
 
-    // 5. Переміщення покажчика на початок і читання назад
+    // 5. Seek to start and read back
     f_lseek(&fil, 0);
     fr = f_read(&fil, read_buf, bytes_written, &bytes_read);
     if (fr != FR_OK || bytes_read != bytes_written) {
@@ -953,18 +920,19 @@ void Test_SDCard_FatFS(void)
         return;
     }
 
-    // 6. Верифікація
+    // 6. Verification
     if (memcmp(write_buf, read_buf, bytes_written) == 0) {
         printf("Verification: PASS! Read: \"%s\"\r\n", read_buf);
     } else {
         printf("Verification: FAIL! Data mismatch\r\n");
     }
 
-    // 7. Закриття та розмонтування
+    // 7. Close and unmount
     f_close(&fil);
     f_mount(NULL, SDPath, 0);
     printf("MicroSD Test Completed.\r\n");
 }
+
 
 /**
  * @brief Checks and creates mandatory system directories on SD card
@@ -1034,110 +1002,71 @@ void StartDefaultTask(void *argument)
 {
   /* init code for USB_HOST */
   MX_USB_HOST_Init();
-    /* USER CODE BEGIN 5 */
+  /* USER CODE BEGIN 5 */
+  printf("[OS] Kernel Task Started.\r\n");
+  StatusLED_Init(); /* LEDs off at startup */
+  Buttons_Init(); /* Buttons configured as input with pull-up */
+  lcdInit();
+  lcdBacklightOn();
+  lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
+
+  // Initialize W25QXX Flash
+  if (W25qxx_Init()) 
   {
-    StatusLED_Init(); /* LEDs off at startup */
-    printf("[OS] Kernel Task Started.\r\n");
-    
-    lcdInit();
-    lcdBacklightOn();
-    lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
+      printf("W25QXX Flash Initialized.\r\n");
+  } 
+  else 
+  {
+      printf("W25QXX Flash Initialization FAILED.\r\n");
+  }
 
-    // Initialize W25QXX Flash
-    if (W25qxx_Init()) {
-        printf("W25QXX Flash Initialized.\r\n");
-    } else {
-        printf("W25QXX Flash Initialization FAILED.\r\n");
-    }
-
-/* --- Ініціалізація структури SD-карти --- */
+    /* --- SD Card structure initialization --- */
     Init_SDCard_FileSystem();
 
-    /* --- Ініціалізація LVGL --- */
+    /* --- LVGL Initialization --- */
     LVGL_Port_Init();
     printf("LVGL Initialized Successfully.\r\n");
 
-    /* Створюємо список файлів з кореневого каталогу */
+    /* Create file list from root directory */
     Create_File_List(lv_scr_act(), "/");
 
-    static uint8_t backlight_state = 1;
-    static uint32_t led0_turnoff_tick = 0;
     uint32_t last_heartbeat_tick = 0;
+    Button_Message_t btn_msg;
 
     /* Infinite loop */
     for(;;)
     {
-      if ((HAL_GetTick() - last_heartbeat_tick) >= 500) {
+      /* 1. Process button state (debounce, hold timers) */
+      Buttons_Process();
+
+      /* 2. Check for new events in buffer */
+      while (Buttons_GetEvent(&btn_msg)) 
+      {
+        /* Turn on LD1 on any button press, off on release */
+        if (btn_msg.event == BUTTON_EVENT_PRESSED) 
+        {
+            StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
+        } 
+        else if (btn_msg.event == BUTTON_EVENT_SHORT_RELEASE || btn_msg.event == BUTTON_EVENT_LONG_PRESS) 
+        {
+            StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+        }
+      }
+
+      /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
+      if ((HAL_GetTick() - last_heartbeat_tick) >= 500) 
+      {
           last_heartbeat_tick = HAL_GetTick();
           StatusLED_Toggle(STATUS_LED_HEARTBEAT);
       }
 
-      // Automatic turn off of LD1 press indicator after 100 ms
-      if (HAL_GetTick() > led0_turnoff_tick && led0_turnoff_tick != 0) {
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-          led0_turnoff_tick = 0;
-      }
-
-      // KEY0: LCD Backlight control
-      if (g_key0_pressed) {
-          g_key0_pressed = 0;
-          led0_turnoff_tick = HAL_GetTick() + 100;
-          backlight_state = !backlight_state;
-          if (backlight_state) lcdBacklightOn(); else lcdBacklightOff();
-      }
-
-      // KEY1: Reserved
-      if (g_key1_pressed) {
-          g_key1_pressed = 0;
-          led0_turnoff_tick = HAL_GetTick() + 100;
-      }
-
-      // KEY2: Reserved
-      if (g_key2_pressed) {
-          g_key2_pressed = 0;
-          led0_turnoff_tick = HAL_GetTick() + 100;
-      }
-
-      // KEY3: EEPROM, Flash and MicroSD FatFS tests
-      if (g_key3_pressed) 
-      {
-          g_key3_pressed = 0;
-          led0_turnoff_tick = HAL_GetTick() + 100;
-
-          printf("\r\n--- [AT24C02 EEPROM Test] ---\r\n");
-          HAL_StatusTypeDef conn_status = AT24Cxx_IsConnected();
-          if (conn_status == HAL_OK) {
-              printf("Device detected at I2C address 0x%02X\r\n", EEPROM_ADDRESS);
-              static uint32_t write_counter = 0x11223344;
-              write_counter += 0x01010101;
-              uint32_t read_val = 0;
-              if (AT24Cxx_WriteEEPROM(0x00, &write_counter, sizeof(write_counter)) == HAL_OK &&
-                  AT24Cxx_ReadEEPROM(0x00, &read_val, sizeof(read_val)) == HAL_OK) {
-                  printf(read_val == write_counter ? "PASS\r\n" : "FAIL (Mismatch)\r\n");
-              }
-          }
-
-          *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
-
-          printf("\r\n--- [W25QXX Flash Test] ---\r\n");
-          if (w25qxx.ID != 0) {
-              uint32_t test_sector = w25qxx.SectorCount - 1;
-              uint8_t flash_tx[32] = "W25Q Test Run";
-              uint8_t flash_rx[32] = {0};
-              W25qxx_EraseSector(test_sector);
-              W25qxx_WriteSector(flash_tx, test_sector, 0, strlen((char*)flash_tx) + 1);
-              W25qxx_ReadSector(flash_rx, test_sector, 0, strlen((char*)flash_tx) + 1);
-              printf(strcmp((char*)flash_tx, (char*)flash_rx) == 0 ? "PASS!\r\n" : "FAIL!\r\n");
-          }
-
-          Test_SDCard_FatFS();
-      }
-
+      /* 4. LVGL Graphics Processing */
       lv_timer_handler();
 
+      /* 5. Pause 5ms to release OS time slices */
       osDelay(5);
     }
-  }
+
   /* USER CODE END 5 */
 }
 

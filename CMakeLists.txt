@@ -63,6 +63,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     USB_HOST/Target/usbh_conf.c
     Libs/lvgl_port/lv_port_console.c
     Core/Src/status_led.c
+    Core/Src/buttons_manager.c
 )
 
 # Add include paths
