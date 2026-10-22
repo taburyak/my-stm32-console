@@ -35,6 +35,7 @@
 #include "lv_port_console.h"
 #include "status_led.h"
 #include "buttons_manager.h"
+#include "beeper.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -271,8 +272,6 @@ int main(void)
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-  
-
     printf("\r\n----------------------------------------\r\n");
     printf("  STM32F407 Console OS - Step 1 Boot\r\n");
     printf("----------------------------------------\r\n");
@@ -1015,7 +1014,8 @@ void StartDefaultTask(void *argument)
   /* USER CODE BEGIN 5 */
   printf("[OS] Kernel Task Started.\r\n");
   StatusLED_Init(); /* LEDs off at startup */
-  Buttons_Init(); /* Buttons configured as input with pull-up */
+  Buttons_Init();   /* Buttons configured as input with pull-up */
+  Beeper_Init();    /* Beeper configured as output */
   lcdInit();
   lcdBacklightOn();
   lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
@@ -1030,63 +1030,79 @@ void StartDefaultTask(void *argument)
       printf("W25QXX Flash Initialization FAILED.\r\n");
   }
 
-    /* --- SD Card structure initialization --- */
-    Init_SDCard_FileSystem();
+  /* --- SD Card structure initialization --- */
+  Init_SDCard_FileSystem();
 
-    /* --- LVGL Initialization --- */
-    LVGL_Port_Init();
-    printf("LVGL Initialized Successfully.\r\n");
+  /* --- LVGL Initialization --- */
+  LVGL_Port_Init();
+  printf("LVGL Initialized Successfully.\r\n");
 
-    /* Create file list from root directory */
-    Create_File_List(lv_scr_act(), "/");
+  /* Create file list from root directory */
+  Create_File_List(lv_scr_act(), "/");
 
-    uint32_t last_heartbeat_tick = 0;
-    Button_Message_t btn_msg;
+  /* Process Beeper state */
+  Beeper_BootMelody();
 
-    /* Infinite loop */
-    for(;;)
+  uint32_t last_heartbeat_tick = 0;
+  Button_Message_t btn_msg;
+
+  /* Infinite loop */
+  for(;;)
+  {
+    /* 1. Process button state (debounce, hold timers) */
+    Buttons_Process();
+
+    /* 2. Process button event queue */
+    while (Buttons_GetEvent(&btn_msg)) 
     {
-      /* 1. Process button state (debounce, hold timers) */
-      Buttons_Process();
-
-      /* 2. Process button event queue */
-      while (Buttons_GetEvent(&btn_msg)) 
+      switch (btn_msg.event) 
       {
-        switch (btn_msg.event) 
-        {
-          case BUTTON_EVENT_PRESSED:
-            printf("[BTN] KEY_%d PRESSED\r\n", btn_msg.id);
-            StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
-            break;
+        case BUTTON_EVENT_PRESSED:
+          printf("[BTN] KEY_%d PRESSED\r\n", btn_msg.id);
+          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
+          Beeper_Click();
+          break;
 
-          case BUTTON_EVENT_SHORT_RELEASE:
-            printf("[BTN] KEY_%d SHORT RELEASE (<1s)\r\n", btn_msg.id);
-            StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-            break;
+        case BUTTON_EVENT_SHORT_RELEASE:
+          printf("[BTN] KEY_%d SHORT RELEASE (<1s)\r\n", btn_msg.id);
+          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+          break;
 
-          case BUTTON_EVENT_LONG_PRESS:
-            printf("[BTN] KEY_%d LONG PRESS (>=1s)!\r\n", btn_msg.id);
-            StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-            break;
+        case BUTTON_EVENT_LONG_PRESS:
+          printf("[BTN] KEY_%d LONG PRESS (>=1s)!\r\n", btn_msg.id);
+          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+          /* Тестова умова: якщо довго утримуємо KEY_3 - програємо сигнал тривоги */
+          if (btn_msg.id == BUTTON_KEY3) 
+          {
+            Beeper_ErrorAlert();
+          } 
+          else 
+          {
+            Beeper_Click();
+          }
+          break;
 
-          default:
-            break;
-        }
+        default:
+          break;
       }
-
-      /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
-      if ((HAL_GetTick() - last_heartbeat_tick) >= 500) 
-      {
-          last_heartbeat_tick = HAL_GetTick();
-          StatusLED_Toggle(STATUS_LED_HEARTBEAT);
-      }
-
-      /* 4. LVGL Graphics Processing */
-      lv_timer_handler();
-
-      /* 5. Pause 5ms to release OS time slices */
-      osDelay(5);
     }
+
+    /* Process Beeper state */
+    Beeper_Process();
+
+    /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
+    if ((HAL_GetTick() - last_heartbeat_tick) >= 500) 
+    {
+        last_heartbeat_tick = HAL_GetTick();
+        StatusLED_Toggle(STATUS_LED_HEARTBEAT);
+    }
+
+    /* 4. LVGL Graphics Processing */
+    lv_timer_handler();
+
+    /* 5. Pause 5ms to release OS time slices */
+    osDelay(5);
+  }
 
 
 
