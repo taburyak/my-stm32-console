@@ -1039,17 +1039,28 @@ void StartDefaultTask(void *argument)
       /* 1. Process button state (debounce, hold timers) */
       Buttons_Process();
 
-      /* 2. Check for new events in buffer */
+      /* 2. Process button event queue */
       while (Buttons_GetEvent(&btn_msg)) 
       {
-        /* Turn on LD1 on any button press, off on release */
-        if (btn_msg.event == BUTTON_EVENT_PRESSED) 
+        switch (btn_msg.event) 
         {
+          case BUTTON_EVENT_PRESSED:
+            printf("[BTN] KEY_%d PRESSED\r\n", btn_msg.id);
             StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
-        } 
-        else if (btn_msg.event == BUTTON_EVENT_SHORT_RELEASE || btn_msg.event == BUTTON_EVENT_LONG_PRESS) 
-        {
+            break;
+
+          case BUTTON_EVENT_SHORT_RELEASE:
+            printf("[BTN] KEY_%d SHORT RELEASE (<1s)\r\n", btn_msg.id);
             StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+            break;
+
+          case BUTTON_EVENT_LONG_PRESS:
+            printf("[BTN] KEY_%d LONG PRESS (>=1s)!\r\n", btn_msg.id);
+            StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+            break;
+
+          default:
+            break;
         }
       }
 
@@ -1066,6 +1077,34 @@ void StartDefaultTask(void *argument)
       /* 5. Pause 5ms to release OS time slices */
       osDelay(5);
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   /* USER CODE END 5 */
 }
