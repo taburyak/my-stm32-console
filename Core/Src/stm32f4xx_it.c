@@ -310,7 +310,6 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
         switch(svc_number) {
             case 1:
                 // Example: sys_led_toggle
-                HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
                 break;
             case 2:
                 // Example: sys_draw_pixel

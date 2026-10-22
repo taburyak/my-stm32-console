@@ -42,8 +42,12 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
 )
 
+# Automatically locate all source files for the LVGL library
+file(GLOB_RECURSE LVGL_SOURCES "Libs/lvgl/src/*.c")
+
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    ${LVGL_SOURCES}
     Core/Src/main.c
     Core/Src/stm32f4xx_it.c
     Core/Src/stm32f4xx_hal_msp.c
@@ -57,6 +61,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     FATFS/Target/bsp_driver_sd.c
     USB_HOST/App/usb_host.c
     USB_HOST/Target/usbh_conf.c
+    Libs/lvgl_port/lv_port_console.c
+    Core/Src/status_led.c
 )
 
 # Add include paths
@@ -69,6 +75,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     FATFS/Target
     USB_HOST/App
     USB_HOST/Target
+    Libs/lvgl
+    Libs/lvgl_port
 )
 
 # Add project symbols (macros)

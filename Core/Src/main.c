@@ -31,6 +31,9 @@
 #include "AT24Cxx.h"
 #include "w25qxx.h"
 #include <string.h>
+#include "lvgl.h"
+#include "lv_port_console.h"
+#include "status_led.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -76,7 +79,7 @@ SRAM_HandleTypeDef hsram3;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
@@ -126,6 +129,7 @@ void MPU_Config_UserSandbox(void);
 void sys_led_toggle(void);
 void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count);
 void Test_SDCard_FatFS(void);
+void Init_SDCard_FileSystem(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -172,72 +176,58 @@ void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
     }
 }
 
-// Helper function to draw a filled rectangle in the frame_buffer (RGB565)
-static void FB_FillRect(uint16_t *buf, int x, int y, int w, int h, uint16_t color)
+static void list_btn_event_cb(lv_event_t * e)
 {
-    for (int row = y; row < y + h; row++) {
-        if (row < 0 || row >= 240) continue;
-        for (int col = x; col < x + w; col++) {
-            if (col < 0 || col >= 320) continue;
-            buf[row * 320 + col] = color;
-        }
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * obj = lv_event_get_target(e);
+
+    if (code == LV_EVENT_CLICKED) {
+        const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
+        printf("[File Selected]: %s\r\n", file_name);
+        HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
     }
 }
 
-// Visual USB diagnostics panel without UART
-static void LCD_DrawDebugHUD(uint16_t *buf)
+/**
+ * @brief Сканує папку на SD-картці та відображає її вміст у віджеті списку LVGL
+ */
+static void Create_File_List(lv_obj_t *parent, const char *path)
 {
-    // Colors in RGB565 format
-    const uint16_t C_BLACK  = 0x0000;
-    const uint16_t C_WHITE  = 0xFFFF;
-    const uint16_t C_RED    = 0xF800;
-    const uint16_t C_GREEN  = 0x07E0;
-    const uint16_t C_BLUE   = 0x001F;
-    const uint16_t C_YELLOW = 0xFFE0;
-    const uint16_t C_CYAN   = 0x07FF;
-    const uint16_t C_GRAY   = 0x4208;
+    lv_obj_t * list = lv_list_create(parent);
+    lv_obj_set_size(list, 300, 210);
+    lv_obj_align(list, LV_ALIGN_CENTER, 0, 0);
 
-    // 1. Black background for the top panel (height 44 pixels)
-    FB_FillRect(buf, 0, 0, 320, 44, C_BLACK);
+    char title_buf[64];
+    snprintf(title_buf, sizeof(title_buf), "Folder: %s", path);
+    lv_list_add_text(list, title_buf);
 
-    // 2. Left square: USB connection state (Appli_state)
-    uint16_t state_color = C_BLUE; // IDLE = Blue
-    if (Appli_state == APPLICATION_START)      state_color = C_YELLOW; // Connected, enumeration = Yellow
-    if (Appli_state == APPLICATION_READY)      state_color = g_usb_kbd_ready ? C_GREEN : C_CYAN; // Keyboard ready = Green!
-    if (Appli_state == APPLICATION_DISCONNECT) state_color = C_RED;    // Disconnected = Red
+    DIR dir;
+    static FILINFO fno;
+    FRESULT fr = f_opendir(&dir, path);
 
-    FB_FillRect(buf, 8, 8, 40, 28, state_color);
-
-    // 3. Middle area: Scancode bar + 8 bits of ASCII/ScanCode
-    // Draw grey scale frame (length 160 pixels)
-    FB_FillRect(buf, 60, 8, 160, 10, C_GRAY);
-    // Fill with white proportionally to the pressed key scancode
-    int bar_w = (g_usb_last_scancode * 2);
-    if (bar_w > 160) bar_w = 160;
-    if (bar_w > 0) {
-        FB_FillRect(buf, 60, 8, bar_w, 10, C_WHITE);
+    if (fr != FR_OK) {
+        printf("f_opendir FAIL: Error %d for %s\r\n", fr, path);
+        lv_list_add_text(list, "Failed to open directory");
+        return;
     }
 
-    // Draw 8 squares (16x12 pixels each) — bits of the current ASCII code (from MSB to LSB)
-    uint8_t val = (g_usb_last_ascii != 0) ? g_usb_last_ascii : g_usb_last_scancode;
-    for (int bit = 0; bit < 8; bit++) {
-        uint8_t is_set = (val >> (7 - bit)) & 0x01;
-        uint16_t bit_color = is_set ? C_GREEN : C_GRAY;
-        FB_FillRect(buf, 60 + bit * 20, 24, 16, 12, bit_color);
+    uint32_t count = 0;
+    while (1) {
+        fr = f_readdir(&dir, &fno);
+        if (fr != FR_OK || fno.fname[0] == 0) break;
+
+        const char *icon = (fno.fattrib & AM_DIR) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
+        
+        lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
+        lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+        count++;
     }
 
-    // 4. Right square: Keystroke indicator (changes color on every key press)
-    if (g_usb_key_count > 0) {
-        uint16_t dynamic_color = (uint16_t)((g_usb_key_count * 9123) | 0x0821);
-        FB_FillRect(buf, 240, 8, 70, 28, dynamic_color);
-    } else {
-        FB_FillRect(buf, 240, 8, 70, 28, C_GRAY);
-    }
+    f_closedir(&dir);
 
-    // Bottom right corner of the panel: OS activity pulsar (flashes white/black in every frame)
-    static uint8_t heartbeat = 0;
-    heartbeat = !heartbeat;
-    FB_FillRect(buf, 300, 36, 12, 6, heartbeat ? C_WHITE : C_BLACK);
+    if (count == 0) {
+        lv_list_add_text(list, "(Empty directory)");
+    }
 }
 /* USER CODE END 0 */
 
@@ -280,9 +270,6 @@ int main(void)
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   
-    // Turn off all LEDs before starting the test (they are active-low, so we use SET)
-    HAL_GPIO_WritePin(GPIOE, LD0_Pin|LD1_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
 
     printf("\r\n----------------------------------------\r\n");
     printf("  STM32F407 Console OS - Step 1 Boot\r\n");
@@ -299,7 +286,7 @@ int main(void)
     else
     {
         printf("CRITICAL: Hardware failure detected!\r\n");
-        HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+        StatusLED_Set(STATUS_LED_ERROR, STATUS_LED_ON);
         while (1) {}
     }
 
@@ -882,7 +869,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     last_exti_tick = current_tick;
 
     // Turn on LD0 for visual indication of press (Active-Low)
-    HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
 
     switch (GPIO_Pin)
     {
@@ -978,6 +965,62 @@ void Test_SDCard_FatFS(void)
     f_mount(NULL, SDPath, 0);
     printf("MicroSD Test Completed.\r\n");
 }
+
+/**
+ * @brief Checks and creates mandatory system directories on SD card
+ */
+void Init_SDCard_FileSystem(void)
+{
+    static FATFS fs;
+    FRESULT fr;
+    static FILINFO fno;
+
+    const char *required_dirs[] = {
+        "system",
+        "games",
+        "assets",
+        "saves"
+    };
+
+    printf("\r\n--- [SD Card Directory Initialization] ---\r\n");
+
+    // 1. Mount SD Card
+    fr = f_mount(&fs, SDPath, 1);
+    if (fr != FR_OK) {
+        printf("f_mount FAIL: Error %d\r\n", fr);
+        return;
+    }
+    printf("SD Card Mounted Successfully.\r\n");
+
+    // 2. Check and create required directories
+    for (size_t i = 0; i < sizeof(required_dirs) / sizeof(required_dirs[0]); i++)
+    {
+        fr = f_stat(required_dirs[i], &fno);
+        if (fr == FR_NO_FILE)
+        {
+            fr = f_mkdir(required_dirs[i]);
+            if (fr == FR_OK) {
+                printf("Created directory: /%s\r\n", required_dirs[i]);
+            } else {
+                printf("Failed to create /%s (Error %d)\r\n", required_dirs[i], fr);
+            }
+        }
+        else if (fr == FR_OK)
+        {
+            if (fno.fattrib & AM_DIR) {
+                printf("Directory exists: /%s\r\n", required_dirs[i]);
+            } else {
+                printf("Warning: /%s exists but is a file!\r\n", required_dirs[i]);
+            }
+        }
+        else
+        {
+            printf("Error checking /%s (Code %d)\r\n", required_dirs[i], fr);
+        }
+    }
+
+    printf("SD Directory Structure Ready.\r\n");
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -991,19 +1034,14 @@ void StartDefaultTask(void *argument)
 {
   /* init code for USB_HOST */
   MX_USB_HOST_Init();
-  /* USER CODE BEGIN 5 */
+    /* USER CODE BEGIN 5 */
   {
+    StatusLED_Init(); /* LEDs off at startup */
     printf("[OS] Kernel Task Started.\r\n");
     
     lcdInit();
     lcdBacklightOn();
-    lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // This is CRITICAL for Width=320
-
-    frame_buffer = (uint16_t*)pvPortMalloc(320 * 240 * sizeof(uint16_t));
-    if (frame_buffer == NULL) {
-        printf("Malloc error!\r\n");
-        while(1);
-    }
+    lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
 
     // Initialize W25QXX Flash
     if (W25qxx_Init()) {
@@ -1012,24 +1050,35 @@ void StartDefaultTask(void *argument)
         printf("W25QXX Flash Initialization FAILED.\r\n");
     }
 
-    uint16_t color_offset = 0;
+/* --- Ініціалізація структури SD-карти --- */
+    Init_SDCard_FileSystem();
+
+    /* --- Ініціалізація LVGL --- */
+    LVGL_Port_Init();
+    printf("LVGL Initialized Successfully.\r\n");
+
+    /* Створюємо список файлів з кореневого каталогу */
+    Create_File_List(lv_scr_act(), "/");
 
     static uint8_t backlight_state = 1;
-    static uint8_t color_scheme = 0;
     static uint32_t led0_turnoff_tick = 0;
+    uint32_t last_heartbeat_tick = 0;
 
     /* Infinite loop */
     for(;;)
     {
-      HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
+      if ((HAL_GetTick() - last_heartbeat_tick) >= 500) {
+          last_heartbeat_tick = HAL_GetTick();
+          StatusLED_Toggle(STATUS_LED_HEARTBEAT);
+      }
 
-      // Automatic turn off of LD0 press indicator after 100 ms
+      // Automatic turn off of LD1 press indicator after 100 ms
       if (HAL_GetTick() > led0_turnoff_tick && led0_turnoff_tick != 0) {
-          HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET);
+          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
           led0_turnoff_tick = 0;
       }
 
-      // KEY0 processing: LCD Backlight control
+      // KEY0: LCD Backlight control
       if (g_key0_pressed) {
           g_key0_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
@@ -1037,136 +1086,56 @@ void StartDefaultTask(void *argument)
           if (backlight_state) lcdBacklightOn(); else lcdBacklightOff();
       }
 
-      // KEY1 processing: Change gradient palette
+      // KEY1: Reserved
       if (g_key1_pressed) {
           g_key1_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
-          color_scheme = (color_scheme + 1) % 3;
       }
 
-      // KEY2 processing: Shift color offset
+      // KEY2: Reserved
       if (g_key2_pressed) {
           g_key2_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
-          color_offset += 50;
       }
 
-      // KEY3 processing: EEPROM (AT24C02) and external SRAM test
+      // KEY3: EEPROM, Flash and MicroSD FatFS tests
       if (g_key3_pressed) 
       {
           g_key3_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
 
           printf("\r\n--- [AT24C02 EEPROM Test] ---\r\n");
-
           HAL_StatusTypeDef conn_status = AT24Cxx_IsConnected();
           if (conn_status == HAL_OK) {
               printf("Device detected at I2C address 0x%02X\r\n", EEPROM_ADDRESS);
-
-              // 1. Word Test (dynamic value each time)
               static uint32_t write_counter = 0x11223344;
               write_counter += 0x01010101;
               uint32_t read_val = 0;
-
-              printf("1. Word Test @ addr 0x00: Wrote 0x%08lX... ", write_counter);
-              if (AT24Cxx_WriteEEPROM(0x00, &write_counter, sizeof(write_counter)) == HAL_OK) {
-                  if (AT24Cxx_ReadEEPROM(0x00, &read_val, sizeof(read_val)) == HAL_OK) {
-                      if (read_val == write_counter) {
-                          printf("PASS (Read 0x%08lX)\r\n", read_val);
-                      } else {
-                          printf("FAIL (Data mismatch: 0x%08lX)\r\n", read_val);
-                      }
-                  } else {
-                      printf("FAIL (Read error)\r\n");
-                  }
-              } else {
-                  printf("FAIL (Write error)\r\n");
+              if (AT24Cxx_WriteEEPROM(0x00, &write_counter, sizeof(write_counter)) == HAL_OK &&
+                  AT24Cxx_ReadEEPROM(0x00, &read_val, sizeof(read_val)) == HAL_OK) {
+                  printf(read_val == write_counter ? "PASS\r\n" : "FAIL (Mismatch)\r\n");
               }
-
-              // 2. Page boundary crossing test (addresses 0x06..0x0F)
-              uint8_t tx_buf[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-              uint8_t rx_buf[10] = {0};
-              bool page_cross_ok = true;
-
-              printf("2. Page boundary test (10 bytes @ addr 0x06)... ");
-              if (AT24Cxx_WriteEEPROM(0x06, tx_buf, sizeof(tx_buf)) == HAL_OK &&
-                  AT24Cxx_ReadEEPROM(0x06, rx_buf, sizeof(rx_buf)) == HAL_OK) {
-                  for (int i = 0; i < sizeof(tx_buf); i++) {
-                      if (rx_buf[i] != tx_buf[i]) {
-                          page_cross_ok = false;
-                          break;
-                      }
-                  }
-                  printf(page_cross_ok ? "PASS\r\n" : "FAIL (Wrap-around mismatch)\r\n");
-              } else {
-                  printf("FAIL (I2C transfer failed)\r\n");
-              }
-
-          } else {
-              printf("NOT DETECTED (HAL Status: %d)\r\n", conn_status);
           }
 
-          // External SRAM check
           *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
 
-          // W25QXX Flash Diagnostics
           printf("\r\n--- [W25QXX Flash Test] ---\r\n");
           if (w25qxx.ID != 0) {
-              // Використовуємо останній сектор, щоб не затирати потенційну файлову систему в секторі 0
               uint32_t test_sector = w25qxx.SectorCount - 1;
-              static uint32_t test_run = 0;
-              test_run++;
-
-              uint8_t flash_tx[32];
+              uint8_t flash_tx[32] = "W25Q Test Run";
               uint8_t flash_rx[32] = {0};
-              snprintf((char*)flash_tx, sizeof(flash_tx), "W25Q Test Run #%lu", test_run);
-
-              printf("Target Sector: %lu (Addr 0x%08lX)\r\n", test_sector, test_sector * w25qxx.SectorSize);
-              printf("Erasing sector... ");
               W25qxx_EraseSector(test_sector);
-
-              printf("Writing: \"%s\"... ", (char*)flash_tx);
               W25qxx_WriteSector(flash_tx, test_sector, 0, strlen((char*)flash_tx) + 1);
-
               W25qxx_ReadSector(flash_rx, test_sector, 0, strlen((char*)flash_tx) + 1);
-
-              if (strcmp((char*)flash_tx, (char*)flash_rx) == 0) {
-                  printf("PASS! Read: \"%s\"\r\n", (char*)flash_rx);
-              } else {
-                  printf("FAIL! Data mismatch\r\n");
-              }
-          } else {
-              printf("Flash not initialized or not detected\r\n");
+              printf(strcmp((char*)flash_tx, (char*)flash_rx) == 0 ? "PASS!\r\n" : "FAIL!\r\n");
           }
 
           Test_SDCard_FatFS();
       }
 
-      // 1. GRADIENT RENDERING BASED ON SELECTED PALETTE
-      for (int y = 0; y < 240; y++) {
-          uint16_t base_color = (y + color_offset) & 0x1F;
-          for (int x = 0; x < 320; x++) {
-              if (color_scheme == 0) {
-                  // Initial gradient
-                  frame_buffer[y * 320 + x] = (base_color << 11) | (((x >> 2) & 0x3F) << 5) | (x & 0x1F);
-              } else if (color_scheme == 1) {
-                  // Fire/Red-Yellow spectrum
-                  frame_buffer[y * 320 + x] = ((x & 0x1F) << 11) | (((y >> 2) & 0x3F) << 5);
-              } else {
-                  // Cold Blue-Cyan spectrum
-                  frame_buffer[y * 320 + x] = (((x >> 2) & 0x3F) << 5) | (y & 0x1F);
-              }
-          }
-      }
-      color_offset++;
+      lv_timer_handler();
 
-    // Status panel on top of the image
-    LCD_DrawDebugHUD(frame_buffer);
-
-    // Frame output via DMA
-    LCD_FlushFrameBuffer(frame_buffer, 320 * 240);
-
-      osDelay(20); 
+      osDelay(5);
     }
   }
   /* USER CODE END 5 */
@@ -1190,7 +1159,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+    lv_tick_inc(1);
   /* USER CODE END Callback 1 */
 }
 
