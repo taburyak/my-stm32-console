@@ -46,7 +46,7 @@
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-extern void vPortSVCHandler(void); // Оригінальний обробник FreeRTOS
+extern void vPortSVCHandler(void); // Original FreeRTOS handler
 void Custom_SVC_Handler_C(uint32_t *svc_args);
 /* USER CODE END PFP */
 
@@ -57,6 +57,9 @@ void Custom_SVC_Handler_C(uint32_t *svc_args);
 
 /* External variables --------------------------------------------------------*/
 extern HCD_HandleTypeDef hhcd_USB_OTG_FS;
+extern DMA_HandleTypeDef hdma_sdio_rx;
+extern DMA_HandleTypeDef hdma_sdio_tx;
+extern SD_HandleTypeDef hsd;
 extern UART_HandleTypeDef huart3;
 extern TIM_HandleTypeDef htim4;
 
@@ -168,7 +171,7 @@ void DebugMon_Handler(void)
 void EXTI9_5_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI9_5_IRQn 0 */
-// Очищаємо прапорці переривань для ліній кнопок KEY0..KEY3 та викликаємо HAL Callback
+// Clear interrupt flags for button lines KEY0..KEY3 and call HAL Callback
   HAL_GPIO_EXTI_IRQHandler(KEY_0_Pin);
   HAL_GPIO_EXTI_IRQHandler(KEY_1_Pin);
   HAL_GPIO_EXTI_IRQHandler(KEY_2_Pin);
@@ -222,6 +225,34 @@ void EXTI15_10_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles SDIO global interrupt.
+  */
+void SDIO_IRQHandler(void)
+{
+  /* USER CODE BEGIN SDIO_IRQn 0 */
+
+  /* USER CODE END SDIO_IRQn 0 */
+  HAL_SD_IRQHandler(&hsd);
+  /* USER CODE BEGIN SDIO_IRQn 1 */
+
+  /* USER CODE END SDIO_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream3 global interrupt.
+  */
+void DMA2_Stream3_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream3_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream3_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_sdio_rx);
+  /* USER CODE BEGIN DMA2_Stream3_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream3_IRQn 1 */
+}
+
+/**
   * @brief This function handles USB On The Go FS global interrupt.
   */
 void OTG_FS_IRQHandler(void)
@@ -235,8 +266,22 @@ void OTG_FS_IRQHandler(void)
   /* USER CODE END OTG_FS_IRQn 1 */
 }
 
+/**
+  * @brief This function handles DMA2 stream6 global interrupt.
+  */
+void DMA2_Stream6_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream6_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream6_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_sdio_tx);
+  /* USER CODE BEGIN DMA2_Stream6_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream6_IRQn 1 */
+}
+
 /* USER CODE BEGIN 1 */
-// Асемблерна обгортка для перехоплення контексту
+// Assembly wrapper to catch context
 __attribute__((naked)) void SVC_Handler(void)
 {
     __asm volatile(
@@ -248,31 +293,31 @@ __attribute__((naked)) void SVC_Handler(void)
     );
 }
 
-// C-обробник системних викликів
+// C-handler for system calls
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
-    // Отримуємо номер SVC (він лежить в коді інструкції перед адресою повернення)
+    // Get SVC number (it's in the instruction code before return address)
     uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
 
     if (svc_number == 0) 
     {
-        // Це старт FreeRTOS. Передаємо керування їй.
+        // This is FreeRTOS start. Pass control to it.
         vPortSVCHandler();
     } 
     else 
     {
-        // Це виклик з вашого користувацького скрипта!
+        // This is a call from your user script!
         switch(svc_number) {
             case 1:
-                // Приклад: sys_led_toggle
+                // Example: sys_led_toggle
                 HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
                 break;
             case 2:
-                // Приклад: sys_draw_pixel
-                // Ваш код виклику графічного рушія
+                // Example: sys_draw_pixel
+                // Your graphics engine call code
                 break;
             default:
-                break; // Невідомий виклик
+                break; // Unknown call
         }
     }
 }

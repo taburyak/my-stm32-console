@@ -51,6 +51,10 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/ILI9341/src/ili9341_simple.c
     Libs/XPT2046/XPT2046_touch.c
     Libs/AT24XXX/AT24Cxx.c
+    Libs/W25QXX/w25qxx.c
+    FATFS/App/fatfs.c
+    FATFS/Target/sd_diskio.c
+    FATFS/Target/bsp_driver_sd.c
     USB_HOST/App/usb_host.c
     USB_HOST/Target/usbh_conf.c
 )
@@ -60,6 +64,9 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/ILI9341/inc
     Libs/XPT2046
     Libs/AT24XXX
+    Libs/W25QXX
+    FATFS/App
+    FATFS/Target
     USB_HOST/App
     USB_HOST/Target
 )

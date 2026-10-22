@@ -85,6 +85,8 @@ void Error_Handler(void);
 #define T_PEN_Pin GPIO_PIN_11
 #define T_PEN_GPIO_Port GPIOF
 #define T_PEN_EXTI_IRQn EXTI15_10_IRQn
+#define W25_CS_Pin GPIO_PIN_8
+#define W25_CS_GPIO_Port GPIOG
 #define DS18B20_Pin GPIO_PIN_15
 #define DS18B20_GPIO_Port GPIOA
 #define LD2_Pin GPIO_PIN_9

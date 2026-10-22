@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
 #include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -28,6 +29,8 @@
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
 #include "AT24Cxx.h"
+#include "w25qxx.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,7 +40,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* Параметри пам'яті для Кроку 2 */
+/* Memory parameters for Step 2 */
 #define INTERNAL_HEAP_SIZE    (configTOTAL_HEAP_SIZE)   /* According to the CubeMX settings */
 #define EXTERNAL_SRAM_BASE    (0x68000000UL)            /* Bank 3's main address */
 #define EXTERNAL_SRAM_SIZE    (1024 * 1024)             /* 1 megabyte */
@@ -56,6 +59,12 @@
 CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
+
+SD_HandleTypeDef hsd;
+DMA_HandleTypeDef hdma_sdio_rx;
+DMA_HandleTypeDef hdma_sdio_tx;
+
+SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart3;
 
@@ -107,6 +116,8 @@ static void MX_CRC_Init(void);
 static void MX_FSMC_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_SDIO_SD_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -114,6 +125,7 @@ void SandboxTask(void *argument);
 void MPU_Config_UserSandbox(void);
 void sys_led_toggle(void);
 void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count);
+void Test_SDCard_FatFS(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -160,7 +172,7 @@ void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
     }
 }
 
-// Допоміжна функція малювання зафарбованого прямокутника у frame_buffer (RGB565)
+// Helper function to draw a filled rectangle in the frame_buffer (RGB565)
 static void FB_FillRect(uint16_t *buf, int x, int y, int w, int h, uint16_t color)
 {
     for (int row = y; row < y + h; row++) {
@@ -172,10 +184,10 @@ static void FB_FillRect(uint16_t *buf, int x, int y, int w, int h, uint16_t colo
     }
 }
 
-// Візуальна панель діагностики USB без UART
+// Visual USB diagnostics panel without UART
 static void LCD_DrawDebugHUD(uint16_t *buf)
 {
-    // Кольори у форматі RGB565
+    // Colors in RGB565 format
     const uint16_t C_BLACK  = 0x0000;
     const uint16_t C_WHITE  = 0xFFFF;
     const uint16_t C_RED    = 0xF800;
@@ -185,28 +197,28 @@ static void LCD_DrawDebugHUD(uint16_t *buf)
     const uint16_t C_CYAN   = 0x07FF;
     const uint16_t C_GRAY   = 0x4208;
 
-    // 1. Чорна підкладка верхньої панелі (висота 44 пікселі)
+    // 1. Black background for the top panel (height 44 pixels)
     FB_FillRect(buf, 0, 0, 320, 44, C_BLACK);
 
-    // 2. Лівий квадрат: Стан підключення USB (Appli_state)
-    uint16_t state_color = C_BLUE; // IDLE = Синій
-    if (Appli_state == APPLICATION_START)      state_color = C_YELLOW; // Підключено, енумерація = Жовтий
-    if (Appli_state == APPLICATION_READY)      state_color = g_usb_kbd_ready ? C_GREEN : C_CYAN; // Клавіатура готова = Зелений!
-    if (Appli_state == APPLICATION_DISCONNECT) state_color = C_RED;    // Відключено = Червоний
+    // 2. Left square: USB connection state (Appli_state)
+    uint16_t state_color = C_BLUE; // IDLE = Blue
+    if (Appli_state == APPLICATION_START)      state_color = C_YELLOW; // Connected, enumeration = Yellow
+    if (Appli_state == APPLICATION_READY)      state_color = g_usb_kbd_ready ? C_GREEN : C_CYAN; // Keyboard ready = Green!
+    if (Appli_state == APPLICATION_DISCONNECT) state_color = C_RED;    // Disconnected = Red
 
     FB_FillRect(buf, 8, 8, 40, 28, state_color);
 
-    // 3. Середня зона: Смужка скан-коду + 8 бітів ASCII/ScanCode
-    // Малюємо сіру рамку-шкалу (довжина 160 пікселів)
+    // 3. Middle area: Scancode bar + 8 bits of ASCII/ScanCode
+    // Draw grey scale frame (length 160 pixels)
     FB_FillRect(buf, 60, 8, 160, 10, C_GRAY);
-    // Заповнюємо білим пропорційно скан-коду натиснутої клавіші
+    // Fill with white proportionally to the pressed key scancode
     int bar_w = (g_usb_last_scancode * 2);
     if (bar_w > 160) bar_w = 160;
     if (bar_w > 0) {
         FB_FillRect(buf, 60, 8, bar_w, 10, C_WHITE);
     }
 
-    // Малюємо 8 квадратиків (по 16x12 пікселів) — біти поточного ASCII коду (від старшого до молодшого)
+    // Draw 8 squares (16x12 pixels each) — bits of the current ASCII code (from MSB to LSB)
     uint8_t val = (g_usb_last_ascii != 0) ? g_usb_last_ascii : g_usb_last_scancode;
     for (int bit = 0; bit < 8; bit++) {
         uint8_t is_set = (val >> (7 - bit)) & 0x01;
@@ -214,7 +226,7 @@ static void LCD_DrawDebugHUD(uint16_t *buf)
         FB_FillRect(buf, 60 + bit * 20, 24, 16, 12, bit_color);
     }
 
-    // 4. Правий квадрат: Індикатор натискань (змінює колір при кожному натисканні клавіші)
+    // 4. Right square: Keystroke indicator (changes color on every key press)
     if (g_usb_key_count > 0) {
         uint16_t dynamic_color = (uint16_t)((g_usb_key_count * 9123) | 0x0821);
         FB_FillRect(buf, 240, 8, 70, 28, dynamic_color);
@@ -222,7 +234,7 @@ static void LCD_DrawDebugHUD(uint16_t *buf)
         FB_FillRect(buf, 240, 8, 70, 28, C_GRAY);
     }
 
-    // Правий нижній кут панелі: пульсар активності ОС (блимає білим/чорним у кожному кадрі)
+    // Bottom right corner of the panel: OS activity pulsar (flashes white/black in every frame)
     static uint8_t heartbeat = 0;
     heartbeat = !heartbeat;
     FB_FillRect(buf, 300, 36, 12, 6, heartbeat ? C_WHITE : C_BLACK);
@@ -263,6 +275,9 @@ int main(void)
   MX_FSMC_Init();
   MX_USART3_UART_Init();
   MX_I2C1_Init();
+  MX_SPI1_Init();
+  MX_SDIO_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   
     // Turn off all LEDs before starting the test (they are active-low, so we use SET)
@@ -454,6 +469,72 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief SDIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SDIO_SD_Init(void)
+{
+
+  /* USER CODE BEGIN SDIO_Init 0 */
+
+  /* USER CODE END SDIO_Init 0 */
+
+  /* USER CODE BEGIN SDIO_Init 1 */
+
+  /* USER CODE END SDIO_Init 1 */
+  hsd.Instance = SDIO;
+  hsd.Init.ClockEdge = SDIO_CLOCK_EDGE_RISING;
+  hsd.Init.ClockBypass = SDIO_CLOCK_BYPASS_DISABLE;
+  hsd.Init.ClockPowerSave = SDIO_CLOCK_POWER_SAVE_DISABLE;
+  hsd.Init.BusWide = SDIO_BUS_WIDE_1B;
+  hsd.Init.HardwareFlowControl = SDIO_HARDWARE_FLOW_CONTROL_DISABLE;
+  hsd.Init.ClockDiv = 4;
+  /* USER CODE BEGIN SDIO_Init 2 */
+
+  /* USER CODE END SDIO_Init 2 */
+
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -516,6 +597,14 @@ static void MX_DMA_Init(void)
     Error_Handler( );
   }
 
+  /* DMA interrupt init */
+  /* DMA2_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
+  /* DMA2_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream6_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
+
 }
 
 /**
@@ -553,10 +642,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, T_CS_Pin|T_MOSI_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(DS18B20_GPIO_Port, DS18B20_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOG, W25_CS_Pin|LD2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(DS18B20_GPIO_Port, DS18B20_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : LD0_Pin LD1_Pin */
   GPIO_InitStruct.Pin = LD0_Pin|LD1_Pin;
@@ -604,12 +693,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(T_PEN_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : W25_CS_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = W25_CS_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
@@ -725,8 +814,8 @@ void MPU_Config_UserSandbox(void)
     MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
     MPU_InitStruct.SubRegionDisable = 0x0;
     MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
-    MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO_URO; // Читання для всіх
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE; // Можна виконувати
+    MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO_URO; // Read-only for all
+    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE; // Executable
     MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
     MPU_InitStruct.IsCacheable = MPU_ACCESS_CACHEABLE;
     MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
@@ -737,7 +826,7 @@ void MPU_Config_UserSandbox(void)
     MPU_InitStruct.BaseAddress = 0x20000000;
     MPU_InitStruct.Size = MPU_REGION_SIZE_128KB;
     MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Заборона виконання з RAM (безпека)
+    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
     // Region 2: External SRAM (Sandbox) — Read, Write, Execute
@@ -773,7 +862,7 @@ void SandboxTask(void *argument)
     }
 }
 
-// Прапорці подій від кнопок для головного циклу
+// Button event flags for the main loop
 volatile uint8_t g_key0_pressed = 0;
 volatile uint8_t g_key1_pressed = 0;
 volatile uint8_t g_key2_pressed = 0;
@@ -785,14 +874,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     uint32_t current_tick = HAL_GetTick();
     
-    // Програмний антибрязкіт контактів: 200 мс
+    // Software debouncing: 200 ms
     if (current_tick - last_exti_tick < 200)
     {
         return;
     }
     last_exti_tick = current_tick;
 
-    // Вмикаємо LD0 для візуальної індикації натискання (Active-Low)
+    // Turn on LD0 for visual indication of press (Active-Low)
     HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
 
     switch (GPIO_Pin)
@@ -816,6 +905,78 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         default:
             break;
     }
+}
+
+void Test_SDCard_FatFS(void)
+{
+    // Статичні об'єкти, щоб не перевантажувати стек таски FreeRTOS (кожен займає >500 байт!)
+    static FATFS fs;
+    static FIL fil;
+    FRESULT fr;
+    UINT bytes_written = 0, bytes_read = 0;
+    
+    // DMA вимагає вирівнювання адреси по 4 байти!
+    __attribute__((aligned(4))) static char write_buf[64];
+    __attribute__((aligned(4))) static char read_buf[64];
+    
+    static uint32_t sd_counter = 0;
+    sd_counter++;
+
+    memset(read_buf, 0, sizeof(read_buf));
+
+    printf("\r\n--- [MicroSD Card FatFS Test] ---\r\n");
+
+    // 1. Монтування диска (force mount = 1)
+    fr = f_mount(&fs, SDPath, 1);
+    if (fr != FR_OK) {
+        printf("f_mount FAIL: Error %d\r\n", fr);
+        return;
+    }
+    printf("f_mount: PASS\r\n");
+
+    // 2. Створення/відкриття тестового файлу
+    fr = f_open(&fil, "test.txt", FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
+    if (fr != FR_OK) {
+        printf("f_open FAIL: Error %d\r\n", fr);
+        f_mount(NULL, SDPath, 0);
+        return;
+    }
+
+    // 3. Запис рядка
+    snprintf(write_buf, sizeof(write_buf), "STM32 Console SD Run #%lu\r\n", sd_counter);
+    fr = f_write(&fil, write_buf, strlen(write_buf), &bytes_written);
+    if (fr != FR_OK || bytes_written != strlen(write_buf)) {
+        printf("f_write FAIL: Error %d (wrote %u bytes)\r\n", fr, bytes_written);
+        f_close(&fil);
+        f_mount(NULL, SDPath, 0);
+        return;
+    }
+    printf("f_write: PASS (%u bytes written)\r\n", bytes_written);
+
+    // 4. Синхронізація (скидання кешу на карту перед читанням)
+    f_sync(&fil);
+
+    // 5. Переміщення покажчика на початок і читання назад
+    f_lseek(&fil, 0);
+    fr = f_read(&fil, read_buf, bytes_written, &bytes_read);
+    if (fr != FR_OK || bytes_read != bytes_written) {
+        printf("f_read FAIL: Error %d (read %u bytes)\r\n", fr, bytes_read);
+        f_close(&fil);
+        f_mount(NULL, SDPath, 0);
+        return;
+    }
+
+    // 6. Верифікація
+    if (memcmp(write_buf, read_buf, bytes_written) == 0) {
+        printf("Verification: PASS! Read: \"%s\"\r\n", read_buf);
+    } else {
+        printf("Verification: FAIL! Data mismatch\r\n");
+    }
+
+    // 7. Закриття та розмонтування
+    f_close(&fil);
+    f_mount(NULL, SDPath, 0);
+    printf("MicroSD Test Completed.\r\n");
 }
 /* USER CODE END 4 */
 
@@ -844,6 +1005,13 @@ void StartDefaultTask(void *argument)
         while(1);
     }
 
+    // Initialize W25QXX Flash
+    if (W25qxx_Init()) {
+        printf("W25QXX Flash Initialized.\r\n");
+    } else {
+        printf("W25QXX Flash Initialization FAILED.\r\n");
+    }
+
     uint16_t color_offset = 0;
 
     static uint8_t backlight_state = 1;
@@ -855,13 +1023,13 @@ void StartDefaultTask(void *argument)
     {
       HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
 
-      // Автоматичне вимкнення індикатора натискання LD0 через 100 мс
+      // Automatic turn off of LD0 press indicator after 100 ms
       if (HAL_GetTick() > led0_turnoff_tick && led0_turnoff_tick != 0) {
           HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET);
           led0_turnoff_tick = 0;
       }
 
-      // Обробка KEY0: Керування підсвіткою екрана
+      // KEY0 processing: LCD Backlight control
       if (g_key0_pressed) {
           g_key0_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
@@ -869,22 +1037,23 @@ void StartDefaultTask(void *argument)
           if (backlight_state) lcdBacklightOn(); else lcdBacklightOff();
       }
 
-      // Обробка KEY1: Зміна палітри градієнта
+      // KEY1 processing: Change gradient palette
       if (g_key1_pressed) {
           g_key1_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
           color_scheme = (color_scheme + 1) % 3;
       }
 
-      // Обробка KEY2: Заповнення випадковим кольором або очищення
+      // KEY2 processing: Shift color offset
       if (g_key2_pressed) {
           g_key2_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
           color_offset += 50;
       }
 
-      // Обробка KEY3: Тест EEPROM (AT24C02) та зовнішньої SRAM
-      if (g_key3_pressed) {
+      // KEY3 processing: EEPROM (AT24C02) and external SRAM test
+      if (g_key3_pressed) 
+      {
           g_key3_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
 
@@ -894,7 +1063,7 @@ void StartDefaultTask(void *argument)
           if (conn_status == HAL_OK) {
               printf("Device detected at I2C address 0x%02X\r\n", EEPROM_ADDRESS);
 
-              // 1. Тест зміни слова (динамічне значення щоразу)
+              // 1. Word Test (dynamic value each time)
               static uint32_t write_counter = 0x11223344;
               write_counter += 0x01010101;
               uint32_t read_val = 0;
@@ -914,7 +1083,7 @@ void StartDefaultTask(void *argument)
                   printf("FAIL (Write error)\r\n");
               }
 
-              // 2. Тест перетину межі 8-байтової сторінки (адреси 0x06..0x0F)
+              // 2. Page boundary crossing test (addresses 0x06..0x0F)
               uint8_t tx_buf[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
               uint8_t rx_buf[10] = {0};
               bool page_cross_ok = true;
@@ -937,33 +1106,65 @@ void StartDefaultTask(void *argument)
               printf("NOT DETECTED (HAL Status: %d)\r\n", conn_status);
           }
 
-          // Перевірка зовнішньої SRAM
+          // External SRAM check
           *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
+
+          // W25QXX Flash Diagnostics
+          printf("\r\n--- [W25QXX Flash Test] ---\r\n");
+          if (w25qxx.ID != 0) {
+              // Використовуємо останній сектор, щоб не затирати потенційну файлову систему в секторі 0
+              uint32_t test_sector = w25qxx.SectorCount - 1;
+              static uint32_t test_run = 0;
+              test_run++;
+
+              uint8_t flash_tx[32];
+              uint8_t flash_rx[32] = {0};
+              snprintf((char*)flash_tx, sizeof(flash_tx), "W25Q Test Run #%lu", test_run);
+
+              printf("Target Sector: %lu (Addr 0x%08lX)\r\n", test_sector, test_sector * w25qxx.SectorSize);
+              printf("Erasing sector... ");
+              W25qxx_EraseSector(test_sector);
+
+              printf("Writing: \"%s\"... ", (char*)flash_tx);
+              W25qxx_WriteSector(flash_tx, test_sector, 0, strlen((char*)flash_tx) + 1);
+
+              W25qxx_ReadSector(flash_rx, test_sector, 0, strlen((char*)flash_tx) + 1);
+
+              if (strcmp((char*)flash_tx, (char*)flash_rx) == 0) {
+                  printf("PASS! Read: \"%s\"\r\n", (char*)flash_rx);
+              } else {
+                  printf("FAIL! Data mismatch\r\n");
+              }
+          } else {
+              printf("Flash not initialized or not detected\r\n");
+          }
+
+          Test_SDCard_FatFS();
       }
 
-      // 1. РЕНДЕРИНГ ГРАДІЄНТА З УРАХУВАННЯМ ВИБРАНОЇ ПАЛІТРИ
+      // 1. GRADIENT RENDERING BASED ON SELECTED PALETTE
       for (int y = 0; y < 240; y++) {
           uint16_t base_color = (y + color_offset) & 0x1F;
           for (int x = 0; x < 320; x++) {
               if (color_scheme == 0) {
-                  // Початковий градієнт
+                  // Initial gradient
                   frame_buffer[y * 320 + x] = (base_color << 11) | (((x >> 2) & 0x3F) << 5) | (x & 0x1F);
               } else if (color_scheme == 1) {
-                  // Вогняний/червоно-жовтий спектр
+                  // Fire/Red-Yellow spectrum
                   frame_buffer[y * 320 + x] = ((x & 0x1F) << 11) | (((y >> 2) & 0x3F) << 5);
               } else {
-                  // Холодний синьо-бірюзовий спектр
+                  // Cold Blue-Cyan spectrum
                   frame_buffer[y * 320 + x] = (((x >> 2) & 0x3F) << 5) | (y & 0x1F);
               }
           }
       }
       color_offset++;
 
-      // Панель статусу поверх зображення
-      LCD_DrawDebugHUD(frame_buffer);
+    // Status panel on top of the image
+    LCD_DrawDebugHUD(frame_buffer);
 
-      // Виведення кадру через DMA
-      LCD_FlushFrameBuffer(frame_buffer, 320 * 240);
+    // Frame output via DMA
+    LCD_FlushFrameBuffer(frame_buffer, 320 * 240);
 
       osDelay(20); 
     }
