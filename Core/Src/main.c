@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
 #include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -58,6 +59,10 @@
 CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
+
+SD_HandleTypeDef hsd;
+DMA_HandleTypeDef hdma_sdio_rx;
+DMA_HandleTypeDef hdma_sdio_tx;
 
 SPI_HandleTypeDef hspi1;
 
@@ -112,6 +117,7 @@ static void MX_FSMC_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_SDIO_SD_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -119,6 +125,7 @@ void SandboxTask(void *argument);
 void MPU_Config_UserSandbox(void);
 void sys_led_toggle(void);
 void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count);
+void Test_SDCard_FatFS(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -269,6 +276,8 @@ int main(void)
   MX_USART3_UART_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
+  MX_SDIO_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   
     // Turn off all LEDs before starting the test (they are active-low, so we use SET)
@@ -298,16 +307,9 @@ int main(void)
     MPU_Config_UserSandbox();
     printf("MPU Sandbox Initialized.\r\n");
 
-        // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
+    // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
     vPortDefineHeapRegions(xHeapRegions);
     printf("Heap_5 Initialized Manually.\r\n");
-
-    // Initialize W25QXX Flash
-    if (W25qxx_Init()) {
-        printf("W25QXX Flash Initialized.\r\n");
-    } else {
-        printf("W25QXX Flash Initialization FAILED.\r\n");
-    }
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -467,6 +469,34 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief SDIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SDIO_SD_Init(void)
+{
+
+  /* USER CODE BEGIN SDIO_Init 0 */
+
+  /* USER CODE END SDIO_Init 0 */
+
+  /* USER CODE BEGIN SDIO_Init 1 */
+
+  /* USER CODE END SDIO_Init 1 */
+  hsd.Instance = SDIO;
+  hsd.Init.ClockEdge = SDIO_CLOCK_EDGE_RISING;
+  hsd.Init.ClockBypass = SDIO_CLOCK_BYPASS_DISABLE;
+  hsd.Init.ClockPowerSave = SDIO_CLOCK_POWER_SAVE_DISABLE;
+  hsd.Init.BusWide = SDIO_BUS_WIDE_1B;
+  hsd.Init.HardwareFlowControl = SDIO_HARDWARE_FLOW_CONTROL_DISABLE;
+  hsd.Init.ClockDiv = 4;
+  /* USER CODE BEGIN SDIO_Init 2 */
+
+  /* USER CODE END SDIO_Init 2 */
+
+}
+
+/**
   * @brief SPI1 Initialization Function
   * @param None
   * @retval None
@@ -489,7 +519,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -567,6 +597,14 @@ static void MX_DMA_Init(void)
     Error_Handler( );
   }
 
+  /* DMA interrupt init */
+  /* DMA2_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
+  /* DMA2_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream6_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
+
 }
 
 /**
@@ -604,13 +642,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, T_CS_Pin|T_MOSI_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(W25_CS_GPIO_Port, W25_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOG, W25_CS_Pin|LD2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DS18B20_GPIO_Port, DS18B20_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : LD0_Pin LD1_Pin */
   GPIO_InitStruct.Pin = LD0_Pin|LD1_Pin;
@@ -871,6 +906,78 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             break;
     }
 }
+
+void Test_SDCard_FatFS(void)
+{
+    // Статичні об'єкти, щоб не перевантажувати стек таски FreeRTOS (кожен займає >500 байт!)
+    static FATFS fs;
+    static FIL fil;
+    FRESULT fr;
+    UINT bytes_written = 0, bytes_read = 0;
+    
+    // DMA вимагає вирівнювання адреси по 4 байти!
+    __attribute__((aligned(4))) static char write_buf[64];
+    __attribute__((aligned(4))) static char read_buf[64];
+    
+    static uint32_t sd_counter = 0;
+    sd_counter++;
+
+    memset(read_buf, 0, sizeof(read_buf));
+
+    printf("\r\n--- [MicroSD Card FatFS Test] ---\r\n");
+
+    // 1. Монтування диска (force mount = 1)
+    fr = f_mount(&fs, SDPath, 1);
+    if (fr != FR_OK) {
+        printf("f_mount FAIL: Error %d\r\n", fr);
+        return;
+    }
+    printf("f_mount: PASS\r\n");
+
+    // 2. Створення/відкриття тестового файлу
+    fr = f_open(&fil, "test.txt", FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
+    if (fr != FR_OK) {
+        printf("f_open FAIL: Error %d\r\n", fr);
+        f_mount(NULL, SDPath, 0);
+        return;
+    }
+
+    // 3. Запис рядка
+    snprintf(write_buf, sizeof(write_buf), "STM32 Console SD Run #%lu\r\n", sd_counter);
+    fr = f_write(&fil, write_buf, strlen(write_buf), &bytes_written);
+    if (fr != FR_OK || bytes_written != strlen(write_buf)) {
+        printf("f_write FAIL: Error %d (wrote %u bytes)\r\n", fr, bytes_written);
+        f_close(&fil);
+        f_mount(NULL, SDPath, 0);
+        return;
+    }
+    printf("f_write: PASS (%u bytes written)\r\n", bytes_written);
+
+    // 4. Синхронізація (скидання кешу на карту перед читанням)
+    f_sync(&fil);
+
+    // 5. Переміщення покажчика на початок і читання назад
+    f_lseek(&fil, 0);
+    fr = f_read(&fil, read_buf, bytes_written, &bytes_read);
+    if (fr != FR_OK || bytes_read != bytes_written) {
+        printf("f_read FAIL: Error %d (read %u bytes)\r\n", fr, bytes_read);
+        f_close(&fil);
+        f_mount(NULL, SDPath, 0);
+        return;
+    }
+
+    // 6. Верифікація
+    if (memcmp(write_buf, read_buf, bytes_written) == 0) {
+        printf("Verification: PASS! Read: \"%s\"\r\n", read_buf);
+    } else {
+        printf("Verification: FAIL! Data mismatch\r\n");
+    }
+
+    // 7. Закриття та розмонтування
+    f_close(&fil);
+    f_mount(NULL, SDPath, 0);
+    printf("MicroSD Test Completed.\r\n");
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -896,6 +1003,13 @@ void StartDefaultTask(void *argument)
     if (frame_buffer == NULL) {
         printf("Malloc error!\r\n");
         while(1);
+    }
+
+    // Initialize W25QXX Flash
+    if (W25qxx_Init()) {
+        printf("W25QXX Flash Initialized.\r\n");
+    } else {
+        printf("W25QXX Flash Initialization FAILED.\r\n");
     }
 
     uint16_t color_offset = 0;
@@ -938,7 +1052,8 @@ void StartDefaultTask(void *argument)
       }
 
       // KEY3 processing: EEPROM (AT24C02) and external SRAM test
-      if (g_key3_pressed) {
+      if (g_key3_pressed) 
+      {
           g_key3_pressed = 0;
           led0_turnoff_tick = HAL_GetTick() + 100;
 
@@ -994,23 +1109,37 @@ void StartDefaultTask(void *argument)
           // External SRAM check
           *(volatile uint16_t*)EXTERNAL_SRAM_BASE = 0xA5A5;
 
-          // W25QXX Flash Quick Test
+          // W25QXX Flash Diagnostics
           printf("\r\n--- [W25QXX Flash Test] ---\r\n");
           if (w25qxx.ID != 0) {
-              uint8_t flash_tx[16] = "Flash Test OK!";
-              uint8_t flash_rx[16] = {0};
-              printf("Writing to Sector 0... ");
-              W25qxx_EraseSector(0);
-              W25qxx_WriteSector(flash_tx, 0, 0, 16);
-              W25qxx_ReadSector(flash_rx, 0, 0, 16);
-              if (memcmp(flash_tx, flash_rx, 16) == 0) {
-                  printf("PASS: %s\r\n", (char*)flash_rx);
+              // Використовуємо останній сектор, щоб не затирати потенційну файлову систему в секторі 0
+              uint32_t test_sector = w25qxx.SectorCount - 1;
+              static uint32_t test_run = 0;
+              test_run++;
+
+              uint8_t flash_tx[32];
+              uint8_t flash_rx[32] = {0};
+              snprintf((char*)flash_tx, sizeof(flash_tx), "W25Q Test Run #%lu", test_run);
+
+              printf("Target Sector: %lu (Addr 0x%08lX)\r\n", test_sector, test_sector * w25qxx.SectorSize);
+              printf("Erasing sector... ");
+              W25qxx_EraseSector(test_sector);
+
+              printf("Writing: \"%s\"... ", (char*)flash_tx);
+              W25qxx_WriteSector(flash_tx, test_sector, 0, strlen((char*)flash_tx) + 1);
+
+              W25qxx_ReadSector(flash_rx, test_sector, 0, strlen((char*)flash_tx) + 1);
+
+              if (strcmp((char*)flash_tx, (char*)flash_rx) == 0) {
+                  printf("PASS! Read: \"%s\"\r\n", (char*)flash_rx);
               } else {
-                  printf("FAIL: Data mismatch\r\n");
+                  printf("FAIL! Data mismatch\r\n");
               }
           } else {
-              printf("Flash not ready\r\n");
+              printf("Flash not initialized or not detected\r\n");
           }
+
+          Test_SDCard_FatFS();
       }
 
       // 1. GRADIENT RENDERING BASED ON SELECTED PALETTE
