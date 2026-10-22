@@ -3,7 +3,8 @@ mx.scratch
 !.settings
 
 # Build Folders CMake / Ninja / VS Code
-Libs/
+# Libs/
+Libs/lvgl/src
 build/
 Middlewares/
 cmake/
