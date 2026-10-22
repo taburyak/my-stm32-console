@@ -15,10 +15,10 @@ static POST_Report_t post_report = {0};
 
 /* External function prototype from display driver */
 extern uint16_t lcdReadID(void);
+extern char SDPath[4];
 
 /**
  * @brief Non-destructive fast memory test for CCM RAM
-
  */
 static bool Test_CCMRAM(void) {
     volatile uint32_t *ptr = (volatile uint32_t *)CCMRAM_BASE_ADDR;
@@ -126,14 +126,13 @@ POST_Status_t POST_RunSelfTest(void) {
         }
     }
 
-        /* 4. Test FatFs SD Card Mount */
+    /* 4. Test FatFs SD Card Mount */
     FATFS fatfs_obj;
-    FRESULT fres = f_mount(&fatfs_obj, "", 1);
+    FRESULT fres = f_mount(&fatfs_obj, SDPath, 1);
     post_report.sd_ok = (fres == FR_OK);
     if (post_report.sd_ok) {
-        f_mount(NULL, "", 0); /* Mandatory: unregister local stack object */
+        f_mount(NULL, SDPath, 0); /* Mandatory: unregister local stack object */
     }
-
 
     /* 5. Test I2C EEPROM (AT24C02) */
     post_report.eeprom_ok = Test_EEPROM();
