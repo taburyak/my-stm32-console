@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "usbh_hid_keybd.h"
+#include "usb_host_manager.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
@@ -62,29 +63,9 @@ static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
  * -- Insert your external function declaration here --
  */
 /* USER CODE BEGIN 1 */
-  /**
-    * @brief  HID Event Callback (called automatically on key press/release)
-    * @param  phost: Pointer to USB Host handle
-    * @retval None
-    */
-void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
+  void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
 {
-  if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
-  {
-    HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
-    if (k_pinfo != NULL)
-    {
-      // If key is pressed (not an empty release packet)
-      if (k_pinfo->keys[0] != 0)
-      {
-        g_usb_last_scancode = k_pinfo->keys[0];
-        g_usb_last_ascii    = USBH_HID_GetASCIICode(k_pinfo);
-        g_usb_key_count++;
-
-        // Toggle LD0 LED on every press!
-      }
-    }
-  }
+  USBHostManager_ProcessUserCallback(phost, id);
 }
 /* USER CODE END 1 */
 

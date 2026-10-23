@@ -98,6 +98,16 @@ static bool Test_SPI_Flash(uint32_t *out_id)
     return ((flash_id & 0xFF0000) == 0xEF0000) || (flash_id != 0 && flash_id != 0xFFFFFFFF);
 }
 
+static bool Test_USB_Host(void)
+{
+    /* Check whether the clock is enabled and whether the USB_OTG_FS peripheral block is responding */
+    if ((RCC->AHB2ENR & RCC_AHB2ENR_OTGFSEN) && (USB_OTG_FS->GINTSTS != 0xFFFFFFFF))
+    {
+        return true;
+    }
+    return false;
+}
+
 POST_Status_t POST_RunSelfTest(void)
 {
     memset(&post_report, 0, sizeof(POST_Report_t));
@@ -152,8 +162,11 @@ POST_Status_t POST_RunSelfTest(void)
     /* 6. Test SPI Flash (W25Q128) */
     post_report.flash_ok = Test_SPI_Flash(&post_report.flash_id);
 
+    /* 7. Test USB Host Controller */
+    post_report.usb_host_ok = Test_USB_Host();
+
     /* Set warning flag if non-critical peripherals are missing */
-    if (overall_status == POST_OK && (!post_report.sd_ok || !post_report.eeprom_ok || !post_report.flash_ok))
+    if (overall_status == POST_OK && (!post_report.sd_ok || !post_report.eeprom_ok || !post_report.flash_ok || !post_report.usb_host_ok))
     {
         overall_status = POST_WARN_OPTIONAL;
     }
@@ -231,6 +244,8 @@ void POST_PrintSummary(void)
     {
         printf("[POST][WARN] SPI Flash:      Not Detected (Fallback to SD)\r\n");
     }
+
+    printf("  USB Host Peripheral : %s\r\n", post_report.usb_host_ok ? "OK" : "WARN (Not Detected)");
 
     printf("========================================\r\n\r\n");
 }

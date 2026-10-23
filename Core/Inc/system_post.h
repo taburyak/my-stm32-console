@@ -32,6 +32,7 @@ typedef struct {
     bool     sd_ok;          /* FatFs SD Card mount status */
     bool     eeprom_ok;      /* AT24C02 I2C EEPROM status */
     bool     flash_ok;       /* W25Q128 SPI Flash status */
+    bool     usb_host_ok;    /* USB Host subsystem status */
     uint32_t sram_size_kb;   /* Verified SRAM size in KB */
     uint16_t display_id;     /* Display Chip ID (Expected: 0x9341) */
     uint32_t flash_id;       /* SPI Flash JEDEC ID (Expected: 0xEF4018) */

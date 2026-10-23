@@ -38,6 +38,7 @@
 #include "system_post.h"
 #include "sram_ext.h"
 #include "sdcard_fatfs.h"
+#include "usb_host_manager.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -104,10 +105,6 @@ const HeapRegion_t xHeapRegions[] = {
 uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
 
 extern ApplicationTypeDef Appli_state;
-extern volatile uint8_t  g_usb_last_scancode;
-extern volatile uint8_t  g_usb_last_ascii;
-extern volatile uint32_t g_usb_key_count;
-extern volatile uint8_t  g_usb_kbd_ready;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -847,6 +844,8 @@ void StartDefaultTask(void *argument)
   lcdInit();
   lcdBacklightOn();
   lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
+  USBHostManager_Init();
+  printf("[INIT] USB Host Manager Ready.\r\n");
 
   /* 3. Output diagnostic report to UART3 terminal */
   POST_PrintSummary();
@@ -950,6 +949,14 @@ void StartDefaultTask(void *argument)
 
     /* 4. LVGL Graphics Processing */
     lv_timer_handler();
+
+    /* Process USB Keyboard Input */
+    char kbd_char;
+    if (USBHostManager_GetKey(&kbd_char))
+    {
+        printf("[USB KBD] Typed character: '%c' (ASCII: %d)\r\n", kbd_char, (int)kbd_char);
+        Beeper_Click();
+    }
 
     /* 5. Pause 5ms to release OS time slices */
     osDelay(5);
