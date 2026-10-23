@@ -97,8 +97,7 @@ const osThreadAttr_t sandboxTask_attributes = {
 /* Define an array for the internal part of the heap */
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 */
-const HeapRegion_t xHeapRegions[] =
-{
+const HeapRegion_t xHeapRegions[] = {
     { ucHeapInternal, INTERNAL_HEAP_SIZE },                // Region 1: Internal SRAM (~0x20000000)
     { (uint8_t *)EXTERNAL_SRAM_BASE, EXTERNAL_SRAM_SIZE }, // Region 2: External SRAM (0x68000000)
     { NULL, 0 }                                            // The Terminator
@@ -137,7 +136,7 @@ void Init_SDCard_FileSystem(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// Redirecting `printf` for GCC and Picolibc (CMake toolchain)
+/* Redirecting `printf` for GCC and Picolibc (CMake toolchain) */
 int __io_putchar(int ch)
 {
     HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
@@ -150,7 +149,7 @@ int _write(int file, char *ptr, int len)
     return len;
 }
 
-// Call Cover LCD Supervisor Call (SVC) with a code 1
+/* Call Cover LCD Supervisor Call (SVC) with a code 1 */
 __attribute__((always_inline)) inline void sys_led_toggle(void)
 {
     __asm volatile("svc #1");
@@ -163,32 +162,34 @@ void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
 {
     lcdSetWindow(0, 0, 319, 239);
 
-    // We tell the ILI9341 controller that pixels are coming next (0x2C - RAMWR)
+    /* We tell the ILI9341 controller that pixels are coming next (0x2C - RAMWR) */
     *(volatile uint16_t*)LCD_DMA_CMD_ADDR = 0x002C;
 
     uint32_t transferred = 0;
-    while (pixels_count > 0) {
-        // The STM32F4 DMA can transfer a maximum of 65,535 elements at a time
-        uint32_t chunk = (pixels_count > 60000) ? 60000 : pixels_count;
+    while (pixels_count > 0)
+    {
+      /* The STM32F4 DMA can transfer a maximum of 65,535 elements at a time */
+      uint32_t chunk = (pixels_count > 60000) ? 60000 : pixels_count;
 
-        HAL_DMA_Start(&hdma_memtomem_dma2_stream0, (uint32_t)(buffer + transferred), LCD_DMA_DATA_ADDR, chunk);
-        HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
+      HAL_DMA_Start(&hdma_memtomem_dma2_stream0, (uint32_t)(buffer + transferred), LCD_DMA_DATA_ADDR, chunk);
+      HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
 
-        transferred += chunk;
-        pixels_count -= chunk;
+      transferred += chunk;
+      pixels_count -= chunk;
     }
 }
 
 static void list_btn_event_cb(lv_event_t * e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    lv_obj_t * obj = lv_event_get_target(e);
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t * obj = lv_event_get_target(e);
 
-    if (code == LV_EVENT_CLICKED) {
-        const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
-        printf("[File Selected]: %s\r\n", file_name);
-        HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
-    }
+  if (code == LV_EVENT_CLICKED)
+  {
+    const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
+    printf("[File Selected]: %s\r\n", file_name);
+    HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
+  }
 }
 
 /**
@@ -196,41 +197,44 @@ static void list_btn_event_cb(lv_event_t * e)
  */
 static void Create_File_List(lv_obj_t *parent, const char *path)
 {
-    lv_obj_t * list = lv_list_create(parent);
-    lv_obj_set_size(list, 300, 210);
-    lv_obj_align(list, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_t * list = lv_list_create(parent);
+  lv_obj_set_size(list, 300, 210);
+  lv_obj_align(list, LV_ALIGN_CENTER, 0, 0);
 
-    char title_buf[64];
-    snprintf(title_buf, sizeof(title_buf), "Folder: %s", path);
-    lv_list_add_text(list, title_buf);
+  char title_buf[64];
+  snprintf(title_buf, sizeof(title_buf), "Folder: %s", path);
+  lv_list_add_text(list, title_buf);
 
-    DIR dir;
-    static FILINFO fno;
-    FRESULT fr = f_opendir(&dir, path);
+  DIR dir;
+  static FILINFO fno;
+  FRESULT fr = f_opendir(&dir, path);
 
-    if (fr != FR_OK) {
-        printf("f_opendir FAIL: Error %d for %s\r\n", fr, path);
-        lv_list_add_text(list, "Failed to open directory");
-        return;
-    }
+  if (fr != FR_OK)
+  {
+    printf("f_opendir FAIL: Error %d for %s\r\n", fr, path);
+    lv_list_add_text(list, "Failed to open directory");
+    return;
+  }
 
-    uint32_t count = 0;
-    while (1) {
-        fr = f_readdir(&dir, &fno);
-        if (fr != FR_OK || fno.fname[0] == 0) break;
+  uint32_t count = 0;
+  while (1)
+  {
+    fr = f_readdir(&dir, &fno);
+    if (fr != FR_OK || fno.fname[0] == 0) break;
 
-        const char *icon = (fno.fattrib & AM_DIR) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
+    const char *icon = (fno.fattrib & AM_DIR) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
 
-        lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
-        lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
-        count++;
-    }
+    lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
+    lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    count++;
+  }
 
-    f_closedir(&dir);
+  f_closedir(&dir);
 
-    if (count == 0) {
-        lv_list_add_text(list, "(Empty directory)");
-    }
+  if (count == 0)
+  {
+    lv_list_add_text(list, "(Empty directory)");
+  }
 }
 
 /* USER CODE END 0 */
@@ -783,146 +787,153 @@ static void MX_FSMC_Init(void)
 /* USER CODE BEGIN 4 */
 void MPU_Config_UserSandbox(void)
 {
-    MPU_Region_InitTypeDef MPU_InitStruct = {0};
+  MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
-    // Turn off the MPU while configuring it
-    HAL_MPU_Disable();
+  // Turn off the MPU while configuring it
+  HAL_MPU_Disable();
 
-    // Region 0: Flash Memory (Code) - Read-only and executable
-    MPU_InitStruct.Enable = MPU_REGION_ENABLE;
-    MPU_InitStruct.Number = MPU_REGION_NUMBER0;
-    MPU_InitStruct.BaseAddress = 0x08000000;
-    MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
-    MPU_InitStruct.SubRegionDisable = 0x0;
-    MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
-    MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO_URO; // Read-only for all
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE; // Executable
-    MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
-    MPU_InitStruct.IsCacheable = MPU_ACCESS_CACHEABLE;
-    MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
-    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  // Region 0: Flash Memory (Code) - Read-only and executable
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER0;
+  MPU_InitStruct.BaseAddress = 0x08000000;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
+  MPU_InitStruct.SubRegionDisable = 0x0;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RO_URO; // Read-only for all
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE; // Executable
+  MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_CACHEABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-    // Region 1: Internal SRAM (Stacks and Variables) - Read and Write
-    MPU_InitStruct.Number = MPU_REGION_NUMBER1;
-    MPU_InitStruct.BaseAddress = 0x20000000;
-    MPU_InitStruct.Size = MPU_REGION_SIZE_128KB;
-    MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
-    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  // Region 1: Internal SRAM (Stacks and Variables) - Read and Write
+  MPU_InitStruct.Number = MPU_REGION_NUMBER1;
+  MPU_InitStruct.BaseAddress = 0x20000000;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_128KB;
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-    // Region 2: External SRAM (Sandbox) — Read, Write, Execute
-    MPU_InitStruct.Number = MPU_REGION_NUMBER2;
-    MPU_InitStruct.BaseAddress = 0x68000000;
-    MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
-    MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
-    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  // Region 2: External SRAM (Sandbox) — Read, Write, Execute
+  MPU_InitStruct.Number = MPU_REGION_NUMBER2;
+  MPU_InitStruct.BaseAddress = 0x68000000;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-    // Enable the MPU. The background region will allow the kernel to access the peripherals (0x40000000)
-    // But our task (via tag 1) won't have access there!
-    HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+  // Enable the MPU. The background region will allow the kernel to access the peripherals (0x40000000)
+  // But our task (via tag 1) won't have access there!
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }
 
 void SandboxTask(void *argument)
 {
-    // This task will run in Unprivileged Mode!
-    for(;;)
-    {
-        // 1. SAFE CALL: We don't access the registers directly; instead, we make a request to the kernel via SVC
-        sys_led_toggle(); // LD2 should be flashing
+  // This task will run in Unprivileged Mode!
+  for(;;)
+  {
+    // 1. SAFE CALL: We don't access the registers directly; instead, we make a request to the kernel via SVC
+    sys_led_toggle(); // LD2 should be flashing
 
-        // Since the task is unprivileged, the standard osDelay/vTaskDelay may cause an error,
-        // if it attempts to access kernel variables that the MPU has restricted access to.
-        // Therefore, we create an artificial delay using a loop:
-        for(volatile uint32_t i = 0; i < 2000000; i++) {}
+    // Since the task is unprivileged, the standard osDelay/vTaskDelay may cause an error,
+    // if it attempts to access kernel variables that the MPU has restricted access to.
+    // Therefore, we create an artificial delay using a loop:
+    for(volatile uint32_t i = 0; i < 2000000; i++) {}
 
-        // 2. PROTECTION DEMONSTRATION:
-        // Uncomment the line below. This is direct access to the GPIO peripherals.
-        // Since we are in the Sandbox, this call SHOULD trigger a MemManage Fault (HardFault)!
+    // 2. PROTECTION DEMONSTRATION:
+    // Uncomment the line below. This is direct access to the GPIO peripherals.
+    // Since we are in the Sandbox, this call SHOULD trigger a MemManage Fault (HardFault)!
 
-        // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    }
+    // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+  }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    /* Filter interrupts: process ONLY our 4 buttons KEY_0..KEY_3 */
-    if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin ||
-        GPIO_Pin == KEY_2_Pin || GPIO_Pin == KEY_3_Pin)
-    {
-        Buttons_EXTI_Callback(GPIO_Pin);
-    }
+  /* Filter interrupts: process ONLY our 4 buttons KEY_0..KEY_3 */
+  if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin ||
+      GPIO_Pin == KEY_2_Pin || GPIO_Pin == KEY_3_Pin)
+  {
+      Buttons_EXTI_Callback(GPIO_Pin);
+  }
 }
 
 void Test_SDCard_FatFS(void)
 {
-    // Static objects to avoid overflowing FreeRTOS stack (each takes >500 bytes!)
-    static FATFS fs;
-    static FIL fil;
-    FRESULT fr;
-    UINT bytes_written = 0, bytes_read = 0;
+  // Static objects to avoid overflowing FreeRTOS stack (each takes >500 bytes!)
+  static FATFS fs;
+  static FIL fil;
+  FRESULT fr;
+  UINT bytes_written = 0, bytes_read = 0;
 
-    // DMA requires 4-byte address alignment!
-    __attribute__((aligned(4))) static char write_buf[64];
-    __attribute__((aligned(4))) static char read_buf[64];
+  // DMA requires 4-byte address alignment!
+  __attribute__((aligned(4))) static char write_buf[64];
+  __attribute__((aligned(4))) static char read_buf[64];
 
-    static uint32_t sd_counter = 0;
-    sd_counter++;
+  static uint32_t sd_counter = 0;
+  sd_counter++;
 
-    memset(read_buf, 0, sizeof(read_buf));
+  memset(read_buf, 0, sizeof(read_buf));
 
-    printf("\r\n--- [MicroSD Card FatFS Test] ---\r\n");
+  printf("\r\n--- [MicroSD Card FatFS Test] ---\r\n");
 
-    // 1. Mount disk (force mount = 1)
-    fr = f_mount(&fs, SDPath, 1);
-    if (fr != FR_OK) {
-        printf("f_mount FAIL: Error %d\r\n", fr);
-        return;
-    }
-    printf("f_mount: PASS\r\n");
+  // 1. Mount disk (force mount = 1)
+  fr = f_mount(&fs, SDPath, 1);
+  if (fr != FR_OK)
+  {
+      printf("f_mount FAIL: Error %d\r\n", fr);
+      return;
+  }
+  printf("f_mount: PASS\r\n");
 
-    // 2. Create/open test file
-    fr = f_open(&fil, "test.txt", FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
-    if (fr != FR_OK) {
-        printf("f_open FAIL: Error %d\r\n", fr);
-        f_mount(NULL, SDPath, 0);
-        return;
-    }
+  // 2. Create/open test file
+  fr = f_open(&fil, "test.txt", FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
+  if (fr != FR_OK)
+  {
+      printf("f_open FAIL: Error %d\r\n", fr);
+      f_mount(NULL, SDPath, 0);
+      return;
+  }
 
-    // 3. Write string
-    snprintf(write_buf, sizeof(write_buf), "STM32 Console SD Run #%lu\r\n", sd_counter);
-    fr = f_write(&fil, write_buf, strlen(write_buf), &bytes_written);
-    if (fr != FR_OK || bytes_written != strlen(write_buf)) {
-        printf("f_write FAIL: Error %d (wrote %u bytes)\r\n", fr, bytes_written);
-        f_close(&fil);
-        f_mount(NULL, SDPath, 0);
-        return;
-    }
-    printf("f_write: PASS (%u bytes written)\r\n", bytes_written);
+  // 3. Write string
+  snprintf(write_buf, sizeof(write_buf), "STM32 Console SD Run #%lu\r\n", sd_counter);
+  fr = f_write(&fil, write_buf, strlen(write_buf), &bytes_written);
+  if (fr != FR_OK || bytes_written != strlen(write_buf))
+  {
+      printf("f_write FAIL: Error %d (wrote %u bytes)\r\n", fr, bytes_written);
+      f_close(&fil);
+      f_mount(NULL, SDPath, 0);
+      return;
+  }
+  printf("f_write: PASS (%u bytes written)\r\n", bytes_written);
 
-    // 4. Sync (flush cache to card before reading)
-    f_sync(&fil);
+  // 4. Sync (flush cache to card before reading)
+  f_sync(&fil);
 
-    // 5. Seek to start and read back
-    f_lseek(&fil, 0);
-    fr = f_read(&fil, read_buf, bytes_written, &bytes_read);
-    if (fr != FR_OK || bytes_read != bytes_written) {
-        printf("f_read FAIL: Error %d (read %u bytes)\r\n", fr, bytes_read);
-        f_close(&fil);
-        f_mount(NULL, SDPath, 0);
-        return;
-    }
-
-    // 6. Verification
-    if (memcmp(write_buf, read_buf, bytes_written) == 0) {
-        printf("Verification: PASS! Read: \"%s\"\r\n", read_buf);
-    } else {
-        printf("Verification: FAIL! Data mismatch\r\n");
-    }
-
-    // 7. Close and unmount
+  // 5. Seek to start and read back
+  f_lseek(&fil, 0);
+  fr = f_read(&fil, read_buf, bytes_written, &bytes_read);
+  if (fr != FR_OK || bytes_read != bytes_written)
+  {
+    printf("f_read FAIL: Error %d (read %u bytes)\r\n", fr, bytes_read);
     f_close(&fil);
     f_mount(NULL, SDPath, 0);
-    printf("MicroSD Test Completed.\r\n");
+    return;
+  }
+
+  // 6. Verification
+  if (memcmp(write_buf, read_buf, bytes_written) == 0)
+  {
+      printf("Verification: PASS! Read: \"%s\"\r\n", read_buf);
+  }
+  else
+  {
+      printf("Verification: FAIL! Data mismatch\r\n");
+  }
+
+  // 7. Close and unmount
+  f_close(&fil);
+  f_mount(NULL, SDPath, 0);
+  printf("MicroSD Test Completed.\r\n");
 }
 
 
@@ -931,55 +942,62 @@ void Test_SDCard_FatFS(void)
  */
 void Init_SDCard_FileSystem(void)
 {
-    static FATFS fs;
-    FRESULT fr;
-    static FILINFO fno;
+  static FATFS fs;
+  FRESULT fr;
+  static FILINFO fno;
 
-    const char *required_dirs[] = {
-        "system",
-        "games",
-        "assets",
-        "saves"
-    };
+  const char *required_dirs[] = {
+      "system",
+      "games",
+      "assets",
+      "saves"
+  };
 
-    printf("\r\n--- [SD Card Directory Initialization] ---\r\n");
+  printf("\r\n--- [SD Card Directory Initialization] ---\r\n");
 
-    // 1. Mount SD Card
-    fr = f_mount(&fs, SDPath, 1);
-    if (fr != FR_OK) {
-        printf("f_mount FAIL: Error %d\r\n", fr);
-        return;
-    }
-    printf("SD Card Mounted Successfully.\r\n");
+  // 1. Mount SD Card
+  fr = f_mount(&fs, SDPath, 1);
+  if (fr != FR_OK)
+  {
+      printf("f_mount FAIL: Error %d\r\n", fr);
+      return;
+  }
+  printf("SD Card Mounted Successfully.\r\n");
 
-    // 2. Check and create required directories
-    for (size_t i = 0; i < sizeof(required_dirs) / sizeof(required_dirs[0]); i++)
-    {
-        fr = f_stat(required_dirs[i], &fno);
-        if (fr == FR_NO_FILE)
+  // 2. Check and create required directories
+  for (size_t i = 0; i < sizeof(required_dirs) / sizeof(required_dirs[0]); i++)
+  {
+      fr = f_stat(required_dirs[i], &fno);
+      if (fr == FR_NO_FILE)
+      {
+        fr = f_mkdir(required_dirs[i]);
+        if (fr == FR_OK)
         {
-            fr = f_mkdir(required_dirs[i]);
-            if (fr == FR_OK) {
-                printf("Created directory: /%s\r\n", required_dirs[i]);
-            } else {
-                printf("Failed to create /%s (Error %d)\r\n", required_dirs[i], fr);
-            }
-        }
-        else if (fr == FR_OK)
-        {
-            if (fno.fattrib & AM_DIR) {
-                printf("Directory exists: /%s\r\n", required_dirs[i]);
-            } else {
-                printf("Warning: /%s exists but is a file!\r\n", required_dirs[i]);
-            }
+            printf("Created directory: /%s\r\n", required_dirs[i]);
         }
         else
         {
-            printf("Error checking /%s (Code %d)\r\n", required_dirs[i], fr);
+            printf("Failed to create /%s (Error %d)\r\n", required_dirs[i], fr);
         }
-    }
+      }
+      else if (fr == FR_OK)
+      {
+        if (fno.fattrib & AM_DIR)
+        {
+          printf("Directory exists: /%s\r\n", required_dirs[i]);
+        }
+        else
+        {
+          printf("Warning: /%s exists but is a file!\r\n", required_dirs[i]);
+        }
+      }
+      else
+      {
+        printf("Error checking /%s (Code %d)\r\n", required_dirs[i], fr);
+      }
+  }
 
-    printf("SD Directory Structure Ready.\r\n");
+  printf("SD Directory Structure Ready.\r\n");
 }
 /* USER CODE END 4 */
 
@@ -1036,11 +1054,11 @@ void StartDefaultTask(void *argument)
   // Initialize W25QXX Flash
   if (W25qxx_Init())
   {
-      printf("[INIT] W25QXX Flash Ready.\r\n");
+    printf("[INIT] W25QXX Flash Ready.\r\n");
   }
   else
   {
-      printf("[INIT] W25QXX Flash FAILED.\r\n");
+    printf("[INIT] W25QXX Flash FAILED.\r\n");
   }
 
   /* --- SD Card structure initialization --- */
@@ -1053,9 +1071,6 @@ void StartDefaultTask(void *argument)
 
   /* Create file list from root directory */
   Create_File_List(lv_scr_act(), "/");
-
-  /* Process Beeper state */
-  // Beeper_BootMelody();
 
   uint32_t last_heartbeat_tick = 0;
   Button_Message_t btn_msg;
@@ -1107,8 +1122,8 @@ void StartDefaultTask(void *argument)
     /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
     if ((HAL_GetTick() - last_heartbeat_tick) >= 500)
     {
-        last_heartbeat_tick = HAL_GetTick();
-        StatusLED_Toggle(STATUS_LED_HEARTBEAT);
+      last_heartbeat_tick = HAL_GetTick();
+      StatusLED_Toggle(STATUS_LED_HEARTBEAT);
     }
 
     /* 4. LVGL Graphics Processing */
@@ -1117,35 +1132,6 @@ void StartDefaultTask(void *argument)
     /* 5. Pause 5ms to release OS time slices */
     osDelay(5);
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   /* USER CODE END 5 */
 }
 
@@ -1167,7 +1153,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-    lv_tick_inc(1);
+  lv_tick_inc(1);
   /* USER CODE END Callback 1 */
 }
 

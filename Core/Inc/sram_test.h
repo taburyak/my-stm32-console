@@ -15,12 +15,12 @@
 
 /**
  * @brief Runs a full diagnostic suite on the external SRAM
- * 
+ *
  * Performs:
  * 1. Data Bus Test (Walking 1s)
  * 2. Address Bus Test (Aliasing check)
  * 3. Full Device Test (PRBS data integrity across whole chip)
- * 
+ *
  * @return true if all tests pass, false if any error is detected.
  */
 bool SRAM_RunFullDiagnostics(void);

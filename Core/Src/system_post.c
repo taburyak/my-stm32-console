@@ -20,7 +20,8 @@ extern char SDPath[4];
 /**
  * @brief Non-destructive fast memory test for CCM RAM
  */
-static bool Test_CCMRAM(void) {
+static bool Test_CCMRAM(void) 
+{
     volatile uint32_t *ptr = (volatile uint32_t *)CCMRAM_BASE_ADDR;
     
     /* Save original data */
@@ -44,7 +45,8 @@ static bool Test_CCMRAM(void) {
 /**
  * @brief Non-destructive boundary memory test for FSMC External SRAM
  */
-static bool Test_SRAM(void) {
+static bool Test_SRAM(void) 
+{
     volatile uint16_t *ptr = (volatile uint16_t *)SRAM_BASE_ADDR;
     uint32_t last_word_offset = (SRAM_SIZE_BYTES / 2) - 1;
 
@@ -79,49 +81,58 @@ static bool Test_SRAM(void) {
 /**
  * @brief Test I2C EEPROM (AT24C02) presence
  */
-static bool Test_EEPROM(void) {
+static bool Test_EEPROM(void) 
+{
     return (AT24Cxx_IsConnected() == HAL_OK);
 }
 
 /**
  * @brief Test SPI Flash (W25Q128) presence and JEDEC ID
  */
-static bool Test_SPI_Flash(uint32_t *out_id) {
+static bool Test_SPI_Flash(uint32_t *out_id) 
+{
     uint32_t flash_id = W25qxx_ReadID();
     if (out_id) *out_id = flash_id;
 
-
     /* Valid W25Q128 JEDEC ID starts with Winbond manufacturer byte 0xEF */
-    return ((flash_id & 0xFF0000) == 0xEF0000) || 
-           (flash_id != 0 && flash_id != 0xFFFFFFFF);
+    return ((flash_id & 0xFF0000) == 0xEF0000) || (flash_id != 0 && flash_id != 0xFFFFFFFF);
 }
 
-POST_Status_t POST_RunSelfTest(void) {
+POST_Status_t POST_RunSelfTest(void) 
+{
     memset(&post_report, 0, sizeof(POST_Report_t));
     POST_Status_t overall_status = POST_OK;
 
     /* 1. Test FSMC External SRAM (Non-destructive) */
     post_report.sram_ok = Test_SRAM();
-    if (post_report.sram_ok) {
+    if (post_report.sram_ok) 
+    {
         post_report.sram_size_kb = 1024;
-    } else {
+    } 
+    else 
+    {
         overall_status = POST_ERR_SRAM;
     }
 
     /* 2. Test CCM RAM (Non-destructive) */
     post_report.ccmram_ok = Test_CCMRAM();
-    if (!post_report.ccmram_ok && overall_status == POST_OK) {
+    if (!post_report.ccmram_ok && overall_status == POST_OK) 
+    {
         overall_status = POST_ERR_CCMRAM;
     }
 
     /* 3. Check ILI9341 Display Chip ID (Strict: MUST be 0x9341) */
     post_report.display_id = lcdReadID();
-    if (post_report.display_id == 0x9341) {
+    if (post_report.display_id == 0x9341) 
+    {
 
         post_report.display_ok = true;
-    } else {
+    } 
+    else 
+    {
         post_report.display_ok = false;
-        if (overall_status == POST_OK) {
+        if (overall_status == POST_OK) 
+        {
             overall_status = POST_ERR_DISPLAY;
         }
     }
@@ -130,7 +141,8 @@ POST_Status_t POST_RunSelfTest(void) {
     FATFS fatfs_obj;
     FRESULT fres = f_mount(&fatfs_obj, SDPath, 1);
     post_report.sd_ok = (fres == FR_OK);
-    if (post_report.sd_ok) {
+    if (post_report.sd_ok) 
+    {
         f_mount(NULL, SDPath, 0); /* Mandatory: unregister local stack object */
     }
 
@@ -141,61 +153,82 @@ POST_Status_t POST_RunSelfTest(void) {
     post_report.flash_ok = Test_SPI_Flash(&post_report.flash_id);
 
     /* Set warning flag if non-critical peripherals are missing */
-    if (overall_status == POST_OK && (!post_report.sd_ok || !post_report.eeprom_ok || !post_report.flash_ok)) {
+    if (overall_status == POST_OK && (!post_report.sd_ok || !post_report.eeprom_ok || !post_report.flash_ok)) 
+    {
         overall_status = POST_WARN_OPTIONAL;
     }
 
     return overall_status;
 }
 
-const POST_Report_t* POST_GetReport(void) {
+const POST_Report_t* POST_GetReport(void) 
+{
     return &post_report;
 }
 
-void POST_PrintSummary(void) {
+void POST_PrintSummary(void) 
+{
     printf("\r\n========================================\r\n");
     printf("     POWER-ON SELF-TEST (POST) REPORT   \r\n");
     printf("========================================\r\n");
 
     /* SRAM status */
-    if (post_report.sram_ok) {
+    if (post_report.sram_ok) 
+    {
         printf("[POST][OK]   FSMC SRAM: %lu KB PASS\r\n", (unsigned long)post_report.sram_size_kb);
-    } else {
+    } 
+    else 
+    {
         printf("[POST][FAIL] FSMC SRAM: Test Failed!\r\n");
     }
 
     /* CCM RAM status */
-    if (post_report.ccmram_ok) {
+    if (post_report.ccmram_ok) 
+    {
         printf("[POST][OK]   CCM RAM:   64 KB PASS\r\n");
-    } else {
+    } 
+    else 
+    {
         printf("[POST][FAIL] CCM RAM:   Test Failed!\r\n");
     }
 
     /* Display status */
-    if (post_report.display_ok) {
+    if (post_report.display_ok) 
+    {
         printf("[POST][OK]   ILI9341 Display ID: 0x%04X PASS\r\n", post_report.display_id);
-    } else {
+    } 
+    else 
+    {
         printf("[POST][FAIL] ILI9341 Display ID: 0x%04X FAIL (Expected 0x9341)\r\n", post_report.display_id);
     }
 
     /* SD Card status */
-    if (post_report.sd_ok) {
+    if (post_report.sd_ok) 
+    {
         printf("[POST][OK]   SD Card:   Mounted PASS\r\n");
-    } else {
+    } 
+    else 
+    {
         printf("[POST][WARN] SD Card:   Not Mounted / Missing\r\n");
     }
 
     /* EEPROM status */
-    if (post_report.eeprom_ok) {
+    if (post_report.eeprom_ok) 
+    {
         printf("[POST][OK]   EEPROM AT24C02:  Detected PASS\r\n");
-    } else {
+    } 
+    else 
+    {
         printf("[POST][WARN] EEPROM AT24C02:  Not Detected (Using Defaults)\r\n");
     }
 
     /* SPI Flash status */
-    if (post_report.flash_ok) {
+    if (post_report.flash_ok) 
+    {
         printf("[POST][OK]   SPI Flash:      ID 0x%06X PASS\r\n", (unsigned int)post_report.flash_id);
-    } else {
+    } 
+    else 
+    {
         printf("[POST][WARN] SPI Flash:      Not Detected (Fallback to SD)\r\n");
     }
 
