@@ -6,9 +6,6 @@
 /* External handles and addresses declared in main.c */
 extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 
-#define LCD_DMA_CMD_ADDR   (LCD_BASE0)
-#define LCD_DMA_DATA_ADDR  (LCD_BASE1)
-
 /* Buffer for rendering on 40 rows (320 * 40 * 2 bytes = 25.6 KB) */
 #define MY_DISP_HOR_RES    320
 #define MY_DISP_VER_RES    240
@@ -26,30 +23,13 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
     uint32_t height = area->y2 - area->y1 + 1;
     uint32_t pixels_count = width * height;
 
-    /* 1. Set the coordinates of the rectangle on the display */
+    /* 1. Set the active update window on the display */
     lcdSetWindow(area->x1, area->y1, area->x2, area->y2);
 
-    /* 2. Command to start writing to the display memory (RAMWR = 0x2C) */
-    *(volatile uint16_t *)LCD_DMA_CMD_ADDR = 0x002C;
+    /* 2. Transfer pixels via the universal ili9341_simple driver */
+    lcdFlushFrameBufferDMA(&hdma_memtomem_dma2_stream0, (uint16_t *)color_p, pixels_count);
 
-    /* 3. Transfer the block of pixels via DMA */
-    uint32_t transferred = 0;
-    while (pixels_count > 0)
-    {
-        uint32_t chunk = (pixels_count > 60000) ? 60000 : pixels_count;
-
-        HAL_DMA_Start(&hdma_memtomem_dma2_stream0,
-                      (uint32_t)(color_p + transferred),
-                      LCD_DMA_DATA_ADDR,
-                      chunk);
-
-        HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
-
-        transferred += chunk;
-        pixels_count -= chunk;
-    }
-
-    /* 4. Повідомляємо LVGL, що передачу цього прямокутника завершено */
+    /* 3. Notify LVGL that the rectangle update is complete */
     lv_disp_flush_ready(disp_drv);
 }
 

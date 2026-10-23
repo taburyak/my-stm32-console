@@ -51,10 +51,6 @@
 #define INTERNAL_HEAP_SIZE    (configTOTAL_HEAP_SIZE)   /* According to the CubeMX settings */
 #define EXTERNAL_SRAM_BASE    (0x68000000UL)            /* Bank 3's main address */
 #define EXTERNAL_SRAM_SIZE    (1024 * 1024)             /* 1 megabyte */
-
-/* LCD DMA Addresses (Bank 4, RS = A18) */
-#define LCD_DMA_CMD_ADDR      (LCD_BASE0)
-#define LCD_DMA_DATA_ADDR     (LCD_BASE1)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -129,7 +125,6 @@ void StartDefaultTask(void *argument);
 /* USER CODE BEGIN PFP */
 void SandboxTask(void *argument);
 void MPU_Config_UserSandbox(void);
-void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -145,30 +140,6 @@ int _write(int file, char *ptr, int len)
 {
     HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
     return len;
-}
-
-/**
- * @brief Fast buffer output to the LCD via DMA (by bypassing the 64K limit)
- */
-void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
-{
-    lcdSetWindow(0, 0, 319, 239);
-
-    /* We tell the ILI9341 controller that pixels are coming next (0x2C - RAMWR) */
-    *(volatile uint16_t*)LCD_DMA_CMD_ADDR = 0x002C;
-
-    uint32_t transferred = 0;
-    while (pixels_count > 0)
-    {
-      /* The STM32F4 DMA can transfer a maximum of 65,535 elements at a time */
-      uint32_t chunk = (pixels_count > 60000) ? 60000 : pixels_count;
-
-      HAL_DMA_Start(&hdma_memtomem_dma2_stream0, (uint32_t)(buffer + transferred), LCD_DMA_DATA_ADDR, chunk);
-      HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
-
-      transferred += chunk;
-      pixels_count -= chunk;
-    }
 }
 
 static void list_btn_event_cb(lv_event_t * e)
