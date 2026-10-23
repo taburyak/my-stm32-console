@@ -95,7 +95,7 @@ const osThreadAttr_t sandboxTask_attributes = {
 };
 
 /* Define an array for the internal part of the heap */
-uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE]; 
+uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 */
 const HeapRegion_t xHeapRegions[] =
 {
@@ -144,10 +144,10 @@ int __io_putchar(int ch)
     return ch;
 }
 
-int _write(int file, char *ptr, int len) 
-{ 
-    HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY); 
-    return len; 
+int _write(int file, char *ptr, int len)
+{
+    HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
+    return len;
 }
 
 // Call Cover LCD Supervisor Call (SVC) with a code 1
@@ -162,7 +162,7 @@ __attribute__((always_inline)) inline void sys_led_toggle(void)
 void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
 {
     lcdSetWindow(0, 0, 319, 239);
-    
+
     // We tell the ILI9341 controller that pixels are coming next (0x2C - RAMWR)
     *(volatile uint16_t*)LCD_DMA_CMD_ADDR = 0x002C;
 
@@ -170,10 +170,10 @@ void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count)
     while (pixels_count > 0) {
         // The STM32F4 DMA can transfer a maximum of 65,535 elements at a time
         uint32_t chunk = (pixels_count > 60000) ? 60000 : pixels_count;
-        
+
         HAL_DMA_Start(&hdma_memtomem_dma2_stream0, (uint32_t)(buffer + transferred), LCD_DMA_DATA_ADDR, chunk);
         HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
-        
+
         transferred += chunk;
         pixels_count -= chunk;
     }
@@ -220,7 +220,7 @@ static void Create_File_List(lv_obj_t *parent, const char *path)
         if (fr != FR_OK || fno.fname[0] == 0) break;
 
         const char *icon = (fno.fattrib & AM_DIR) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
-        
+
         lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
         lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
         count++;
@@ -309,7 +309,7 @@ int main(void)
   /* USER CODE BEGIN RTOS_THREADS */
   // Let's create our test sandbox task
   sandboxTaskHandle = osThreadNew(SandboxTask, NULL, &sandboxTask_attributes);
-  
+
   // Set tag 1 so that the FreeRTOS hook switches this task to Unprivileged mode!
   vTaskSetApplicationTaskTag((TaskHandle_t)sandboxTaskHandle, (void*) 1);
   /* USER CODE END RTOS_THREADS */
@@ -829,16 +829,16 @@ void SandboxTask(void *argument)
     {
         // 1. SAFE CALL: We don't access the registers directly; instead, we make a request to the kernel via SVC
         sys_led_toggle(); // LD2 should be flashing
-        
+
         // Since the task is unprivileged, the standard osDelay/vTaskDelay may cause an error,
-        // if it attempts to access kernel variables that the MPU has restricted access to. 
+        // if it attempts to access kernel variables that the MPU has restricted access to.
         // Therefore, we create an artificial delay using a loop:
         for(volatile uint32_t i = 0; i < 2000000; i++) {}
-        
+
         // 2. PROTECTION DEMONSTRATION:
         // Uncomment the line below. This is direct access to the GPIO peripherals.
         // Since we are in the Sandbox, this call SHOULD trigger a MemManage Fault (HardFault)!
-        
+
         // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     }
 }
@@ -846,7 +846,7 @@ void SandboxTask(void *argument)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     /* Filter interrupts: process ONLY our 4 buttons KEY_0..KEY_3 */
-    if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin || 
+    if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin ||
         GPIO_Pin == KEY_2_Pin || GPIO_Pin == KEY_3_Pin)
     {
         Buttons_EXTI_Callback(GPIO_Pin);
@@ -860,11 +860,11 @@ void Test_SDCard_FatFS(void)
     static FIL fil;
     FRESULT fr;
     UINT bytes_written = 0, bytes_read = 0;
-    
+
     // DMA requires 4-byte address alignment!
     __attribute__((aligned(4))) static char write_buf[64];
     __attribute__((aligned(4))) static char read_buf[64];
-    
+
     static uint32_t sd_counter = 0;
     sd_counter++;
 
@@ -1000,7 +1000,7 @@ void StartDefaultTask(void *argument)
   printf("\r\n----------------------------------------\r\n");
   printf("  STM32F407 Console OS - Step 1 Boot\r\n");
   printf("----------------------------------------\r\n");
-  
+
   uint32_t sys_freq = HAL_RCC_GetSysClockFreq();
   printf("System Clock Frequency: %lu MHz\r\n", sys_freq / 1000000);
 
@@ -1019,26 +1019,26 @@ void StartDefaultTask(void *argument)
   POST_PrintSummary();
 
   /* 4. Process POST status result */
-  if (post_status == POST_ERR_SRAM || post_status == POST_ERR_CCMRAM || post_status == POST_ERR_DISPLAY) 
+  if (post_status == POST_ERR_SRAM || post_status == POST_ERR_CCMRAM || post_status == POST_ERR_DISPLAY)
   {
     /* Critical hardware failure */
     StatusLED_Set(STATUS_LED_ERROR, STATUS_LED_ON);
     Beeper_ErrorAlert();
-  } 
-  else 
+  }
+  else
   {
     /* All critical checks passed (POST_OK or POST_WARN_OPTIONAL) */
     Beeper_BootMelody();
   }
 
   /* 5. Full Peripherals Initialization */
-  
+
   // Initialize W25QXX Flash
-  if (W25qxx_Init()) 
+  if (W25qxx_Init())
   {
       printf("[INIT] W25QXX Flash Ready.\r\n");
-  } 
-  else 
+  }
+  else
   {
       printf("[INIT] W25QXX Flash FAILED.\r\n");
   }
@@ -1067,9 +1067,9 @@ void StartDefaultTask(void *argument)
     Buttons_Process();
 
     /* 2. Process button event queue */
-    while (Buttons_GetEvent(&btn_msg)) 
+    while (Buttons_GetEvent(&btn_msg))
     {
-      switch (btn_msg.event) 
+      switch (btn_msg.event)
       {
         case BUTTON_EVENT_PRESSED:
           printf("[BTN] KEY_%d PRESSED\r\n", btn_msg.id);
@@ -1086,11 +1086,11 @@ void StartDefaultTask(void *argument)
           printf("[BTN] KEY_%d LONG PRESS (>=1s)!\r\n", btn_msg.id);
           StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
           /* Тестова умова: якщо довго утримуємо KEY_3 - програємо сигнал тривоги */
-          if (btn_msg.id == BUTTON_KEY3) 
+          if (btn_msg.id == BUTTON_KEY3)
           {
             Beeper_ErrorAlert();
-          } 
-          else 
+          }
+          else
           {
             Beeper_Click();
           }
@@ -1105,7 +1105,7 @@ void StartDefaultTask(void *argument)
     Beeper_Process();
 
     /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
-    if ((HAL_GetTick() - last_heartbeat_tick) >= 500) 
+    if ((HAL_GetTick() - last_heartbeat_tick) >= 500)
     {
         last_heartbeat_tick = HAL_GetTick();
         StatusLED_Toggle(STATUS_LED_HEARTBEAT);

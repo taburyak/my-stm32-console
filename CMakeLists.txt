@@ -66,6 +66,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/buttons_manager.c
     Core/Src/beeper.c
     Core/Src/system_post.c
+    Core/Src/ccmram.c
+    Core/Src/sram_ext.c
+    Core/Src/sdcard_fatfs.c
 )
 
 # Add include paths

@@ -31,3 +31,4 @@ Drivers/
 # Diferent files
 my-stm32-console-rule.md
 project_context.txt
+dump_context.ps1
