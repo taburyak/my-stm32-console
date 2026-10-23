@@ -2,11 +2,11 @@
 #include "main.h"
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
+#include "usb_host_manager.h"
+#include "beeper.h"
 
-/* External handles and addresses declared in main.c */
 extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 
-/* Buffer for rendering on 40 rows (320 * 40 * 2 bytes = 25.6 KB) */
 #define MY_DISP_HOR_RES    320
 #define MY_DISP_VER_RES    240
 #define DISP_BUF_SIZE      (MY_DISP_HOR_RES * 40)
@@ -23,13 +23,8 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
     uint32_t height = area->y2 - area->y1 + 1;
     uint32_t pixels_count = width * height;
 
-    /* 1. Set the active update window on the display */
     lcdSetWindow(area->x1, area->y1, area->x2, area->y2);
-
-    /* 2. Transfer pixels via the universal ili9341_simple driver */
     lcdFlushFrameBufferDMA(&hdma_memtomem_dma2_stream0, (uint16_t *)color_p, pixels_count);
-
-    /* 3. Notify LVGL that the rectangle update is complete */
     lv_disp_flush_ready(disp_drv);
 }
 
@@ -47,12 +42,85 @@ static void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         {
             data->point.x = touch_x;
             data->point.y = touch_y;
-            data->state   = LV_INDEV_STATE_PR; /* PR = Pressed (натиснуто) */
+            data->state   = LV_INDEV_STATE_PR;
             return;
         }
     }
 
-    data->state = LV_INDEV_STATE_REL; /* REL = Released (відпущено) */
+    data->state = LV_INDEV_STATE_REL;
+}
+
+/**
+ * @brief Keyboard Read Callback for USB HID Keyboard
+ */
+static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
+{
+    static uint32_t last_key = 0;
+    static bool send_release_next = false;
+
+    /* Якщо на попередньому кроці ми відправили PRESSED, тепер відправляємо RELEASED */
+    if (send_release_next)
+    {
+        data->key = last_key;
+        data->state = LV_INDEV_STATE_REL;
+        send_release_next = false;
+        return;
+    }
+
+    USB_KeyboardEvent_t kbd_evt;
+    if (USBHostManager_GetKeyEvent(&kbd_evt) && kbd_evt.is_pressed)
+    {
+        Beeper_Click(); /* Короткий клік біпером на кожне натискання клавіші! */
+
+        uint32_t lv_key = 0;
+
+        /* Перевіряємо спеціальні сканкоди USB HID (Стрілки, Enter, Esc, Backspace, Tab) */
+        switch (kbd_evt.scancode)
+        {
+            case 0x52: /* Up Arrow */
+            case 0x50: /* Left Arrow */
+                lv_key = LV_KEY_PREV; /* Фокус на попередній елемент списку */
+                break;
+
+            case 0x51: /* Down Arrow */
+            case 0x4F: /* Right Arrow */
+                lv_key = LV_KEY_NEXT; /* Фокус на наступний елемент списку */
+                break;
+
+            case 0x28: /* Enter */
+            case 0x58: /* Keypad Enter */
+                lv_key = LV_KEY_ENTER;
+                break;
+
+            case 0x29: /* Escape */
+                lv_key = LV_KEY_ESC;
+                break;
+
+            case 0x2A: /* Backspace */
+                lv_key = LV_KEY_BACKSPACE;
+                break;
+
+            case 0x2B: /* Tab */
+                lv_key = LV_KEY_NEXT;
+                break;
+
+            default:
+                /* Якщо це звичайна буква/цифра */
+                lv_key = kbd_evt.ascii;
+                break;
+        }
+
+        if (lv_key != 0)
+        {
+            last_key = lv_key;
+            data->key = lv_key;
+            data->state = LV_INDEV_STATE_PR;
+            send_release_next = true;
+            return;
+        }
+    }
+
+    data->state = LV_INDEV_STATE_REL;
 }
 
 void LVGL_Port_Init(void)
@@ -78,4 +146,15 @@ void LVGL_Port_Init(void)
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = touch_read;
     lv_indev_drv_register(&indev_drv);
+
+    /* 5. Registration of USB Keyboard & Default Group */
+    lv_group_t * def_group = lv_group_create();
+    lv_group_set_default(def_group);
+
+    static lv_indev_drv_t indev_kbd_drv;
+    lv_indev_drv_init(&indev_kbd_drv);
+    indev_kbd_drv.type = LV_INDEV_TYPE_KEYPAD;
+    indev_kbd_drv.read_cb = keyboard_read;
+    lv_indev_t * kbd_indev = lv_indev_drv_register(&indev_kbd_drv);
+    lv_indev_set_group(kbd_indev, def_group);
 }

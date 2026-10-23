@@ -139,6 +139,8 @@ int _write(int file, char *ptr, int len)
     return len;
 }
 
+static lv_obj_t * g_usb_status_label = NULL;
+
 static void list_btn_event_cb(lv_event_t * e)
 {
   lv_event_code_t code = lv_event_get_code(e);
@@ -147,7 +149,11 @@ static void list_btn_event_cb(lv_event_t * e)
   if (code == LV_EVENT_CLICKED)
   {
     const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
-    printf("[File Selected]: %s\r\n", file_name);
+    Beeper_Click();
+    if (g_usb_status_label != NULL)
+    {
+      lv_label_set_text_fmt(g_usb_status_label, "Selected: %s", file_name);
+    }
   }
 }
 
@@ -157,8 +163,13 @@ static void list_btn_event_cb(lv_event_t * e)
 static void Create_File_List(lv_obj_t *parent, const char *path)
 {
   lv_obj_t * list = lv_list_create(parent);
-  lv_obj_set_size(list, 300, 210);
-  lv_obj_align(list, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_size(list, 300, 190);
+  lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 8);
+
+  /* Create bottom status label for USB Keyboard debugging without UART */
+  g_usb_status_label = lv_label_create(parent);
+  lv_obj_align(g_usb_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -6);
+  lv_label_set_text(g_usb_status_label, "USB: Waiting for keyboard...");
 
   char title_buf[64];
   snprintf(title_buf, sizeof(title_buf), "Folder: %s", path);
@@ -170,12 +181,13 @@ static void Create_File_List(lv_obj_t *parent, const char *path)
 
   if (fr != FR_OK)
   {
-    printf("f_opendir FAIL: Error %d for %s\r\n", fr, path);
     lv_list_add_text(list, "Failed to open directory");
     return;
   }
 
+  lv_group_t * grp = lv_group_get_default();
   uint32_t count = 0;
+
   while (1)
   {
     fr = f_readdir(&dir, &fno);
@@ -185,6 +197,12 @@ static void Create_File_List(lv_obj_t *parent, const char *path)
 
     lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
     lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Add button to keyboard navigation group */
+    if (grp != NULL)
+    {
+      lv_group_add_obj(grp, btn);
+    }
     count++;
   }
 
@@ -195,7 +213,6 @@ static void Create_File_List(lv_obj_t *parent, const char *path)
     lv_list_add_text(list, "(Empty directory)");
   }
 }
-
 /* USER CODE END 0 */
 
 /**
@@ -950,12 +967,38 @@ void StartDefaultTask(void *argument)
     /* 4. LVGL Graphics Processing */
     lv_timer_handler();
 
-    /* Process USB Keyboard Input */
-    char kbd_char;
-    if (USBHostManager_GetKey(&kbd_char))
+    /* Visual USB Debug Monitor on LCD (every 100ms) */
+    static uint32_t last_usb_ui_tick = 0;
+    static uint32_t prev_irq_cnt = 0xFFFFFFFF;
+    static uint8_t  prev_host_id = 0xFF;
+
+    if ((HAL_GetTick() - last_usb_ui_tick) >= 100)
     {
-        printf("[USB KBD] Typed character: '%c' (ASCII: %d)\r\n", kbd_char, (int)kbd_char);
-        Beeper_Click();
+      last_usb_ui_tick = HAL_GetTick();
+
+      if (g_usb_dbg.irq_event_count != prev_irq_cnt || g_usb_dbg.last_host_id != prev_host_id)
+      {
+        prev_irq_cnt = g_usb_dbg.irq_event_count;
+        prev_host_id = g_usb_dbg.last_host_id;
+
+        if (USBHostManager_IsKeyboardReady())
+        {
+          char ch_disp = (g_usb_dbg.last_ascii >= 32 && g_usb_dbg.last_ascii <= 126)
+                         ? (char)g_usb_dbg.last_ascii : '?';
+          lv_label_set_text_fmt(g_usb_status_label,
+                                "KBD OK | Scan:0x%02X Char:'%c' Cnt:%lu",
+                                g_usb_dbg.last_scancode,
+                                ch_disp,
+                                (unsigned long)g_usb_dbg.irq_event_count);
+        }
+        else
+        {
+          lv_label_set_text_fmt(g_usb_status_label,
+                                "USB State:%d Type:%d (No KBD)",
+                                g_usb_dbg.last_host_id,
+                                g_usb_dbg.detected_dev_type);
+        }
+      }
     }
 
     /* 5. Pause 5ms to release OS time slices */

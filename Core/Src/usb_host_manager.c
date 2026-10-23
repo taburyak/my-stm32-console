@@ -2,6 +2,7 @@
 #include "usbh_hid_keybd.h"
 #include "usbh_hid_mouse.h"
 #include "status_led.h"
+#include "beeper.h"
 #include <stdio.h>
 
 #define KBD_QUEUE_SIZE 16
@@ -9,20 +10,24 @@
 static volatile bool is_kbd_ready = false;
 static volatile bool is_mouse_ready = false;
 
+/* Global debug info for Watch window & LCD HUD */
+volatile USB_DebugInfo_t g_usb_dbg = {0};
+
 /* Keyboard Queue */
 static USB_KeyboardEvent_t kbd_queue[KBD_QUEUE_SIZE];
 static volatile uint8_t kbd_head = 0;
 static volatile uint8_t kbd_tail = 0;
 
-/* Current Mouse State & Absolute Coordinates */
+/* Current Mouse State */
 static USB_MouseEvent_t current_mouse_state = {
-    .x = 160, .y = 120, /* Centered at start */
+    .x = 160, .y = 120,
     .delta_x = 0, .delta_y = 0,
     .btn_left = false, .btn_right = false, .btn_middle = false
 };
 static volatile bool mouse_updated = false;
 
-void USBHostManager_Init(void) {
+void USBHostManager_Init(void)
+{
     is_kbd_ready = false;
     is_mouse_ready = false;
     kbd_head = 0;
@@ -30,6 +35,12 @@ void USBHostManager_Init(void) {
     current_mouse_state.x = 160;
     current_mouse_state.y = 120;
     mouse_updated = false;
+
+    g_usb_dbg.last_host_id = 0;
+    g_usb_dbg.detected_dev_type = 0;
+    g_usb_dbg.last_scancode = 0;
+    g_usb_dbg.last_ascii = 0;
+    g_usb_dbg.irq_event_count = 0;
 }
 
 bool USBHostManager_IsKeyboardReady(void)
@@ -59,7 +70,8 @@ bool USBHostManager_GetKey(char *ch)
     USB_KeyboardEvent_t event;
     while (USBHostManager_GetKeyEvent(&event))
     {
-        if (event.is_pressed && event.ascii != 0) {
+        if (event.is_pressed && event.ascii != 0)
+        {
             if (ch) *ch = (char)event.ascii;
             return true;
         }
@@ -95,25 +107,74 @@ bool USBHostManager_GetMouseEvent(USB_MouseEvent_t *event)
     return true;
 }
 
+/**
+ * @brief Надійне визначення типу HID-пристрою (навіть якщо Report Descriptor нестандартний)
+ */
+static HID_TypeTypeDef Get_Reliable_HID_Type(USBH_HandleTypeDef *phost)
+{
+    /* 1. Спочатку питаємо стандартну функцію ST */
+    HID_TypeTypeDef dev_type = USBH_HID_GetDeviceType(phost);
+    if (dev_type == HID_KEYBOARD || dev_type == HID_MOUSE)
+    {
+        return dev_type;
+    }
+
+    /* 2. Якщо вона повернула 255 (HID_UNKNOWN), дивимось на покажчик Init у HID_Handle */
+    if (phost->pActiveClass != NULL && phost->pActiveClass->pData != NULL)
+    {
+        HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)phost->pActiveClass->pData;
+        if (HID_Handle->Init == USBH_HID_KeybdInit)
+        {
+            return HID_KEYBOARD;
+        }
+        if (HID_Handle->Init == USBH_HID_MouseInit)
+        {
+            return HID_MOUSE;
+        }
+    }
+
+    /* 3. Резервна перевірка за протоколом першого інтерфейсу (1 = KBD, 2 = MOUSE) */
+    uint8_t proto = phost->device.CfgDesc.Itf_Desc[0].bInterfaceProtocol;
+    if (proto == HID_KEYBRD_BOOT_CODE) return HID_KEYBOARD;
+    if (proto == HID_MOUSE_BOOT_CODE)  return HID_MOUSE;
+
+    return HID_UNKNOWN;
+}
+
 void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id)
 {
+    g_usb_dbg.last_host_id = id;
+
     switch (id)
     {
     case HOST_USER_DISCONNECTION:
         is_kbd_ready = false;
         is_mouse_ready = false;
-        printf("[USB Host] Device Disconnected\r\n");
+        g_usb_dbg.detected_dev_type = 0;
+        Beeper_Click();
         break;
 
     case HOST_USER_CLASS_ACTIVE:
-        if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
         {
-            is_kbd_ready = true;
-            printf("[USB Host] Keyboard Ready ⌨️\r\n");
-        } else if (USBH_HID_GetDeviceType(phost) == HID_MOUSE)
-        {
-            is_mouse_ready = true;
-            printf("[USB Host] Mouse Ready 🖱️\r\n");
+            HID_TypeTypeDef dev_type = Get_Reliable_HID_Type(phost);
+            g_usb_dbg.detected_dev_type = (uint8_t)dev_type;
+
+            if (dev_type == HID_KEYBOARD)
+            {
+                is_kbd_ready = true;
+                is_mouse_ready = false;
+                Beeper_BootMelody();
+            }
+            else if (dev_type == HID_MOUSE)
+            {
+                is_mouse_ready = true;
+                is_kbd_ready = false;
+                Beeper_Click();
+            }
+            else
+            {
+                Beeper_ErrorAlert();
+            }
         }
         break;
 
@@ -124,43 +185,26 @@ void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id)
 
 void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
 {
-    HID_TypeTypeDef dev_type = USBH_HID_GetDeviceType(phost);
+    g_usb_dbg.irq_event_count++;
+    HID_TypeTypeDef dev_type = Get_Reliable_HID_Type(phost);
+    g_usb_dbg.detected_dev_type = (uint8_t)dev_type;
 
     if (dev_type == HID_KEYBOARD)
     {
+        is_kbd_ready = true;
         HID_KEYBD_Info_TypeDef *k_info = USBH_HID_GetKeybdInfo(phost);
-        if (k_info != NULL && k_info->keys[0] != 0)
+        if (k_info != NULL)
         {
             uint8_t scancode = k_info->keys[0];
-            uint8_t ascii    = USBH_HID_GetASCIICode(k_info);
-            enqueue_key(scancode, ascii, true);
-        }
-    }
-    else if (dev_type == HID_MOUSE)
-    {
-        HID_MOUSE_Info_TypeDef *m_info = USBH_HID_GetMouseInfo(phost);
-        if (m_info != NULL)
-        {
-            current_mouse_state.delta_x = m_info->x;
-            current_mouse_state.delta_y = m_info->y;
+            if (scancode != 0)
+            {
+                uint8_t ascii = USBH_HID_GetASCIICode(k_info);
 
-            /* Clamp absolute coordinates to 320x240 screen limits */
-            int16_t new_x = current_mouse_state.x + m_info->x;
-            int16_t new_y = current_mouse_state.y + m_info->y;
+                g_usb_dbg.last_scancode = scancode;
+                g_usb_dbg.last_ascii    = ascii;
 
-            if (new_x < 0) new_x = 0;
-            if (new_x > 319) new_x = 319;
-            if (new_y < 0) new_y = 0;
-            if (new_y > 239) new_y = 239;
-
-            current_mouse_state.x = new_x;
-            current_mouse_state.y = new_y;
-
-            current_mouse_state.btn_left   = (m_info->buttons[0] != 0);
-            current_mouse_state.btn_right  = (m_info->buttons[1] != 0);
-            current_mouse_state.btn_middle = (m_info->buttons[2] != 0);
-
-            mouse_updated = true;
+                enqueue_key(scancode, ascii, true);
+            }
         }
     }
 }

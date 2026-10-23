@@ -33,31 +33,30 @@ typedef struct {
     bool    btn_middle; /* Middle button state */
 } USB_MouseEvent_t;
 
-/* --- Public Function Prototypes --- */
-
 /**
- * @brief Initialize USB Host Manager subsystem
+ * @brief Diagnostic structure for debugging without UART
  */
+typedef struct {
+    uint8_t  last_host_id;      /* Last HOST_USER_... state (4 = CLASS_ACTIVE) */
+    uint8_t  detected_dev_type; /* 0=Unknown, 1=Mouse, 2=Keyboard */
+    uint8_t  last_scancode;     /* Last raw HID key scancode */
+    uint8_t  last_ascii;        /* Last decoded ASCII char */
+    uint32_t irq_event_count;   /* Total HID packets received */
+} USB_DebugInfo_t;
+
+/* Global debug struct visible in Debugger Watch / Live Expressions */
+extern volatile USB_DebugInfo_t g_usb_dbg;
+
+/* --- Public Function Prototypes --- */
 void USBHostManager_Init(void);
 
-/**
- * @brief Dynamic status checks for LVGL and System UI
- */
 bool USBHostManager_IsKeyboardReady(void);
 bool USBHostManager_IsMouseReady(void);
 
-/**
- * @brief Keyboard Event Readers
- */
 bool USBHostManager_GetKey(char *ch);
 bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event);
-
-/**
- * @brief Mouse Event Reader
- */
 bool USBHostManager_GetMouseEvent(USB_MouseEvent_t *event);
 
-/* --- Callbacks from USB Host library --- */
 void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id);
 void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost);
 
