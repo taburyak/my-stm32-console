@@ -19,7 +19,6 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
-
 #include "usb_host.h"
 #include "usbh_core.h"
 #include "usbh_hid.h"
@@ -32,15 +31,10 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-volatile uint8_t  g_usb_last_scancode = 0;
-volatile uint8_t  g_usb_last_ascii    = 0;
-volatile uint32_t g_usb_key_count     = 0;
-volatile uint8_t  g_usb_kbd_ready     = 0;
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-
 /* USER CODE END PFP */
 
 /* USB Host core handle declaration */
@@ -48,24 +42,14 @@ USBH_HandleTypeDef hUsbHostFS;
 ApplicationTypeDef Appli_state = APPLICATION_IDLE;
 
 /*
- * -- Insert your variables declaration here --
- */
-/* USER CODE BEGIN 0 */
-
-/* USER CODE END 0 */
-
-/*
  * user callback declaration
  */
 static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
 
-/*
- * -- Insert your external function declaration here --
- */
 /* USER CODE BEGIN 1 */
-  void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
+void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
 {
-  USBHostManager_ProcessUserCallback(phost, id);
+  USBHostManager_ProcessHIDCallback(phost);
 }
 /* USER CODE END 1 */
 
@@ -75,10 +59,6 @@ static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
   */
 void MX_USB_HOST_Init(void)
 {
-  /* USER CODE BEGIN USB_HOST_Init_PreTreatment */
-
-  /* USER CODE END USB_HOST_Init_PreTreatment */
-
   /* Init host Library, add supported class and start the library. */
   if (USBH_Init(&hUsbHostFS, USBH_UserProcess, HOST_FS) != USBH_OK)
   {
@@ -92,53 +72,14 @@ void MX_USB_HOST_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USB_HOST_Init_PostTreatment */
-
-  /* USER CODE END USB_HOST_Init_PostTreatment */
 }
 
 /*
  * user callback definition
  */
-static void USBH_UserProcess  (USBH_HandleTypeDef *phost, uint8_t id)
+static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id)
 {
   /* USER CODE BEGIN CALL_BACK_1 */
-  switch(id)
-  {
-  case HOST_USER_SELECT_CONFIGURATION:
-    break;
-
-  case HOST_USER_DISCONNECTION:
-    Appli_state = APPLICATION_DISCONNECT;
-    g_usb_kbd_ready = 0;
-    HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_SET); // Turn off LD0
-    break;
-
-  case HOST_USER_CLASS_ACTIVE:
-    Appli_state = APPLICATION_READY;
-    if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
-    {
-        g_usb_kbd_ready = 1;
-        // Turn on LD0 when keyboard is successfully recognized!
-        HAL_GPIO_WritePin(LD0_GPIO_Port, LD0_Pin, GPIO_PIN_RESET);
-    }
-    break;
-
-  case HOST_USER_CONNECTION:
-    Appli_state = APPLICATION_START;
-    break;
-
-  default:
-    break;
-  }
+  USBHostManager_ProcessUserCallback(phost, id);
   /* USER CODE END CALL_BACK_1 */
 }
-
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
-
