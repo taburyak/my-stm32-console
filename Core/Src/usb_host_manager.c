@@ -108,18 +108,18 @@ bool USBHostManager_GetMouseEvent(USB_MouseEvent_t *event)
 }
 
 /**
- * @brief Надійне визначення типу HID-пристрою (навіть якщо Report Descriptor нестандартний)
+ * @brief Reliable determination of the HID device type (even if the Report Descriptor is non-standard)
  */
 static HID_TypeTypeDef Get_Reliable_HID_Type(USBH_HandleTypeDef *phost)
 {
-    /* 1. Спочатку питаємо стандартну функцію ST */
+    /* 1. First, we call the standard ST function */
     HID_TypeTypeDef dev_type = USBH_HID_GetDeviceType(phost);
     if (dev_type == HID_KEYBOARD || dev_type == HID_MOUSE)
     {
         return dev_type;
     }
 
-    /* 2. Якщо вона повернула 255 (HID_UNKNOWN), дивимось на покажчик Init у HID_Handle */
+    /* 2. If it returned 255 (HID_UNKNOWN), check the Init pointer in HID_Handle */
     if (phost->pActiveClass != NULL && phost->pActiveClass->pData != NULL)
     {
         HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)phost->pActiveClass->pData;
@@ -133,7 +133,7 @@ static HID_TypeTypeDef Get_Reliable_HID_Type(USBH_HandleTypeDef *phost)
         }
     }
 
-    /* 3. Резервна перевірка за протоколом першого інтерфейсу (1 = KBD, 2 = MOUSE) */
+    /* 3. Backup check using the protocol of the first interface (1 = KBD, 2 = MOUSE) */
     uint8_t proto = phost->device.CfgDesc.Itf_Desc[0].bInterfaceProtocol;
     if (proto == HID_KEYBRD_BOOT_CODE) return HID_KEYBOARD;
     if (proto == HID_MOUSE_BOOT_CODE)  return HID_MOUSE;
