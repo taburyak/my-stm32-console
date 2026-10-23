@@ -24,7 +24,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "sram_test.h"
 #include <stdio.h>
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
@@ -37,6 +36,8 @@
 #include "buttons_manager.h"
 #include "beeper.h"
 #include "system_post.h"
+#include "sram_ext.h"
+#include "sdcard_fatfs.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -98,9 +99,9 @@ const osThreadAttr_t sandboxTask_attributes = {
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                // Region 1: Internal SRAM (~0x20000000)
-    { (uint8_t *)EXTERNAL_SRAM_BASE, EXTERNAL_SRAM_SIZE }, // Region 2: External SRAM (0x68000000)
-    { NULL, 0 }                                            // The Terminator
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                                           // Region 1: Internal SRAM (~0x20000000)
+    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (SRAM_EXT_SIZE_BYTES - SRAM_HEAP_OFFSET) }, // Region 2: External SRAM (0x68000000)
+    { NULL, 0 }                                                                                       // The Terminator
 };
 
 /* Framebuffer in External SRAM (Bank 3) */
@@ -128,10 +129,7 @@ void StartDefaultTask(void *argument);
 /* USER CODE BEGIN PFP */
 void SandboxTask(void *argument);
 void MPU_Config_UserSandbox(void);
-void sys_led_toggle(void);
 void LCD_FlushFrameBuffer(uint16_t* buffer, uint32_t pixels_count);
-void Test_SDCard_FatFS(void);
-void Init_SDCard_FileSystem(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -147,12 +145,6 @@ int _write(int file, char *ptr, int len)
 {
     HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
     return len;
-}
-
-/* Call Cover LCD Supervisor Call (SVC) with a code 1 */
-__attribute__((always_inline)) inline void sys_led_toggle(void)
-{
-    __asm volatile("svc #1");
 }
 
 /**
@@ -188,7 +180,6 @@ static void list_btn_event_cb(lv_event_t * e)
   {
     const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
     printf("[File Selected]: %s\r\n", file_name);
-    HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
   }
 }
 
@@ -832,7 +823,6 @@ void SandboxTask(void *argument)
   for(;;)
   {
     // 1. SAFE CALL: We don't access the registers directly; instead, we make a request to the kernel via SVC
-    sys_led_toggle(); // LD2 should be flashing
 
     // Since the task is unprivileged, the standard osDelay/vTaskDelay may cause an error,
     // if it attempts to access kernel variables that the MPU has restricted access to.
@@ -842,162 +832,16 @@ void SandboxTask(void *argument)
     // 2. PROTECTION DEMONSTRATION:
     // Uncomment the line below. This is direct access to the GPIO peripherals.
     // Since we are in the Sandbox, this call SHOULD trigger a MemManage Fault (HardFault)!
-
-    // HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
   }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   /* Filter interrupts: process ONLY our 4 buttons KEY_0..KEY_3 */
-  if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin ||
-      GPIO_Pin == KEY_2_Pin || GPIO_Pin == KEY_3_Pin)
+  if (GPIO_Pin == KEY_0_Pin || GPIO_Pin == KEY_1_Pin || GPIO_Pin == KEY_2_Pin || GPIO_Pin == KEY_3_Pin)
   {
       Buttons_EXTI_Callback(GPIO_Pin);
   }
-}
-
-void Test_SDCard_FatFS(void)
-{
-  // Static objects to avoid overflowing FreeRTOS stack (each takes >500 bytes!)
-  static FATFS fs;
-  static FIL fil;
-  FRESULT fr;
-  UINT bytes_written = 0, bytes_read = 0;
-
-  // DMA requires 4-byte address alignment!
-  __attribute__((aligned(4))) static char write_buf[64];
-  __attribute__((aligned(4))) static char read_buf[64];
-
-  static uint32_t sd_counter = 0;
-  sd_counter++;
-
-  memset(read_buf, 0, sizeof(read_buf));
-
-  printf("\r\n--- [MicroSD Card FatFS Test] ---\r\n");
-
-  // 1. Mount disk (force mount = 1)
-  fr = f_mount(&fs, SDPath, 1);
-  if (fr != FR_OK)
-  {
-      printf("f_mount FAIL: Error %d\r\n", fr);
-      return;
-  }
-  printf("f_mount: PASS\r\n");
-
-  // 2. Create/open test file
-  fr = f_open(&fil, "test.txt", FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
-  if (fr != FR_OK)
-  {
-      printf("f_open FAIL: Error %d\r\n", fr);
-      f_mount(NULL, SDPath, 0);
-      return;
-  }
-
-  // 3. Write string
-  snprintf(write_buf, sizeof(write_buf), "STM32 Console SD Run #%lu\r\n", sd_counter);
-  fr = f_write(&fil, write_buf, strlen(write_buf), &bytes_written);
-  if (fr != FR_OK || bytes_written != strlen(write_buf))
-  {
-      printf("f_write FAIL: Error %d (wrote %u bytes)\r\n", fr, bytes_written);
-      f_close(&fil);
-      f_mount(NULL, SDPath, 0);
-      return;
-  }
-  printf("f_write: PASS (%u bytes written)\r\n", bytes_written);
-
-  // 4. Sync (flush cache to card before reading)
-  f_sync(&fil);
-
-  // 5. Seek to start and read back
-  f_lseek(&fil, 0);
-  fr = f_read(&fil, read_buf, bytes_written, &bytes_read);
-  if (fr != FR_OK || bytes_read != bytes_written)
-  {
-    printf("f_read FAIL: Error %d (read %u bytes)\r\n", fr, bytes_read);
-    f_close(&fil);
-    f_mount(NULL, SDPath, 0);
-    return;
-  }
-
-  // 6. Verification
-  if (memcmp(write_buf, read_buf, bytes_written) == 0)
-  {
-      printf("Verification: PASS! Read: \"%s\"\r\n", read_buf);
-  }
-  else
-  {
-      printf("Verification: FAIL! Data mismatch\r\n");
-  }
-
-  // 7. Close and unmount
-  f_close(&fil);
-  f_mount(NULL, SDPath, 0);
-  printf("MicroSD Test Completed.\r\n");
-}
-
-
-/**
- * @brief Checks and creates mandatory system directories on SD card
- */
-void Init_SDCard_FileSystem(void)
-{
-  static FATFS fs;
-  FRESULT fr;
-  static FILINFO fno;
-
-  const char *required_dirs[] = {
-      "system",
-      "games",
-      "assets",
-      "saves"
-  };
-
-  printf("\r\n--- [SD Card Directory Initialization] ---\r\n");
-
-  // 1. Mount SD Card
-  fr = f_mount(&fs, SDPath, 1);
-  if (fr != FR_OK)
-  {
-      printf("f_mount FAIL: Error %d\r\n", fr);
-      return;
-  }
-  printf("SD Card Mounted Successfully.\r\n");
-
-  // 2. Check and create required directories
-  for (size_t i = 0; i < sizeof(required_dirs) / sizeof(required_dirs[0]); i++)
-  {
-      fr = f_stat(required_dirs[i], &fno);
-      if (fr == FR_NO_FILE)
-      {
-        fr = f_mkdir(required_dirs[i]);
-        if (fr == FR_OK)
-        {
-            printf("Created directory: /%s\r\n", required_dirs[i]);
-        }
-        else
-        {
-            printf("Failed to create /%s (Error %d)\r\n", required_dirs[i], fr);
-        }
-      }
-      else if (fr == FR_OK)
-      {
-        if (fno.fattrib & AM_DIR)
-        {
-          printf("Directory exists: /%s\r\n", required_dirs[i]);
-        }
-        else
-        {
-          printf("Warning: /%s exists but is a file!\r\n", required_dirs[i]);
-        }
-      }
-      else
-      {
-        printf("Error checking /%s (Code %d)\r\n", required_dirs[i], fr);
-      }
-  }
-
-  printf("SD Directory Structure Ready.\r\n");
 }
 /* USER CODE END 4 */
 
@@ -1061,8 +905,15 @@ void StartDefaultTask(void *argument)
     printf("[INIT] W25QXX Flash FAILED.\r\n");
   }
 
-  /* --- SD Card structure initialization --- */
-  Init_SDCard_FileSystem();
+  /* --- SD Card & Directory Initialization --- */
+  if (SDCard_InitSystemDirs())
+  {
+    printf("[INIT] SD Card FileSystem Ready.\r\n");
+  }
+  else
+  {
+    printf("[INIT] SD Card FileSystem FAILED.\r\n");
+  }
 
   /* --- LVGL Initialization --- */
   LVGL_Port_Init();

@@ -69,23 +69,22 @@ static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
     */
 void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
 {
-    if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
+  if (USBH_HID_GetDeviceType(phost) == HID_KEYBOARD)
+  {
+    HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
+    if (k_pinfo != NULL)
     {
-        HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
-        if (k_pinfo != NULL)
-        {
-            // If key is pressed (not an empty release packet)
-            if (k_pinfo->keys[0] != 0)
-            {
-                g_usb_last_scancode = k_pinfo->keys[0];
-                g_usb_last_ascii    = USBH_HID_GetASCIICode(k_pinfo);
-                g_usb_key_count++;
+      // If key is pressed (not an empty release packet)
+      if (k_pinfo->keys[0] != 0)
+      {
+        g_usb_last_scancode = k_pinfo->keys[0];
+        g_usb_last_ascii    = USBH_HID_GetASCIICode(k_pinfo);
+        g_usb_key_count++;
 
-                // Toggle LD0 LED on every press!
-                HAL_GPIO_TogglePin(LD0_GPIO_Port, LD0_Pin);
-            }
-        }
+        // Toggle LD0 LED on every press!
+      }
     }
+  }
 }
 /* USER CODE END 1 */
 

@@ -9,6 +9,7 @@ extern "C" {
 #include "fatfs.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /**
  * @brief Mount SD card filesystem (FAT32)
@@ -34,6 +35,12 @@ bool SDCard_IsMounted(void);
  * @return true on success, false if unmounted or failed
  */
 bool SDCard_GetFreeSpace(uint32_t *total_mb, uint32_t *free_mb);
+
+/**
+ * @brief Checks and creates mandatory system directories (/system, /games, /assets, /saves)
+ * @return true if all directories are ready, false otherwise
+ */
+bool SDCard_InitSystemDirs(void);
 
 #ifdef __cplusplus
 }
