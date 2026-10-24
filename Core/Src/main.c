@@ -39,6 +39,7 @@
 #include "sram_ext.h"
 #include "sdcard_fatfs.h"
 #include "usb_host_manager.h"
+#include "os_tasks.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -140,6 +141,7 @@ int _write(int file, char *ptr, int len)
 }
 
 static lv_obj_t * g_usb_status_label = NULL;
+static lv_obj_t * g_file_list_obj    = NULL;
 
 static void list_btn_event_cb(lv_event_t * e)
 {
@@ -148,69 +150,110 @@ static void list_btn_event_cb(lv_event_t * e)
 
   if (code == LV_EVENT_CLICKED)
   {
-    const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
-    // Beeper_Click();
+    const char * item_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
+    Beeper_Click();
+
+    /* Check if user clicked ".. (Root)" to go back */
+    if (strcmp(item_name, ".. (Root)") == 0)
+    {
+      OSTasks_RequestDirList("/");
+      return;
+    }
+
+    /* Check if clicked item is a directory in cache */
+    for (uint32_t i = 0; i < g_dir_cache.count; i++)
+    {
+      if (strcmp(g_dir_cache.items[i].name, item_name) == 0)
+      {
+        if (g_dir_cache.items[i].is_dir)
+        {
+          char next_path[STORAGE_MAX_PATH_LEN];
+          if (strcmp(g_dir_cache.path, "/") == 0)
+          {
+            snprintf(next_path, sizeof(next_path), "/%s", item_name);
+          }
+          else
+          {
+            snprintf(next_path, sizeof(next_path), "%.200s/%.50s", g_dir_cache.path, item_name);
+          }
+          OSTasks_RequestDirList(next_path);
+          return;
+        }
+        break;
+      }
+    }
+
     if (g_usb_status_label != NULL)
     {
-      lv_label_set_text_fmt(g_usb_status_label, "Selected: %s", file_name);
+      lv_label_set_text_fmt(g_usb_status_label, "Selected: %s", item_name);
     }
   }
 }
 
 /**
- * @brief Scans folder on SD card and displays its contents in LVGL list widget
+ * @brief Creates the LVGL file list container and bottom HUD status label
  */
-static void Create_File_List(lv_obj_t *parent, const char *path)
+static void Create_File_Explorer_UI(lv_obj_t *parent)
 {
-  lv_obj_t * list = lv_list_create(parent);
-  lv_obj_set_size(list, 300, 190);
-  lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 8);
+  g_file_list_obj = lv_list_create(parent);
+  lv_obj_set_size(g_file_list_obj, 300, 190);
+  lv_obj_align(g_file_list_obj, LV_ALIGN_TOP_MID, 0, 8);
 
-  /* Create bottom status label for USB Keyboard debugging without UART */
   g_usb_status_label = lv_label_create(parent);
   lv_obj_align(g_usb_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -6);
-  lv_label_set_text(g_usb_status_label, "USB: Waiting for keyboard...");
+  lv_label_set_text(g_usb_status_label, "USB: Waiting for device...");
 
-  char title_buf[64];
-  snprintf(title_buf, sizeof(title_buf), "Folder: %s", path);
-  lv_list_add_text(list, title_buf);
+  lv_list_add_text(g_file_list_obj, "Loading SD card...");
+}
 
-  DIR dir;
-  static FILINFO fno;
-  FRESULT fr = f_opendir(&dir, path);
+/**
+ * @brief Populates the LVGL list widget from the async g_dir_cache buffer
+ */
+static void Populate_File_List_From_Cache(void)
+{
+  if (g_file_list_obj == NULL) return;
 
-  if (fr != FR_OK)
+  lv_group_t * grp = lv_group_get_default();
+  if (grp != NULL)
   {
-    lv_list_add_text(list, "Failed to open directory");
+    lv_group_remove_all_objs(grp);
+  }
+
+  lv_obj_clean(g_file_list_obj);
+
+  char title_buf[256];
+  snprintf(title_buf, sizeof(title_buf), "Folder: %.240s", g_dir_cache.path);
+  lv_list_add_text(g_file_list_obj, title_buf);
+
+  if (!g_dir_cache.io_success)
+  {
+    lv_list_add_text(g_file_list_obj, "Failed to open directory");
     return;
   }
 
-  lv_group_t * grp = lv_group_get_default();
-  uint32_t count = 0;
-
-  while (1)
+  /* Add ".. (Root)" navigation button if inside a subfolder */
+  if (strcmp(g_dir_cache.path, "/") != 0)
   {
-    fr = f_readdir(&dir, &fno);
-    if (fr != FR_OK || fno.fname[0] == 0) break;
+    lv_obj_t * up_btn = lv_list_add_btn(g_file_list_obj, LV_SYMBOL_UP, ".. (Root)");
+    lv_obj_add_event_cb(up_btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, up_btn);
+  }
 
-    const char *icon = (fno.fattrib & AM_DIR) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
-
-    lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
+  for (uint32_t i = 0; i < g_dir_cache.count; i++)
+  {
+    const char *icon = g_dir_cache.items[i].is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
+    lv_obj_t * btn = lv_list_add_btn(g_file_list_obj, icon, g_dir_cache.items[i].name);
     lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Add button to keyboard navigation group */
     if (grp != NULL)
     {
       lv_group_add_obj(grp, btn);
     }
-    count++;
   }
 
-  f_closedir(&dir);
-
-  if (count == 0)
+  if (g_dir_cache.count == 0)
   {
-    lv_list_add_text(list, "(Empty directory)");
+    lv_list_add_text(g_file_list_obj, "(Empty directory)");
   }
 }
 /* USER CODE END 0 */
@@ -842,10 +885,10 @@ void StartDefaultTask(void *argument)
   /* init code for USB_HOST */
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 5 */
-  printf("[OS] Kernel Task Started.\r\n");
+  printf("[OS] GuiRenderTask (DefaultTask) Started.\r\n");
 
   printf("\r\n----------------------------------------\r\n");
-  printf("  STM32F407 Console OS - Step 1 Boot\r\n");
+  printf("  STM32F407 Console OS - Multi-Tasking  \r\n");
   printf("----------------------------------------\r\n");
 
   USBHostManager_Init();
@@ -854,7 +897,7 @@ void StartDefaultTask(void *argument)
   uint32_t sys_freq = HAL_RCC_GetSysClockFreq();
   printf("System Clock Frequency: %lu MHz\r\n", sys_freq / 1000000);
 
-    /* 1. Run Power-On Self-Test (POST) */
+  /* 1. Run Power-On Self-Test (POST) */
   POST_Status_t post_status = POST_RunSelfTest();
 
   /* 2. Initialize feedback subsystems */
@@ -871,19 +914,15 @@ void StartDefaultTask(void *argument)
   /* 4. Process POST status result */
   if (post_status == POST_ERR_SRAM || post_status == POST_ERR_CCMRAM || post_status == POST_ERR_DISPLAY)
   {
-    /* Critical hardware failure */
     StatusLED_Set(STATUS_LED_ERROR, STATUS_LED_ON);
     Beeper_ErrorAlert();
   }
   else
   {
-    /* All critical checks passed (POST_OK or POST_WARN_OPTIONAL) */
     Beeper_BootMelody();
   }
 
   /* 5. Full Peripherals Initialization */
-
-  // Initialize W25QXX Flash
   if (W25qxx_Init())
   {
     printf("[INIT] W25QXX Flash Ready.\r\n");
@@ -893,7 +932,6 @@ void StartDefaultTask(void *argument)
     printf("[INIT] W25QXX Flash FAILED.\r\n");
   }
 
-  /* --- SD Card & Directory Initialization --- */
   if (SDCard_InitSystemDirs())
   {
     printf("[INIT] SD Card FileSystem Ready.\r\n");
@@ -903,75 +941,40 @@ void StartDefaultTask(void *argument)
     printf("[INIT] SD Card FileSystem FAILED.\r\n");
   }
 
-  /* --- LVGL Initialization --- */
+  /* 6. LVGL Initialization (Owned exclusively by this task) */
   LVGL_Port_Init();
   printf("[INIT] LVGL Ready.\r\n");
 
+  /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
+  OSTasks_Init();
 
-  /* Create file list from root directory */
-  Create_File_List(lv_scr_act(), "/");
+  /* 8. Create UI and request async root directory listing from StorageIoTask */
+  Create_File_Explorer_UI(lv_scr_act());
+  OSTasks_RequestDirList("/");
 
   uint32_t last_heartbeat_tick = 0;
-  Button_Message_t btn_msg;
+  Gui_EventMsg_t gui_evt;
 
-  /* Infinite loop */
+  /* Infinite GUI & Render Loop (~66 FPS / 15ms period) */
   for(;;)
   {
-    /* 1. Process button state (debounce, hold timers) */
-    Buttons_Process();
-
-    /* 2. Process button event queue */
-    while (Buttons_GetEvent(&btn_msg))
+    /* 1. Check for completed async events from StorageIoTask */
+    while (OSTasks_GetGuiEvent(&gui_evt))
     {
-      switch (btn_msg.event)
+      if (gui_evt.type == GUI_EVT_DIR_READY || gui_evt.type == GUI_EVT_STORAGE_ERROR)
       {
-        case BUTTON_EVENT_PRESSED:
-          printf("[BTN] KEY_%d PRESSED\r\n", btn_msg.id);
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
-          Beeper_Click();
-          break;
-
-        case BUTTON_EVENT_SHORT_RELEASE:
-          printf("[BTN] KEY_%d SHORT RELEASE (<1s)\r\n", btn_msg.id);
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-          break;
-
-        case BUTTON_EVENT_LONG_PRESS:
-          printf("[BTN] KEY_%d LONG PRESS (>=1s)!\r\n", btn_msg.id);
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-          /* Тестова умова: якщо довго утримуємо KEY_3 - програємо сигнал тривоги */
-          if (btn_msg.id == BUTTON_KEY3)
-          {
-            Beeper_ErrorAlert();
-          }
-          else
-          {
-            Beeper_Click();
-          }
-          break;
-
-        default:
-          break;
+        Populate_File_List_From_Cache();
       }
     }
 
-    /* Process Beeper state */
-    Beeper_Process();
-
-    /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
+    /* 2. Non-blocking Heartbeat on LD0 (1 Hz) */
     if ((HAL_GetTick() - last_heartbeat_tick) >= 500)
     {
       last_heartbeat_tick = HAL_GetTick();
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
     }
 
-    /* 4. LVGL Graphics Processing */
-    lv_timer_handler();
-
-    /* Wakeup USB Host state machine for HID polling in RTOS mode */
-    USBHostManager_TaskPoll();
-
-    /* Visual USB Debug Monitor on LCD (every 100ms) */
+    /* 3. Visual USB Debug Monitor on LCD (every 100ms) */
     static uint32_t last_usb_ui_tick = 0;
     static uint32_t prev_irq_cnt = 0xFFFFFFFF;
     static uint8_t  prev_host_id = 0xFF;
@@ -1039,8 +1042,11 @@ void StartDefaultTask(void *argument)
       }
     }
 
-    /* 5. Pause 5ms to release OS time slices */
-    osDelay(5);
+    /* 4. LVGL Graphics Rendering */
+    lv_timer_handler();
+
+    /* 5. Pause 15ms (~66 FPS frame pacing) */
+    osDelay(15);
   }
   /* USER CODE END 5 */
 }

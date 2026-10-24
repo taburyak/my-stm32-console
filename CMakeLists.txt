@@ -69,6 +69,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/sram_ext.c
     Core/Src/sdcard_fatfs.c
     Core/Src/usb_host_manager.c
+    Core/Src/os_tasks.c
 )
 
 # Add include paths
