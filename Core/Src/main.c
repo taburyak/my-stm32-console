@@ -142,20 +142,34 @@ int _write(int file, char *ptr, int len)
 
 static lv_obj_t * g_usb_status_label = NULL;
 static lv_obj_t * g_file_list_obj    = NULL;
+static uint32_t g_status_hold_until = 0;
 
 static void list_btn_event_cb(lv_event_t * e)
 {
   lv_event_code_t code = lv_event_get_code(e);
   lv_obj_t * obj = lv_event_get_target(e);
 
-  if (code == LV_EVENT_CLICKED)
+  if (code == LV_EVENT_CLICKED && g_file_list_obj != NULL)
   {
-    const char * item_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
+    const char * raw_name = lv_list_get_btn_text(g_file_list_obj, obj);
+    if (raw_name == NULL) return;
+
+    /* Safely copy button text into local stack buffer before modifying UI */
+    char item_name[STORAGE_MAX_NAME_LEN];
+    strncpy(item_name, raw_name, sizeof(item_name) - 1U);
+    item_name[sizeof(item_name) - 1U] = '\0';
+
     Beeper_Click();
+
+    g_status_hold_until = HAL_GetTick() + 2000U;
 
     /* Check if user clicked ".. (Root)" to go back */
     if (strcmp(item_name, ".. (Root)") == 0)
     {
+      if (g_usb_status_label != NULL)
+      {
+        lv_label_set_text(g_usb_status_label, "Opening: / ...");
+      }
       OSTasks_RequestDirList("/");
       return;
     }
@@ -174,7 +188,12 @@ static void list_btn_event_cb(lv_event_t * e)
           }
           else
           {
-            snprintf(next_path, sizeof(next_path), "%.200s/%.50s", g_dir_cache.path, item_name);
+            snprintf(next_path, sizeof(next_path), "%.180s/%.50s", g_dir_cache.path, item_name);
+          }
+
+          if (g_usb_status_label != NULL)
+          {
+            lv_label_set_text_fmt(g_usb_status_label, "Dir: %s", item_name);
           }
           OSTasks_RequestDirList(next_path);
           return;
@@ -183,9 +202,10 @@ static void list_btn_event_cb(lv_event_t * e)
       }
     }
 
+    /* It is a regular file */
     if (g_usb_status_label != NULL)
     {
-      lv_label_set_text_fmt(g_usb_status_label, "Selected: %s", item_name);
+      lv_label_set_text_fmt(g_usb_status_label, "File: %s", item_name);
     }
   }
 }
@@ -212,6 +232,10 @@ static void Create_File_Explorer_UI(lv_obj_t *parent)
 static void Populate_File_List_From_Cache(void)
 {
   if (g_file_list_obj == NULL) return;
+
+  /* CRITICAL: Reset all LVGL input devices (mouse/touch/keypad) so they don't
+   * hold a dangling pointer to a button object that is about to be deleted! */
+  lv_indev_reset(NULL, NULL);
 
   lv_group_t * grp = lv_group_get_default();
   if (grp != NULL)
@@ -980,7 +1004,7 @@ void StartDefaultTask(void *argument)
     static uint8_t  prev_host_id = 0xFF;
     static uint8_t  prev_hid_st  = 0xFF;
 
-    if ((HAL_GetTick() - last_usb_ui_tick) >= 100)
+    if ((HAL_GetTick() - last_usb_ui_tick) >= 100 && HAL_GetTick() >= g_status_hold_until)
     {
       last_usb_ui_tick = HAL_GetTick();
 

@@ -31,7 +31,12 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+/* Override ST USB Host default malloc/free to use FreeRTOS heap cleanly */
+#undef USBH_malloc
+#define USBH_malloc   pvPortMalloc
 
+#undef USBH_free
+#define USBH_free     vPortFree
 /* USER CODE END PV */
 
 HCD_HandleTypeDef hhcd_USB_OTG_FS;

@@ -19,6 +19,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
+
 #include "usb_host.h"
 #include "usbh_core.h"
 #include "usbh_hid.h"
@@ -42,10 +43,20 @@ USBH_HandleTypeDef hUsbHostFS;
 ApplicationTypeDef Appli_state = APPLICATION_IDLE;
 
 /*
+ * -- Insert your variables declaration here --
+ */
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/*
  * user callback declaration
  */
 static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id);
 
+/*
+ * -- Insert your external function declaration here --
+ */
 /* USER CODE BEGIN 1 */
 void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
 {
@@ -59,6 +70,10 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
   */
 void MX_USB_HOST_Init(void)
 {
+  /* USER CODE BEGIN USB_HOST_Init_PreTreatment */
+
+  /* USER CODE END USB_HOST_Init_PreTreatment */
+
   /* Init host Library, add supported class and start the library. */
   if (USBH_Init(&hUsbHostFS, USBH_UserProcess, HOST_FS) != USBH_OK)
   {
@@ -72,12 +87,15 @@ void MX_USB_HOST_Init(void)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN USB_HOST_Init_PostTreatment */
+
+  /* USER CODE END USB_HOST_Init_PostTreatment */
 }
 
 /*
  * user callback definition
  */
-static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id)
+static void USBH_UserProcess  (USBH_HandleTypeDef *phost, uint8_t id)
 {
   /* USER CODE BEGIN CALL_BACK_1 */
   switch(id)
@@ -105,3 +123,12 @@ static void USBH_UserProcess(USBH_HandleTypeDef *phost, uint8_t id)
   USBHostManager_ProcessUserCallback(phost, id);
   /* USER CODE END CALL_BACK_1 */
 }
+
+/**
+  * @}
+  */
+
+/**
+  * @}
+  */
+

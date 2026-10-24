@@ -34,10 +34,9 @@
 
 #include "stm32f4xx.h"
 #include "stm32f4xx_hal.h"
-#include "FreeRTOS.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "FreeRTOS.h"
 /* USER CODE END INCLUDE */
 
 /** @addtogroup STM32_USB_HOST_LIBRARY
@@ -113,10 +112,10 @@
 /* Memory management macros */
 
 /** Alias for memory allocation. */
-#define USBH_malloc         pvPortMalloc
+#define USBH_malloc         malloc
 
 /** Alias for memory release. */
-#define USBH_free           vPortFree
+#define USBH_free           free
 
 /** Alias for memory set. */
 #define USBH_memset         memset
