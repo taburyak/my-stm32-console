@@ -10,10 +10,21 @@
 
 extern USBH_HandleTypeDef hUsbHostFS;
 
-static volatile bool is_kbd_ready = false;
-static volatile bool is_mouse_ready = false;
-static uint32_t connect_start_tick = 0;
-static bool cold_boot_recovered = false;
+static volatile bool is_kbd_ready     = false;
+static volatile bool is_mouse_ready   = false;
+static volatile bool is_gamepad_ready = false;
+
+static uint32_t connect_start_tick  = 0;
+static bool     cold_boot_recovered = false;
+
+/* Custom Direct-Polling state for Non-Boot HID Gamepad (STK-7024X) */
+static uint8_t  gpad_pipe      = 0U;
+static uint8_t  gpad_ep_addr   = 0U;
+static uint16_t gpad_ep_mps    = 8U;
+static uint8_t  gpad_poll_ms   = 10U;
+static uint32_t gpad_last_poll = 0U;
+static bool     gpad_waiting_urb = false;
+static uint8_t  gpad_rx_buf[64] __attribute__((aligned(4)));
 
 /* Global debug info for Watch window & LCD HUD */
 volatile USB_DebugInfo_t g_usb_dbg = {0};
@@ -30,13 +41,16 @@ static USB_MouseEvent_t current_mouse_state = {
     .btn_left = false, .btn_right = false, .btn_middle = false
 };
 
+/* Current Gamepad State */
+static USB_GamepadState_t current_gamepad_state = {0};
+
 void USBHostManager_Init(void)
 {
-    /* Do NOT wipe state if USB IRQ already fired during early boot! */
     if (g_usb_dbg.last_host_id == 0)
     {
         is_kbd_ready = false;
         is_mouse_ready = false;
+        is_gamepad_ready = false;
         g_usb_dbg.detected_dev_type = 0;
         g_usb_dbg.hid_state = 0;
     }
@@ -52,6 +66,9 @@ void USBHostManager_Init(void)
     current_mouse_state.btn_right = false;
     current_mouse_state.btn_middle = false;
 
+    memset(&current_gamepad_state, 0, sizeof(current_gamepad_state));
+    current_gamepad_state.hat = 0x0F;
+
     g_usb_dbg.mouse_x = 160;
     g_usb_dbg.mouse_y = 120;
 }
@@ -64,6 +81,11 @@ bool USBHostManager_IsKeyboardReady(void)
 bool USBHostManager_IsMouseReady(void)
 {
     return is_mouse_ready;
+}
+
+bool USBHostManager_IsGamepadReady(void)
+{
+    return is_gamepad_ready;
 }
 
 static void enqueue_key(uint8_t scancode, uint8_t ascii, bool is_pressed)
@@ -116,11 +138,98 @@ bool USBHostManager_GetMouseState(USB_MouseEvent_t *state)
     return true;
 }
 
+bool USBHostManager_GetGamepadState(USB_GamepadState_t *state)
+{
+    if (!is_gamepad_ready || state == NULL)
+    {
+        return false;
+    }
+    *state = current_gamepad_state;
+    return true;
+}
+
+/**
+ * @brief Parse raw D-Input Gamepad report (STK-7024X / Generic USB Gamepad)
+ *        and generate LVGL navigation events on D-Pad / A / B transitions.
+ */
+static void Parse_Gamepad_Report(const uint8_t *buf, uint16_t len)
+{
+    if (len < 6U) return;
+
+    uint8_t copy_len = (len < 8U) ? (uint8_t)len : 8U;
+    for (uint8_t i = 0; i < copy_len; i++)
+    {
+        g_usb_dbg.raw_report[i] = buf[i];
+    }
+
+    /* Detect report offset: some gamepads prefix Report ID (0x01) at buf[0] */
+    uint8_t offset = (len >= 8U && buf[0] == 0x01U && (buf[1] == 0x7FU || buf[1] == 0x80U)) ? 1U : 0U;
+
+    int8_t lx = (int8_t)((int16_t)buf[offset + 0] - 128);
+    int8_t ly = (int8_t)((int16_t)buf[offset + 1] - 128);
+
+    /* Find Hat Switch & Buttons in bytes 4..7
+     * Standard D-Input (STK-7024X):
+     * Byte 0: LX, Byte 1: LY, Byte 2: RX, Byte 3: RY,
+     * Byte 4 or 5: lower nibble = Hat (0..7, 0x0F = center), upper nibble = buttons 0..3
+     * Byte 5 or 6: buttons
+     */
+    uint8_t hat = 0x0F;
+    uint16_t btns = 0;
+
+    if ((buf[offset + 5] & 0x0F) <= 0x0F && ((buf[offset + 4] == 0x7F || buf[offset + 4] == 0x80 || buf[offset + 4] == 0x00)))
+    {
+        /* Hat is in lower nibble of byte 5, buttons in upper nibble of byte 5 + byte 6 */
+        hat  = buf[offset + 5] & 0x0F;
+        btns = ((uint16_t)(buf[offset + 5] >> 4) & 0x000FU) | ((uint16_t)buf[offset + 6] << 4);
+    }
+    else
+    {
+        /* Alternative D-Input layout: Hat in lower nibble of byte 4 */
+        hat  = buf[offset + 4] & 0x0F;
+        btns = ((uint16_t)(buf[offset + 4] >> 4) & 0x000FU) | ((uint16_t)buf[offset + 5] << 4);
+    }
+
+    bool up    = (hat == 0 || hat == 1 || hat == 7) || (ly < -60);
+    bool right = (hat == 1 || hat == 2 || hat == 3) || (lx > 60);
+    bool down  = (hat == 3 || hat == 4 || hat == 5) || (ly > 60);
+    bool left  = (hat == 5 || hat == 6 || hat == 7) || (lx < -60);
+
+    bool btn_a = ((btns & (1U << 0)) != 0); /* Button 0 */
+    bool btn_b = ((btns & (1U << 1)) != 0); /* Button 1 */
+
+    /* Edge detection: push LVGL navigation keys on press! */
+    if (up && !current_gamepad_state.dpad_up)       enqueue_key(0x52, 0, true); /* Up Arrow */
+    if (down && !current_gamepad_state.dpad_down)   enqueue_key(0x51, 0, true); /* Down Arrow */
+    if (left && !current_gamepad_state.dpad_left)   enqueue_key(0x50, 0, true); /* Left Arrow */
+    if (right && !current_gamepad_state.dpad_right) enqueue_key(0x4F, 0, true); /* Right Arrow */
+    if (btn_a && !current_gamepad_state.btn_a)      enqueue_key(0x28, '\r', true); /* Enter */
+    if (btn_b && !current_gamepad_state.btn_b)      enqueue_key(0x29, 0, true);    /* Escape */
+
+    current_gamepad_state.left_x     = lx;
+    current_gamepad_state.left_y     = ly;
+    current_gamepad_state.hat        = hat;
+    current_gamepad_state.buttons    = btns;
+    current_gamepad_state.dpad_up    = up;
+    current_gamepad_state.dpad_down  = down;
+    current_gamepad_state.dpad_left  = left;
+    current_gamepad_state.dpad_right = right;
+    current_gamepad_state.btn_a      = btn_a;
+    current_gamepad_state.btn_b      = btn_b;
+    current_gamepad_state.btn_x      = ((btns & (1U << 3)) != 0);
+    current_gamepad_state.btn_y      = ((btns & (1U << 4)) != 0);
+}
+
 /**
  * @brief Reliable determination of the HID device type
  */
 static HID_TypeTypeDef Get_Reliable_HID_Type(USBH_HandleTypeDef *phost)
 {
+    if (is_gamepad_ready)
+    {
+        return HID_GAMEPAD;
+    }
+
     HID_TypeTypeDef dev_type = USBH_HID_GetDeviceType(phost);
     if (dev_type == HID_KEYBOARD || dev_type == HID_MOUSE)
     {
@@ -164,6 +273,14 @@ void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id)
     case HOST_USER_DISCONNECTION:
         is_kbd_ready = false;
         is_mouse_ready = false;
+        if (is_gamepad_ready && gpad_pipe != 0U)
+        {
+            (void)USBH_ClosePipe(phost, gpad_pipe);
+            (void)USBH_FreePipe(phost, gpad_pipe);
+            gpad_pipe = 0U;
+        }
+        is_gamepad_ready = false;
+        gpad_waiting_urb = false;
         g_usb_dbg.detected_dev_type = 0;
         g_usb_dbg.hid_state = 0;
         Beeper_Click();
@@ -178,16 +295,25 @@ void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id)
             {
                 is_kbd_ready = true;
                 is_mouse_ready = false;
+                is_gamepad_ready = false;
                 Beeper_BootMelody();
             }
             else if (dev_type == HID_MOUSE)
             {
                 is_mouse_ready = true;
                 is_kbd_ready = false;
+                is_gamepad_ready = false;
                 current_mouse_state.x = 160;
                 current_mouse_state.y = 120;
                 g_usb_dbg.mouse_x = 160;
                 g_usb_dbg.mouse_y = 120;
+                Beeper_BootMelody();
+            }
+            else if (dev_type == HID_GAMEPAD)
+            {
+                is_gamepad_ready = true;
+                is_kbd_ready = false;
+                is_mouse_ready = false;
                 Beeper_BootMelody();
             }
             else
@@ -208,7 +334,6 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
     HID_TypeTypeDef dev_type = Get_Reliable_HID_Type(phost);
     g_usb_dbg.detected_dev_type = (uint8_t)dev_type;
 
-    /* Copy raw report bytes from FIFO/pData for inspection */
     if (phost->pActiveClass != NULL && phost->pActiveClass->pData != NULL)
     {
         HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)phost->pActiveClass->pData;
@@ -254,54 +379,11 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
             uint8_t b0 = g_usb_dbg.raw_report[0];
             uint8_t b1 = g_usb_dbg.raw_report[1];
             uint8_t b2 = g_usb_dbg.raw_report[2];
-            uint8_t b3 = g_usb_dbg.raw_report[3];
-            uint8_t b4 = g_usb_dbg.raw_report[4];
 
-            int16_t dx = 0;
-            int16_t dy = 0;
-            uint8_t btns = b0;
-
-            /* Detect 12-bit/16-bit Report format vs standard 8-bit Boot format:
-             * In 12-bit mice: Byte 1 = X_low, Byte 2 low nibble = X_high,
-             * Byte 2 high nibble + Byte 3 = Y_12bit!
-             * In 16-bit mice: Byte 1..2 = X_16bit, Byte 3..4 = Y_16bit.
-             */
-            HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)phost->pActiveClass->pData;
-
-            /* Check if Byte 2 low nibble is sign extension of X (0x0 or 0xF) while Byte 3 holds Y */
-            if (HID_Handle->length >= 5 && ((b2 & 0x0F) == 0x00 || (b2 & 0x0F) == 0x0F) && (b3 != 0 || (b2 & 0xF0) != 0))
-            {
-                /* 12-bit packed X/Y format (very common in modern optical mice):
-                 * X = 12-bit signed: b1 | ((b2 & 0x0F) << 8)
-                 * Y = 12-bit signed: (b2 >> 4) | (b3 << 4)
-                 */
-                int16_t raw_x12 = (int16_t)(b1 | ((b2 & 0x0F) << 8));
-                if (raw_x12 & 0x0800) raw_x12 |= 0xF000; /* Sign extend 12->16 bit */
-
-                int16_t raw_y12 = (int16_t)((b2 >> 4) | (b3 << 4));
-                if (raw_y12 & 0x0800) raw_y12 |= 0xF000; /* Sign extend 12->16 bit */
-
-                dx = raw_x12;
-                dy = raw_y12;
-            }
-            else if (HID_Handle->length >= 6 && (b2 == 0x00 || b2 == 0xFF) && (b4 == 0x00 || b4 == 0xFF))
-            {
-                /* 16-bit little-endian X/Y format (Byte 1-2 = X, Byte 3-4 = Y) */
-                dx = (int16_t)((uint16_t)b1 | ((uint16_t)b2 << 8));
-                dy = (int16_t)((uint16_t)b3 | ((uint16_t)b4 << 8));
-            }
-            else
-            {
-                /* Standard 8-bit Boot Protocol format (Byte 1 = X, Byte 2 = Y) */
-                dx = (int8_t)b1;
-                dy = (int8_t)b2;
-            }
-
-            /* Clamp deltas to int8_t range */
-            if (dx > 127)  dx = 127;
-            if (dx < -127) dx = -127;
-            if (dy > 127)  dy = 127;
-            if (dy < -127) dy = -127;
+            /* Video confirmed standard 8-bit signed layout:
+             * b0 = buttons, b1 = signed 8-bit X, b2 = signed 8-bit Y */
+            int16_t dx = (int8_t)b1;
+            int16_t dy = (int8_t)b2;
 
             current_mouse_state.delta_x = (int8_t)dx;
             current_mouse_state.delta_y = (int8_t)dy;
@@ -317,26 +399,103 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
             current_mouse_state.x = new_x;
             current_mouse_state.y = new_y;
 
-            current_mouse_state.btn_left   = ((btns & 0x01) != 0);
-            current_mouse_state.btn_right  = ((btns & 0x02) != 0);
-            current_mouse_state.btn_middle = ((btns & 0x04) != 0);
+            current_mouse_state.btn_left   = ((b0 & 0x01) != 0);
+            current_mouse_state.btn_right  = ((b0 & 0x02) != 0);
+            current_mouse_state.btn_middle = ((b0 & 0x04) != 0);
 
             g_usb_dbg.mouse_x  = new_x;
             g_usb_dbg.mouse_y  = new_y;
             g_usb_dbg.mouse_dx = (int8_t)dx;
             g_usb_dbg.mouse_dy = (int8_t)dy;
-            g_usb_dbg.mouse_btns = btns & 0x07;
+            g_usb_dbg.mouse_btns = b0 & 0x07;
         }
     }
 }
 
 void USBHostManager_TaskPoll(void)
 {
-    /* 1. Cold-Boot Recovery:
-     * If a device was plugged in before power-on, LCD/POST blocking delays
-     * can stall the initial USB enumeration in State 4 (HOST_USER_CONNECTION).
-     * If connected for > 1200ms without reaching HOST_CLASS, trigger ReEnumerate! */
-    if (hUsbHostFS.device.is_connected && hUsbHostFS.gState != HOST_CLASS)
+    /* 1. Custom Non-Boot HID Gamepad Activation & Polling (STK-7024X):
+     * When a D-Input Gamepad (Class 0x03, SubClass 0x00, Protocol 0x00) is plugged in,
+     * ST's Boot-only USBH_HID_InterfaceInit rejects it and puts gState into HOST_ABORT_STATE.
+     * We intercept this state and open the Interrupt IN pipe directly! */
+    if (hUsbHostFS.device.is_connected &&
+        hUsbHostFS.gState == HOST_ABORT_STATE &&
+        !is_gamepad_ready &&
+        hUsbHostFS.device.CfgDesc.Itf_Desc[0].bInterfaceClass == USB_HID_CLASS &&
+        hUsbHostFS.device.CfgDesc.Itf_Desc[0].bInterfaceProtocol == 0x00U)
+    {
+        /* Find Interrupt IN endpoint on Interface 0 */
+        USBH_InterfaceDescTypeDef *itf = &hUsbHostFS.device.CfgDesc.Itf_Desc[0];
+        for (uint8_t i = 0; i < itf->bNumEndpoints; i++)
+        {
+            if ((itf->Ep_Desc[i].bEndpointAddress & 0x80U) != 0U)
+            {
+                gpad_ep_addr = itf->Ep_Desc[i].bEndpointAddress;
+                gpad_ep_mps  = itf->Ep_Desc[i].wMaxPacketSize;
+                if (gpad_ep_mps > sizeof(gpad_rx_buf)) gpad_ep_mps = sizeof(gpad_rx_buf);
+                gpad_poll_ms = itf->Ep_Desc[i].bInterval;
+                if (gpad_poll_ms < 10U) gpad_poll_ms = 10U;
+
+                gpad_pipe = USBH_AllocPipe(&hUsbHostFS, gpad_ep_addr);
+                (void)USBH_OpenPipe(&hUsbHostFS,
+                                    gpad_pipe,
+                                    gpad_ep_addr,
+                                    hUsbHostFS.device.address,
+                                    hUsbHostFS.device.speed,
+                                    USB_EP_TYPE_INTR,
+                                    gpad_ep_mps);
+                (void)USBH_LL_SetToggle(&hUsbHostFS, gpad_pipe, 0U);
+
+                is_gamepad_ready = true;
+                is_kbd_ready     = false;
+                is_mouse_ready   = false;
+                gpad_waiting_urb = false;
+                gpad_last_poll   = HAL_GetTick();
+
+                g_usb_dbg.detected_dev_type = (uint8_t)HID_GAMEPAD;
+                g_usb_dbg.last_host_id      = HOST_USER_CLASS_ACTIVE;
+                g_usb_dbg.hid_state         = 6U; /* POLL */
+                Beeper_BootMelody();
+                break;
+            }
+        }
+    }
+
+    /* Direct Polling loop for Gamepad Interrupt IN pipe */
+    if (is_gamepad_ready && gpad_pipe != 0U)
+    {
+        if (!gpad_waiting_urb)
+        {
+            if ((HAL_GetTick() - gpad_last_poll) >= gpad_poll_ms)
+            {
+                gpad_last_poll   = HAL_GetTick();
+                gpad_waiting_urb = true;
+                (void)USBH_InterruptReceiveData(&hUsbHostFS, gpad_rx_buf, (uint8_t)gpad_ep_mps, gpad_pipe);
+            }
+        }
+        else
+        {
+            USBH_URBStateTypeDef urb = USBH_LL_GetURBState(&hUsbHostFS, gpad_pipe);
+            if (urb == USBH_URB_DONE)
+            {
+                gpad_waiting_urb = false;
+                g_usb_dbg.irq_event_count++;
+                Parse_Gamepad_Report(gpad_rx_buf, gpad_ep_mps);
+            }
+            else if (urb == USBH_URB_NOTREADY || urb == USBH_URB_NYET ||
+                     urb == USBH_URB_ERROR || urb == USBH_URB_STALL ||
+                     (HAL_GetTick() - gpad_last_poll) >= 20U)
+            {
+                gpad_waiting_urb = false;
+            }
+        }
+        return;
+    }
+
+    /* 2. Cold-Boot Recovery for Keyboard/Mouse */
+    if (hUsbHostFS.device.is_connected &&
+        hUsbHostFS.gState != HOST_CLASS &&
+        hUsbHostFS.gState != HOST_ABORT_STATE)
     {
         if (!cold_boot_recovered && (HAL_GetTick() - connect_start_tick) > 1200U)
         {
@@ -350,14 +509,13 @@ void USBHostManager_TaskPoll(void)
         cold_boot_recovered = false;
     }
 
-    /* 2. State machine polling & USBH_HID_IDLE bypass */
+    /* 3. State machine polling & USBH_HID_IDLE bypass for Keyboard/Mouse */
     if (hUsbHostFS.pActiveClass != NULL && hUsbHostFS.pActiveClass->pData != NULL)
     {
         HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)hUsbHostFS.pActiveClass->pData;
 
         if (hUsbHostFS.gState == HOST_CLASS)
         {
-            /* Ensure we also mark device ready if callback happened before init */
             if (!is_kbd_ready && !is_mouse_ready)
             {
                 USBHostManager_ProcessUserCallback(&hUsbHostFS, HOST_USER_CLASS_ACTIVE);

@@ -11,6 +11,9 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Extended Device Type for Gamepad */
+#define HID_GAMEPAD  ((HID_TypeTypeDef)3U)
+
 /**
  * @brief USB HID Keyboard Event Structure
  */
@@ -34,11 +37,31 @@ typedef struct {
 } USB_MouseEvent_t;
 
 /**
+ * @brief USB HID Gamepad State Structure (D-Input / STK-7024X)
+ */
+typedef struct {
+    int8_t   left_x;    /* Left stick X (-127..+127) */
+    int8_t   left_y;    /* Left stick Y (-127..+127) */
+    uint8_t  hat;       /* D-Pad Hat switch (0=Up, 2=Right, 4=Down, 6=Left, 0x0F=Center) */
+    uint16_t buttons;   /* Bitmask of buttons 0..14 */
+    bool     dpad_up;
+    bool     dpad_down;
+    bool     dpad_left;
+    bool     dpad_right;
+    bool     btn_a;     /* Button 0 (Cross / A) */
+    bool     btn_b;     /* Button 1 (Circle / B) */
+    bool     btn_x;     /* Button 3 (Square / X) */
+    bool     btn_y;     /* Button 4 (Triangle / Y) */
+    bool     btn_start; /* Start button */
+    bool     btn_select;/* Select button */
+} USB_GamepadState_t;
+
+/**
  * @brief Diagnostic structure for debugging without UART
  */
 typedef struct {
     uint8_t  last_host_id;      /* Last HOST_USER_... state (2 = CLASS_ACTIVE) */
-    uint8_t  detected_dev_type; /* 0=Unknown, 1=Mouse, 2=Keyboard */
+    uint8_t  detected_dev_type; /* 0=Unknown, 1=Mouse, 2=Keyboard, 3=Gamepad */
     uint8_t  hid_state;         /* Internal HID_Handle->state (6 = POLL) */
     uint8_t  last_scancode;     /* Last raw HID key scancode */
     uint8_t  last_ascii;        /* Last decoded ASCII char */
@@ -60,10 +83,12 @@ void USBHostManager_TaskPoll(void);
 
 bool USBHostManager_IsKeyboardReady(void);
 bool USBHostManager_IsMouseReady(void);
+bool USBHostManager_IsGamepadReady(void);
 
 bool USBHostManager_GetKey(char *ch);
 bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event);
 bool USBHostManager_GetMouseState(USB_MouseEvent_t *state);
+bool USBHostManager_GetGamepadState(USB_GamepadState_t *state);
 
 void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id);
 void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost);

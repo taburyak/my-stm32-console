@@ -1015,6 +1015,18 @@ void StartDefaultTask(void *argument)
                                 g_usb_dbg.raw_report[2],
                                 g_usb_dbg.raw_report[3]);
         }
+        else if (USBHostManager_IsGamepadReady())
+        {
+          lv_label_set_text_fmt(g_usb_status_label,
+                                "PAD [%02X %02X %02X %02X %02X %02X %02X]",
+                                g_usb_dbg.raw_report[0],
+                                g_usb_dbg.raw_report[1],
+                                g_usb_dbg.raw_report[2],
+                                g_usb_dbg.raw_report[3],
+                                g_usb_dbg.raw_report[4],
+                                g_usb_dbg.raw_report[5],
+                                g_usb_dbg.raw_report[6]);
+        }
         else
         {
           lv_label_set_text_fmt(g_usb_status_label,
