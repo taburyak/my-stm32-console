@@ -26,8 +26,8 @@ typedef struct {
 typedef struct {
     int16_t x;          /* Absolute Cursor X Position (0..319) */
     int16_t y;          /* Absolute Cursor Y Position (0..239) */
-    int8_t  delta_x;    /* Relative X move */
-    int8_t  delta_y;    /* Relative Y move */
+    int8_t  delta_x;    /* Relative X move (-127..127) */
+    int8_t  delta_y;    /* Relative Y move (-127..127) */
     bool    btn_left;   /* Left button state */
     bool    btn_right;  /* Right button state */
     bool    btn_middle; /* Middle button state */
@@ -39,9 +39,15 @@ typedef struct {
 typedef struct {
     uint8_t  last_host_id;      /* Last HOST_USER_... state (2 = CLASS_ACTIVE) */
     uint8_t  detected_dev_type; /* 0=Unknown, 1=Mouse, 2=Keyboard */
-    uint8_t  hid_state;         /* Internal HID_Handle->state */
+    uint8_t  hid_state;         /* Internal HID_Handle->state (6 = POLL) */
     uint8_t  last_scancode;     /* Last raw HID key scancode */
     uint8_t  last_ascii;        /* Last decoded ASCII char */
+    int16_t  mouse_x;           /* Current mouse X coordinate */
+    int16_t  mouse_y;           /* Current mouse Y coordinate */
+    int8_t   mouse_dx;          /* Last relative X delta */
+    int8_t   mouse_dy;          /* Last relative Y delta */
+    uint8_t  mouse_btns;        /* Bitmask: bit0=L, bit1=R, bit2=M */
+    uint8_t  raw_report[8];     /* Raw HID report bytes for debugging */
     uint32_t irq_event_count;   /* Total HID packets received */
 } USB_DebugInfo_t;
 
@@ -57,7 +63,7 @@ bool USBHostManager_IsMouseReady(void);
 
 bool USBHostManager_GetKey(char *ch);
 bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event);
-bool USBHostManager_GetMouseEvent(USB_MouseEvent_t *event);
+bool USBHostManager_GetMouseState(USB_MouseEvent_t *state);
 
 void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id);
 void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost);

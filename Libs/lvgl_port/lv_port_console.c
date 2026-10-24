@@ -14,6 +14,9 @@ extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *buf_1 = (lv_color_t *)0x68000000UL;
 
+/* Pointer to the mouse cursor object on lv_layer_sys() */
+static lv_obj_t * mouse_cursor_obj = NULL;
+
 /**
  * @brief Pixel Transfer Buffer to the ILI9341 Controller
  */
@@ -51,6 +54,42 @@ static void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 }
 
 /**
+ * @brief Mouse Read Callback for USB HID Mouse
+ */
+static void mouse_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
+{
+    static int16_t last_x = 160;
+    static int16_t last_y = 120;
+    USB_MouseEvent_t m_state;
+
+    if (USBHostManager_IsMouseReady() && USBHostManager_GetMouseState(&m_state))
+    {
+        /* Show cursor when mouse is connected */
+        if (mouse_cursor_obj != NULL && lv_obj_has_flag(mouse_cursor_obj, LV_OBJ_FLAG_HIDDEN))
+        {
+            lv_obj_clear_flag(mouse_cursor_obj, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        last_x = m_state.x;
+        last_y = m_state.y;
+        data->state = m_state.btn_left ? LV_INDEV_STATE_PR : LV_INDEV_STATE_REL;
+    }
+    else
+    {
+        /* Hide cursor when mouse is disconnected */
+        if (mouse_cursor_obj != NULL && !lv_obj_has_flag(mouse_cursor_obj, LV_OBJ_FLAG_HIDDEN))
+        {
+            lv_obj_add_flag(mouse_cursor_obj, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        data->state = LV_INDEV_STATE_REL;
+    }
+
+    data->point.x = last_x;
+    data->point.y = last_y;
+}
+
+/**
  * @brief Keyboard Read Callback for USB HID Keyboard
  */
 static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
@@ -58,7 +97,6 @@ static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     static uint32_t last_key = 0;
     static bool send_release_next = false;
 
-    /* Якщо на попередньому кроці ми відправили PRESSED, тепер відправляємо RELEASED */
     if (send_release_next)
     {
         data->key = last_key;
@@ -70,21 +108,18 @@ static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     USB_KeyboardEvent_t kbd_evt;
     if (USBHostManager_GetKeyEvent(&kbd_evt) && kbd_evt.is_pressed)
     {
-        // Beeper_Click(); /* Короткий клік біпером на кожне натискання клавіші! */
-
         uint32_t lv_key = 0;
 
-        /* Перевіряємо спеціальні сканкоди USB HID (Стрілки, Enter, Esc, Backspace, Tab) */
         switch (kbd_evt.scancode)
         {
             case 0x52: /* Up Arrow */
             case 0x50: /* Left Arrow */
-                lv_key = LV_KEY_PREV; /* Фокус на попередній елемент списку */
+                lv_key = LV_KEY_PREV;
                 break;
 
             case 0x51: /* Down Arrow */
             case 0x4F: /* Right Arrow */
-                lv_key = LV_KEY_NEXT; /* Фокус на наступний елемент списку */
+                lv_key = LV_KEY_NEXT;
                 break;
 
             case 0x28: /* Enter */
@@ -105,7 +140,6 @@ static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
                 break;
 
             default:
-                /* Якщо це звичайна буква/цифра */
                 lv_key = kbd_evt.ascii;
                 break;
         }
@@ -157,4 +191,18 @@ void LVGL_Port_Init(void)
     indev_kbd_drv.read_cb = keyboard_read;
     lv_indev_t * kbd_indev = lv_indev_drv_register(&indev_kbd_drv);
     lv_indev_set_group(kbd_indev, def_group);
+
+    /* 6. Registration of USB Mouse with dynamic cursor */
+    static lv_indev_drv_t indev_mouse_drv;
+    lv_indev_drv_init(&indev_mouse_drv);
+    indev_mouse_drv.type = LV_INDEV_TYPE_POINTER;
+    indev_mouse_drv.read_cb = mouse_read;
+    lv_indev_t * mouse_indev = lv_indev_drv_register(&indev_mouse_drv);
+
+    /* Create cursor icon on the top system layer and hide it initially */
+    mouse_cursor_obj = lv_label_create(lv_layer_sys());
+    lv_label_set_text(mouse_cursor_obj, LV_SYMBOL_UP); /* Neat pointer arrow */
+    lv_obj_set_style_text_color(mouse_cursor_obj, lv_color_hex(0xFF0000), 0); /* Bright Red Cursor */
+    lv_obj_add_flag(mouse_cursor_obj, LV_OBJ_FLAG_HIDDEN);
+    lv_indev_set_cursor(mouse_indev, mouse_cursor_obj);
 }

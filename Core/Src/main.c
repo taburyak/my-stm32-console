@@ -848,6 +848,9 @@ void StartDefaultTask(void *argument)
   printf("  STM32F407 Console OS - Step 1 Boot\r\n");
   printf("----------------------------------------\r\n");
 
+  USBHostManager_Init();
+  printf("[INIT] USB Host Manager Ready.\r\n");
+
   uint32_t sys_freq = HAL_RCC_GetSysClockFreq();
   printf("System Clock Frequency: %lu MHz\r\n", sys_freq / 1000000);
 
@@ -861,8 +864,6 @@ void StartDefaultTask(void *argument)
   lcdInit();
   lcdBacklightOn();
   lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE); // 320x240
-  USBHostManager_Init();
-  printf("[INIT] USB Host Manager Ready.\r\n");
 
   /* 3. Output diagnostic report to UART3 terminal */
   POST_PrintSummary();
@@ -998,6 +999,21 @@ void StartDefaultTask(void *argument)
                                 g_usb_dbg.last_scancode,
                                 ch_disp,
                                 (unsigned long)g_usb_dbg.irq_event_count);
+        }
+        else if (USBHostManager_IsMouseReady())
+        {
+          char b_l = (g_usb_dbg.mouse_btns & 0x01) ? 'L' : '-';
+          char b_r = (g_usb_dbg.mouse_btns & 0x02) ? 'R' : '-';
+
+          lv_label_set_text_fmt(g_usb_status_label,
+                                "M X:%d Y:%d %c%c [%02X %02X %02X %02X]",
+                                (int)g_usb_dbg.mouse_x,
+                                (int)g_usb_dbg.mouse_y,
+                                b_l, b_r,
+                                g_usb_dbg.raw_report[0],
+                                g_usb_dbg.raw_report[1],
+                                g_usb_dbg.raw_report[2],
+                                g_usb_dbg.raw_report[3]);
         }
         else
         {
