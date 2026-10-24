@@ -149,7 +149,7 @@ static void list_btn_event_cb(lv_event_t * e)
   if (code == LV_EVENT_CLICKED)
   {
     const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
-    Beeper_Click();
+    // Beeper_Click();
     if (g_usb_status_label != NULL)
     {
       lv_label_set_text_fmt(g_usb_status_label, "Selected: %s", file_name);
@@ -967,26 +967,34 @@ void StartDefaultTask(void *argument)
     /* 4. LVGL Graphics Processing */
     lv_timer_handler();
 
+    /* Wakeup USB Host state machine for HID polling in RTOS mode */
+    USBHostManager_TaskPoll();
+
     /* Visual USB Debug Monitor on LCD (every 100ms) */
     static uint32_t last_usb_ui_tick = 0;
     static uint32_t prev_irq_cnt = 0xFFFFFFFF;
     static uint8_t  prev_host_id = 0xFF;
+    static uint8_t  prev_hid_st  = 0xFF;
 
     if ((HAL_GetTick() - last_usb_ui_tick) >= 100)
     {
       last_usb_ui_tick = HAL_GetTick();
 
-      if (g_usb_dbg.irq_event_count != prev_irq_cnt || g_usb_dbg.last_host_id != prev_host_id)
+      if (g_usb_dbg.irq_event_count != prev_irq_cnt ||
+          g_usb_dbg.last_host_id != prev_host_id ||
+          g_usb_dbg.hid_state != prev_hid_st)
       {
         prev_irq_cnt = g_usb_dbg.irq_event_count;
         prev_host_id = g_usb_dbg.last_host_id;
+        prev_hid_st  = g_usb_dbg.hid_state;
 
         if (USBHostManager_IsKeyboardReady())
         {
           char ch_disp = (g_usb_dbg.last_ascii >= 32 && g_usb_dbg.last_ascii <= 126)
                          ? (char)g_usb_dbg.last_ascii : '?';
           lv_label_set_text_fmt(g_usb_status_label,
-                                "KBD OK | Scan:0x%02X Char:'%c' Cnt:%lu",
+                                "KBD St:%d | Sc:0x%02X '%c' Cnt:%lu",
+                                g_usb_dbg.hid_state,
                                 g_usb_dbg.last_scancode,
                                 ch_disp,
                                 (unsigned long)g_usb_dbg.irq_event_count);
@@ -994,9 +1002,10 @@ void StartDefaultTask(void *argument)
         else
         {
           lv_label_set_text_fmt(g_usb_status_label,
-                                "USB State:%d Type:%d (No KBD)",
+                                "USB State:%d Type:%d HidSt:%d",
                                 g_usb_dbg.last_host_id,
-                                g_usb_dbg.detected_dev_type);
+                                g_usb_dbg.detected_dev_type,
+                                g_usb_dbg.hid_state);
         }
       }
     }

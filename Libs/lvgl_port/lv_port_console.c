@@ -70,7 +70,7 @@ static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     USB_KeyboardEvent_t kbd_evt;
     if (USBHostManager_GetKeyEvent(&kbd_evt) && kbd_evt.is_pressed)
     {
-        Beeper_Click(); /* Короткий клік біпером на кожне натискання клавіші! */
+        // Beeper_Click(); /* Короткий клік біпером на кожне натискання клавіші! */
 
         uint32_t lv_key = 0;
 

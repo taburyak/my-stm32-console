@@ -7,6 +7,8 @@
 
 #define KBD_QUEUE_SIZE 16
 
+extern USBH_HandleTypeDef hUsbHostFS;
+
 static volatile bool is_kbd_ready = false;
 static volatile bool is_mouse_ready = false;
 
@@ -205,6 +207,32 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
 
                 enqueue_key(scancode, ascii, true);
             }
+        }
+    }
+}
+
+void USBHostManager_TaskPoll(void)
+{
+    if (hUsbHostFS.pActiveClass != NULL && hUsbHostFS.pActiveClass->pData != NULL)
+    {
+        HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)hUsbHostFS.pActiveClass->pData;
+
+        /* When gState reaches HOST_CLASS, USBH_HID_IDLE tries to call Control GetReport,
+         * which can hang on keyboards that don't support it.
+         * We bypass USBH_HID_IDLE directly to USBH_HID_SYNC to start interrupt polling! */
+        if (hUsbHostFS.gState == HOST_CLASS)
+        {
+            if (HID_Handle->state == USBH_HID_IDLE)
+            {
+                HID_Handle->state = USBH_HID_SYNC;
+            }
+
+            g_usb_dbg.hid_state = (uint8_t)HID_Handle->state;
+            USBH_LL_NotifyURBChange(&hUsbHostFS);
+        }
+        else
+        {
+            g_usb_dbg.hid_state = (uint8_t)HID_Handle->state;
         }
     }
 }

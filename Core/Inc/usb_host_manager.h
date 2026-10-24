@@ -37,8 +37,9 @@ typedef struct {
  * @brief Diagnostic structure for debugging without UART
  */
 typedef struct {
-    uint8_t  last_host_id;      /* Last HOST_USER_... state (4 = CLASS_ACTIVE) */
+    uint8_t  last_host_id;      /* Last HOST_USER_... state (2 = CLASS_ACTIVE) */
     uint8_t  detected_dev_type; /* 0=Unknown, 1=Mouse, 2=Keyboard */
+    uint8_t  hid_state;         /* Internal HID_Handle->state */
     uint8_t  last_scancode;     /* Last raw HID key scancode */
     uint8_t  last_ascii;        /* Last decoded ASCII char */
     uint32_t irq_event_count;   /* Total HID packets received */
@@ -49,6 +50,7 @@ extern volatile USB_DebugInfo_t g_usb_dbg;
 
 /* --- Public Function Prototypes --- */
 void USBHostManager_Init(void);
+void USBHostManager_TaskPoll(void);
 
 bool USBHostManager_IsKeyboardReady(void);
 bool USBHostManager_IsMouseReady(void);
