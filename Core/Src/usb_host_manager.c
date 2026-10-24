@@ -376,38 +376,33 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
         HID_MOUSE_Info_TypeDef *m_info = USBH_HID_GetMouseInfo(phost);
         if (m_info != NULL)
         {
+            HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *)phost->pActiveClass->pData;
             uint8_t b0 = g_usb_dbg.raw_report[0];
             uint8_t b1 = g_usb_dbg.raw_report[1];
             uint8_t b2 = g_usb_dbg.raw_report[2];
+            uint8_t b3 = g_usb_dbg.raw_report[3];
 
-            /* Video confirmed standard 8-bit signed layout:
-             * b0 = buttons, b1 = signed 8-bit X, b2 = signed 8-bit Y */
-            int16_t dx = (int8_t)b1;
-            int16_t dy = (int8_t)b2;
+            int16_t dx = 0;
+            int16_t dy = 0;
+
+            /* If endpoint packet size > 4 bytes (modern 16-bit mouse):
+             * Byte 0: Buttons (bit0=L, bit1=R, bit2=Middle)
+             * Byte 1..2: 16-bit X (b1 = X_low, b2 = X_high sign)
+             * Byte 3..4: 16-bit Y (b3 = Y_low, b4 = Y_high sign)
+             */
+            if (HID_Handle->length > 4U)
+            {
+                dx = (int8_t)b1;
+                dy = (int8_t)b3;
+            }
+            else
+            {
+                dx = (int8_t)b1;
+                dy = (int8_t)b2;
+            }
 
             current_mouse_state.delta_x = (int8_t)dx;
             current_mouse_state.delta_y = (int8_t)dy;
-
-            int16_t new_x = current_mouse_state.x + dx;
-            int16_t new_y = current_mouse_state.y + dy;
-
-            if (new_x < 0)   new_x = 0;
-            if (new_x > 319) new_x = 319;
-            if (new_y < 0)   new_y = 0;
-            if (new_y > 239) new_y = 239;
-
-            current_mouse_state.x = new_x;
-            current_mouse_state.y = new_y;
-
-            current_mouse_state.btn_left   = ((b0 & 0x01) != 0);
-            current_mouse_state.btn_right  = ((b0 & 0x02) != 0);
-            current_mouse_state.btn_middle = ((b0 & 0x04) != 0);
-
-            g_usb_dbg.mouse_x  = new_x;
-            g_usb_dbg.mouse_y  = new_y;
-            g_usb_dbg.mouse_dx = (int8_t)dx;
-            g_usb_dbg.mouse_dy = (int8_t)dy;
-            g_usb_dbg.mouse_btns = b0 & 0x07;
         }
     }
 }

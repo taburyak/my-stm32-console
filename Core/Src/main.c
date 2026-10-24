@@ -1004,12 +1004,13 @@ void StartDefaultTask(void *argument)
         {
           char b_l = (g_usb_dbg.mouse_btns & 0x01) ? 'L' : '-';
           char b_r = (g_usb_dbg.mouse_btns & 0x02) ? 'R' : '-';
+          char b_m = (g_usb_dbg.mouse_btns & 0x04) ? 'M' : '-';
 
           lv_label_set_text_fmt(g_usb_status_label,
-                                "M X:%d Y:%d %c%c [%02X %02X %02X %02X]",
+                                "M X:%d Y:%d %c%c%c [%02X %02X %02X %02X]",
                                 (int)g_usb_dbg.mouse_x,
                                 (int)g_usb_dbg.mouse_y,
-                                b_l, b_r,
+                                b_l, b_r, b_m,
                                 g_usb_dbg.raw_report[0],
                                 g_usb_dbg.raw_report[1],
                                 g_usb_dbg.raw_report[2],
