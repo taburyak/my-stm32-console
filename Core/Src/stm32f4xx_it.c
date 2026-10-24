@@ -171,7 +171,7 @@ void DebugMon_Handler(void)
 void EXTI9_5_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI9_5_IRQn 0 */
-// Clear interrupt flags for button lines KEY0..KEY3 and call HAL Callback
+  // Clear interrupt flags for button lines KEY0..KEY3 and call HAL Callback
   HAL_GPIO_EXTI_IRQHandler(KEY_0_Pin);
   HAL_GPIO_EXTI_IRQHandler(KEY_1_Pin);
   HAL_GPIO_EXTI_IRQHandler(KEY_2_Pin);
@@ -296,28 +296,29 @@ __attribute__((naked)) void SVC_Handler(void)
 // C-handler for system calls
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
-    // Get SVC number (it's in the instruction code before return address)
-    uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
+  // Get SVC number (it's in the instruction code before return address)
+  uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
 
-    if (svc_number == 0) 
+  if (svc_number == 0)
+  {
+    // This is FreeRTOS start. Pass control to it.
+    vPortSVCHandler();
+  }
+  else
+  {
+    // This is a call from your user script!
+    switch(svc_number)
     {
-        // This is FreeRTOS start. Pass control to it.
-        vPortSVCHandler();
-    } 
-    else 
-    {
-        // This is a call from your user script!
-        switch(svc_number) {
-            case 1:
-                // Example: sys_led_toggle
-                break;
-            case 2:
-                // Example: sys_draw_pixel
-                // Your graphics engine call code
-                break;
-            default:
-                break; // Unknown call
-        }
+      case 1:
+        // Example: sys_led_toggle
+        break;
+      case 2:
+        // Example: sys_draw_pixel
+        // Your graphics engine call code
+        break;
+      default:
+        break; // Unknown call
     }
+  }
 }
 /* USER CODE END 1 */

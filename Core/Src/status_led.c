@@ -3,8 +3,10 @@
 /**
  * @brief Helper function to get the port and pin by LED identifier
  */
-static void Get_LED_GPIO(StatusLED_t led, GPIO_TypeDef **port, uint16_t *pin) {
-    switch (led) {
+static void Get_LED_GPIO(StatusLED_t led, GPIO_TypeDef **port, uint16_t *pin)
+{
+    switch (led)
+    {
         case STATUS_LED_HEARTBEAT:
             *port = LD0_GPIO_Port;
             *pin  = LD0_Pin;
@@ -24,7 +26,8 @@ static void Get_LED_GPIO(StatusLED_t led, GPIO_TypeDef **port, uint16_t *pin) {
     }
 }
 
-void StatusLED_Init(void) {
+void StatusLED_Init(void)
+{
     /* Turn off all LEDs by default (Active-Low -> SET = OFF) */
     StatusLED_Set(STATUS_LED_HEARTBEAT, STATUS_LED_OFF);
     StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
@@ -32,26 +35,30 @@ void StatusLED_Init(void) {
 }
 
 
-void StatusLED_Set(StatusLED_t led, StatusLED_State_t state) {
+void StatusLED_Set(StatusLED_t led, StatusLED_State_t state)
+{
     GPIO_TypeDef *port = NULL;
     uint16_t pin = 0;
 
     Get_LED_GPIO(led, &port, &pin);
 
-    if (port != NULL) {
+    if (port != NULL)
+    {
         /* Active-Low: ON -> RESET (0V), OFF -> SET (3.3V) */
         GPIO_PinState pinState = (state == STATUS_LED_ON) ? GPIO_PIN_RESET : GPIO_PIN_SET;
         HAL_GPIO_WritePin(port, pin, pinState);
     }
 }
 
-void StatusLED_Toggle(StatusLED_t led) {
+void StatusLED_Toggle(StatusLED_t led)
+{
     GPIO_TypeDef *port = NULL;
     uint16_t pin = 0;
 
     Get_LED_GPIO(led, &port, &pin);
 
-    if (port != NULL) {
+    if (port != NULL)
+    {
         HAL_GPIO_TogglePin(port, pin);
     }
 }

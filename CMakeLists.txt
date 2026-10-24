@@ -51,7 +51,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/main.c
     Core/Src/stm32f4xx_it.c
     Core/Src/stm32f4xx_hal_msp.c
-    Core/Src/sram_test.c
     Libs/ILI9341/src/ili9341_simple.c
     Libs/XPT2046/XPT2046_touch.c
     Libs/AT24XXX/AT24Cxx.c
@@ -65,6 +64,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/status_led.c
     Core/Src/buttons_manager.c
     Core/Src/beeper.c
+    Core/Src/system_post.c
+    Core/Src/ccmram.c
+    Core/Src/sram_ext.c
+    Core/Src/sdcard_fatfs.c
+    Core/Src/usb_host_manager.c
 )
 
 # Add include paths

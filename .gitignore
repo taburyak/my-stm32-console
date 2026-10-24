@@ -3,7 +3,8 @@ mx.scratch
 !.settings
 
 # Build Folders CMake / Ninja / VS Code
-Libs/
+# Libs/
+Libs/lvgl/src
 build/
 Middlewares/
 cmake/
@@ -30,3 +31,4 @@ Drivers/
 # Diferent files
 my-stm32-console-rule.md
 project_context.txt
+dump_context.ps1
