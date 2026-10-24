@@ -48,10 +48,14 @@ typedef struct {
     bool     dpad_down;
     bool     dpad_left;
     bool     dpad_right;
-    bool     btn_a;     /* Button 0 (Cross / A) */
-    bool     btn_b;     /* Button 1 (Circle / B) */
-    bool     btn_x;     /* Button 3 (Square / X) */
-    bool     btn_y;     /* Button 4 (Triangle / Y) */
+    bool     btn_a;     /* Button A (Cross / A) */
+    bool     btn_b;     /* Button B (Circle / B) */
+    bool     btn_x;     /* Button X (Square / X) */
+    bool     btn_y;     /* Button Y (Triangle / Y) */
+    bool     btn_l1;    /* Left shoulder button */
+    bool     btn_r1;    /* Right shoulder button */
+    bool     btn_l2;    /* Left trigger */
+    bool     btn_r2;    /* Right trigger */
     bool     btn_start; /* Start button */
     bool     btn_select;/* Select button */
 } USB_GamepadState_t;

@@ -149,12 +149,11 @@ bool USBHostManager_GetGamepadState(USB_GamepadState_t *state)
 }
 
 /**
- * @brief Parse raw D-Input Gamepad report (STK-7024X / Generic USB Gamepad)
- *        and generate LVGL navigation events on D-Pad / A / B transitions.
+ * @brief Parse raw D-Input Gamepad report (STK-7024X)
  */
 static void Parse_Gamepad_Report(const uint8_t *buf, uint16_t len)
 {
-    if (len < 6U) return;
+    if (len < 3U) return;
 
     uint8_t copy_len = (len < 8U) ? (uint8_t)len : 8U;
     for (uint8_t i = 0; i < copy_len; i++)
@@ -162,62 +161,55 @@ static void Parse_Gamepad_Report(const uint8_t *buf, uint16_t len)
         g_usb_dbg.raw_report[i] = buf[i];
     }
 
-    /* Detect report offset: some gamepads prefix Report ID (0x01) at buf[0] */
-    uint8_t offset = (len >= 8U && buf[0] == 0x01U && (buf[1] == 0x7FU || buf[1] == 0x80U)) ? 1U : 0U;
+    /* --- 1. BUTTONS (Byte buf[0]) --- */
+    bool btn_a = ((buf[0] & 0x04) != 0);  /* Button A */
+    bool btn_b = ((buf[0] & 0x02) != 0);  /* Button B */
+    bool btn_x = ((buf[0] & 0x08) != 0);  /* Button X */
+    bool btn_y = ((buf[0] & 0x01) != 0);  /* Button Y */
+    bool btn_l1 = ((buf[0] & 0x10) != 0); /* L1 / LB (біт 4) */
+    bool btn_r1 = ((buf[0] & 0x20) != 0); /* R1 / RB (біт 5) */
+    bool btn_l2 = ((buf[0] & 0x40) != 0); /* L2 / LT (біт 6) */
+    bool btn_r2 = ((buf[0] & 0x80) != 0); /* R2 / RT (біт 7) */
 
-    int8_t lx = (int8_t)((int16_t)buf[offset + 0] - 128);
-    int8_t ly = (int8_t)((int16_t)buf[offset + 1] - 128);
+    /* --- 2. D-PAD CROSS (Byte buf[2]) --- */
+    uint8_t hat = buf[2] & 0x0F; /* The least significant 4 bits (0=Up, 2=Right, 4=Down, 6=Left, 0x0F=Neutral) */
 
-    /* Find Hat Switch & Buttons in bytes 4..7
-     * Standard D-Input (STK-7024X):
-     * Byte 0: LX, Byte 1: LY, Byte 2: RX, Byte 3: RY,
-     * Byte 4 or 5: lower nibble = Hat (0..7, 0x0F = center), upper nibble = buttons 0..3
-     * Byte 5 or 6: buttons
-     */
-    uint8_t hat = 0x0F;
-    uint16_t btns = 0;
-
-    if ((buf[offset + 5] & 0x0F) <= 0x0F && ((buf[offset + 4] == 0x7F || buf[offset + 4] == 0x80 || buf[offset + 4] == 0x00)))
-    {
-        /* Hat is in lower nibble of byte 5, buttons in upper nibble of byte 5 + byte 6 */
-        hat  = buf[offset + 5] & 0x0F;
-        btns = ((uint16_t)(buf[offset + 5] >> 4) & 0x000FU) | ((uint16_t)buf[offset + 6] << 4);
-    }
-    else
-    {
-        /* Alternative D-Input layout: Hat in lower nibble of byte 4 */
-        hat  = buf[offset + 4] & 0x0F;
-        btns = ((uint16_t)(buf[offset + 4] >> 4) & 0x000FU) | ((uint16_t)buf[offset + 5] << 4);
-    }
-
-    bool up    = (hat == 0 || hat == 1 || hat == 7) || (ly < -60);
-    bool right = (hat == 1 || hat == 2 || hat == 3) || (lx > 60);
-    bool down  = (hat == 3 || hat == 4 || hat == 5) || (ly > 60);
-    bool left  = (hat == 5 || hat == 6 || hat == 7) || (lx < -60);
-
-    bool btn_a = ((btns & (1U << 0)) != 0); /* Button 0 */
-    bool btn_b = ((btns & (1U << 1)) != 0); /* Button 1 */
+    bool up    = (hat == 0 || hat == 1 || hat == 7);
+    bool right = (hat == 1 || hat == 2 || hat == 3);
+    bool down  = (hat == 3 || hat == 4 || hat == 5);
+    bool left  = (hat == 5 || hat == 6 || hat == 7);
 
     /* Edge detection: push LVGL navigation keys on press! */
     if (up && !current_gamepad_state.dpad_up)       enqueue_key(0x52, 0, true); /* Up Arrow */
     if (down && !current_gamepad_state.dpad_down)   enqueue_key(0x51, 0, true); /* Down Arrow */
     if (left && !current_gamepad_state.dpad_left)   enqueue_key(0x50, 0, true); /* Left Arrow */
     if (right && !current_gamepad_state.dpad_right) enqueue_key(0x4F, 0, true); /* Right Arrow */
-    if (btn_a && !current_gamepad_state.btn_a)      enqueue_key(0x28, '\r', true); /* Enter */
-    if (btn_b && !current_gamepad_state.btn_b)      enqueue_key(0x29, 0, true);    /* Escape */
+    if (btn_a && !current_gamepad_state.btn_a)      enqueue_key(0x28, '\r', true); /* Enter (LV_KEY_ENTER) */
+    if (btn_b && !current_gamepad_state.btn_b)      enqueue_key(0x29, 0, true);    /* Escape (LV_KEY_ESC) */
+    if (btn_x && !current_gamepad_state.btn_x)      enqueue_key(0x2A, 0, true);    /* Backspace (LV_KEY_BACKSPACE) */
+    if (btn_y && !current_gamepad_state.btn_y)      enqueue_key(0x2B, 0, true);    /* Tab (LV_KEY_TAB) */
+    if (btn_l1 && !current_gamepad_state.btn_l1)    enqueue_key(0x52, 0, true);    /* Up Arrow (LV_KEY_UP) */
+    if (btn_r1 && !current_gamepad_state.btn_r1)    enqueue_key(0x4F, 0, true);    /* Right Arrow (LV_KEY_RIGHT) */
+    // if (btn_l2 && !current_gamepad_state.btn_l2)    enqueue_key(0x2D, 0, true);    /* Custom: L2 */
+    // if (btn_r2 && !current_gamepad_state.btn_r2)    enqueue_key(0x2E, 0, true);    /* Custom: R2 */
 
-    current_gamepad_state.left_x     = lx;
-    current_gamepad_state.left_y     = ly;
+    /* --- 4. SAVING THE CURRENT STATE --- */
+    // current_gamepad_state.left_x     = lx;
+    // current_gamepad_state.left_y     = ly;
+    // current_gamepad_state.buttons    = btns;
     current_gamepad_state.hat        = hat;
-    current_gamepad_state.buttons    = btns;
     current_gamepad_state.dpad_up    = up;
     current_gamepad_state.dpad_down  = down;
     current_gamepad_state.dpad_left  = left;
     current_gamepad_state.dpad_right = right;
     current_gamepad_state.btn_a      = btn_a;
     current_gamepad_state.btn_b      = btn_b;
-    current_gamepad_state.btn_x      = ((btns & (1U << 3)) != 0);
-    current_gamepad_state.btn_y      = ((btns & (1U << 4)) != 0);
+    current_gamepad_state.btn_x      = btn_x;
+    current_gamepad_state.btn_y      = btn_y;
+    current_gamepad_state.btn_l1     = btn_l1;
+    current_gamepad_state.btn_r1     = btn_r1;
+    current_gamepad_state.btn_l2     = btn_l2;
+    current_gamepad_state.btn_r2     = btn_r2;
 }
 
 /**
@@ -385,11 +377,7 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
             int16_t dx = 0;
             int16_t dy = 0;
 
-            /* If endpoint packet size > 4 bytes (modern 16-bit mouse):
-             * Byte 0: Buttons (bit0=L, bit1=R, bit2=Middle)
-             * Byte 1..2: 16-bit X (b1 = X_low, b2 = X_high sign)
-             * Byte 3..4: 16-bit Y (b3 = Y_low, b4 = Y_high sign)
-             */
+            /* 16-bit mouse vs 8-bit Boot mouse */
             if (HID_Handle->length > 4U)
             {
                 dx = (int8_t)b1;
@@ -403,6 +391,30 @@ void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost)
 
             current_mouse_state.delta_x = (int8_t)dx;
             current_mouse_state.delta_y = (int8_t)dy;
+
+            /* Calculate absolute coordinates on 320x240 screen */
+            int16_t new_x = current_mouse_state.x + dx;
+            int16_t new_y = current_mouse_state.y + dy;
+
+            if (new_x < 0)   new_x = 0;
+            if (new_x > 319) new_x = 319;
+            if (new_y < 0)   new_y = 0;
+            if (new_y > 239) new_y = 239;
+
+            current_mouse_state.x = new_x;
+            current_mouse_state.y = new_y;
+
+            /* Buttons: bit0 = Left, bit1 = Right, bit2 = Middle */
+            current_mouse_state.btn_left   = ((b0 & 0x01) != 0);
+            current_mouse_state.btn_right  = ((b0 & 0x02) != 0);
+            current_mouse_state.btn_middle = ((b0 & 0x04) != 0);
+
+            /* Update diagnostic variables for HUD and Debugger */
+            g_usb_dbg.mouse_x  = new_x;
+            g_usb_dbg.mouse_y  = new_y;
+            g_usb_dbg.mouse_dx = (int8_t)dx;
+            g_usb_dbg.mouse_dy = (int8_t)dy;
+            g_usb_dbg.mouse_btns = b0 & 0x07;
         }
     }
 }
