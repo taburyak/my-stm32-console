@@ -20,7 +20,6 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "fatfs.h"
-#include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -73,6 +72,8 @@ SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart3;
 
+HCD_HandleTypeDef hhcd_USB_OTG_FS;
+
 DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 SRAM_HandleTypeDef hsram1;
 SRAM_HandleTypeDef hsram3;
@@ -104,8 +105,6 @@ const HeapRegion_t xHeapRegions[] = {
 
 /* Framebuffer in External SRAM (Bank 3) */
 uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
-
-extern ApplicationTypeDef Appli_state;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -118,6 +117,7 @@ static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SDIO_SD_Init(void);
+static void MX_USB_OTG_FS_HCD_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -316,6 +316,7 @@ int main(void)
   MX_SPI1_Init();
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
+  MX_USB_OTG_FS_HCD_Init();
   /* USER CODE BEGIN 2 */
 
   // IMPORTANT: Configure and enable the MPU before the OS starts
@@ -579,6 +580,41 @@ static void MX_USART3_UART_Init(void)
   /* USER CODE BEGIN USART3_Init 2 */
 
   /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief USB_OTG_FS Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USB_OTG_FS_HCD_Init(void)
+{
+
+  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
+  /* Initialize USB_OTG_FS GPIOs (PA11/PA12), Clock, and NVIC via CubeMX MSP,
+   * then return immediately so TinyUSB (hcd_dwc2) owns the USB_OTG_FS registers! */
+  hhcd_USB_OTG_FS.Instance = USB_OTG_FS;
+  HAL_HCD_MspInit(&hhcd_USB_OTG_FS);
+  return;
+  /* USER CODE END USB_OTG_FS_Init 0 */
+
+  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
+
+  /* USER CODE END USB_OTG_FS_Init 1 */
+  hhcd_USB_OTG_FS.Instance = USB_OTG_FS;
+  hhcd_USB_OTG_FS.Init.Host_channels = 8;
+  hhcd_USB_OTG_FS.Init.speed = HCD_SPEED_FULL;
+  hhcd_USB_OTG_FS.Init.dma_enable = DISABLE;
+  hhcd_USB_OTG_FS.Init.phy_itface = HCD_PHY_EMBEDDED;
+  hhcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
+  if (HAL_HCD_Init(&hhcd_USB_OTG_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
+
+  /* USER CODE END USB_OTG_FS_Init 2 */
 
 }
 
@@ -903,8 +939,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* init code for USB_HOST */
-  MX_USB_HOST_Init();
   /* USER CODE BEGIN 5 */
   printf("[OS] GuiRenderTask (DefaultTask) Started.\r\n");
 

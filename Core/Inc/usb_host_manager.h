@@ -6,13 +6,15 @@ extern "C" {
 #endif
 
 #include "main.h"
-#include "usbh_core.h"
-#include "usbh_hid.h"
+#include "tusb.h"
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Extended Device Type for Gamepad */
-#define HID_GAMEPAD  ((HID_TypeTypeDef)3U)
+/* Device Type Constants for g_usb_dbg.detected_dev_type */
+#define USB_DEV_TYPE_NONE      0U
+#define USB_DEV_TYPE_MOUSE     1U
+#define USB_DEV_TYPE_KEYBOARD  2U
+#define USB_DEV_TYPE_GAMEPAD   3U
 
 /**
  * @brief USB HID Keyboard Event Structure
@@ -61,12 +63,12 @@ typedef struct {
 } USB_GamepadState_t;
 
 /**
- * @brief Diagnostic structure for debugging without UART
+ * @brief Diagnostic structure for debugging on LCD HUD & Watch window
  */
 typedef struct {
-    uint8_t  last_host_id;      /* Last HOST_USER_... state (2 = CLASS_ACTIVE) */
-    uint8_t  detected_dev_type; /* 0=Unknown, 1=Mouse, 2=Keyboard, 3=Gamepad */
-    uint8_t  hid_state;         /* Internal HID_Handle->state (6 = POLL) */
+    uint8_t  last_host_id;      /* Connection status (0=Disconnected, 2=Active) */
+    uint8_t  detected_dev_type; /* 0=None, 1=Mouse, 2=Keyboard, 3=Gamepad */
+    uint8_t  hid_state;         /* TinyUSB HID state (6 = Polling active) */
     uint8_t  last_scancode;     /* Last raw HID key scancode */
     uint8_t  last_ascii;        /* Last decoded ASCII char */
     int16_t  mouse_x;           /* Current mouse X coordinate */
@@ -93,9 +95,6 @@ bool USBHostManager_GetKey(char *ch);
 bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event);
 bool USBHostManager_GetMouseState(USB_MouseEvent_t *state);
 bool USBHostManager_GetGamepadState(USB_GamepadState_t *state);
-
-void USBHostManager_ProcessUserCallback(USBH_HandleTypeDef *phost, uint8_t id);
-void USBHostManager_ProcessHIDCallback(USBH_HandleTypeDef *phost);
 
 #ifdef __cplusplus
 }
