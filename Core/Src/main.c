@@ -100,10 +100,11 @@ const osThreadAttr_t sandboxTask_attributes = {
 /* Define an array for the internal part of the heap */
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 */
+/* Region Configuration for Heap_5 */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                         // Region 1: Internal SRAM (~0x20000000)
-    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (128U * 1024U) },         // Region 2: External SRAM (0x68060000..0x6807FFFF)
-    { NULL, 0 }                                                                     // The Terminator
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                                           // Region 1: Internal SRAM (~0x20000000)
+    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (SRAM_EXT_SIZE_BYTES - SRAM_HEAP_OFFSET) }, // Region 2: Full External SRAM (640 KB: 0x68060000..0x680FFFFF)
+    { NULL, 0 }                                                                                       // The Terminator
 };
 
 /* Framebuffer in External SRAM (Bank 3) */
