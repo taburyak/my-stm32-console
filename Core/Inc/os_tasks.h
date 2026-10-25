@@ -13,7 +13,7 @@ extern "C" {
 /* Maximum number of directory entries cached in External SRAM */
 #define STORAGE_MAX_DIR_ITEMS  64U
 #define STORAGE_MAX_NAME_LEN   64U
-#define STORAGE_MAX_PATH_LEN   256U
+#define STORAGE_MAX_PATH_LEN   128U
 
 /**
  * @brief Commands sent from GuiRenderTask to StorageIoTask
@@ -37,7 +37,7 @@ typedef struct {
 /**
  * @brief Single directory entry cached by StorageIoTask
  */
-typedef struct {
+typedef struct __attribute__((aligned(4))) {
     char name[STORAGE_MAX_NAME_LEN];
     bool is_dir;
 } Storage_DirItem_t;

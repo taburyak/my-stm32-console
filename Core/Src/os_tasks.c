@@ -17,7 +17,7 @@
  * ========================================================================== */
 
 #define INPUT_TASK_STACK_WORDS    512U  /* 512 * 4 = 2048 Bytes (2 KB) in CCM RAM */
-#define STORAGE_TASK_STACK_WORDS  1024U /* 1024 * 4 = 4096 Bytes (4 KB) in CCM RAM */
+#define STORAGE_TASK_STACK_WORDS  1536U /* 1536 * 4 = 6144 Bytes (6 KB) in CCM RAM */
 
 CCMRAM_BUF static StackType_t  inputTaskStack[INPUT_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t inputTaskTCB;
@@ -31,8 +31,8 @@ static osThreadId_t            storageIoTaskHandle = NULL;
  * 2. Shared Buffers & Inter-Task Queues
  * ========================================================================== */
 
-/* Place large directory cache in External FSMC SRAM (0x68000000) */
-SRAM_EXT_BUF Storage_DirCache_t g_dir_cache;
+/* Place directory cache in aligned Internal SRAM for fast & safe string operations */
+Storage_DirCache_t g_dir_cache __attribute__((aligned(4)));
 
 /* FatFs working structures MUST reside in DMA-capable Internal SRAM (NOT CCM RAM!) */
 static DIR     s_fatfs_dir;
@@ -88,11 +88,13 @@ bool OSTasks_RequestDirList(const char *path)
         return false;
     }
 
-    Storage_Request_t req = {0};
-    req.cmd = STORAGE_CMD_LIST_DIR;
-    strncpy(req.path, path, STORAGE_MAX_PATH_LEN - 1U);
+    /* Static struct avoids allocating 140+ bytes on the caller's (LVGL) stack! */
+    static Storage_Request_t s_req;
+    memset(&s_req, 0, sizeof(s_req));
+    s_req.cmd = STORAGE_CMD_LIST_DIR;
+    strncpy(s_req.path, path, STORAGE_MAX_PATH_LEN - 1U);
 
-    return (osMessageQueuePut(qStorageReq, &req, 0U, 0U) == osOK);
+    return (osMessageQueuePut(qStorageReq, &s_req, 0U, 0U) == osOK);
 }
 
 bool OSTasks_GetGuiEvent(Gui_EventMsg_t *evt)
@@ -200,7 +202,7 @@ static void StorageIoTask(void *argument)
                         strncpy(g_dir_cache.items[idx].name,
                                 s_fatfs_fno.fname,
                                 STORAGE_MAX_NAME_LEN - 1U);
-                        g_dir_cache.items[idx].is_dir = ((s_fatfs_fno.fattrib & AM_DIR) != 0);
+                        g_dir_cache.items[idx].is_dir = ((s_fatfs_fno.fattrib & AM_DIR) != 0) ? 1U : 0U;
                         idx++;
                     }
                     f_closedir(&s_fatfs_dir);

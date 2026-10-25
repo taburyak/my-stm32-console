@@ -140,31 +140,34 @@ int _write(int file, char *ptr, int len)
     return len;
 }
 
-static lv_obj_t * g_usb_status_label = NULL;
-static lv_obj_t * g_file_list_obj    = NULL;
-static uint32_t g_status_hold_until = 0;
+static lv_obj_t * g_usb_status_label  = NULL;
+static lv_obj_t * g_file_list_obj     = NULL;
+static uint32_t   g_status_hold_until = 0;
+
+/* Static buffers in .bss to keep LVGL callback stack usage near zero! */
+static char s_clicked_item[STORAGE_MAX_NAME_LEN];
+static char s_next_path[STORAGE_MAX_PATH_LEN];
+static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
 
 static void list_btn_event_cb(lv_event_t * e)
 {
   lv_event_code_t code = lv_event_get_code(e);
   lv_obj_t * obj = lv_event_get_target(e);
 
-  if (code == LV_EVENT_CLICKED && g_file_list_obj != NULL)
+  if (code == LV_EVENT_CLICKED && g_file_list_obj != NULL && obj != NULL)
   {
     const char * raw_name = lv_list_get_btn_text(g_file_list_obj, obj);
     if (raw_name == NULL) return;
 
-    /* Safely copy button text into local stack buffer before modifying UI */
-    char item_name[STORAGE_MAX_NAME_LEN];
-    strncpy(item_name, raw_name, sizeof(item_name) - 1U);
-    item_name[sizeof(item_name) - 1U] = '\0';
+    /* Copy button text into static buffer (zero stack pressure) */
+    strncpy(s_clicked_item, raw_name, sizeof(s_clicked_item) - 1U);
+    s_clicked_item[sizeof(s_clicked_item) - 1U] = '\0';
 
     Beeper_Click();
-
     g_status_hold_until = HAL_GetTick() + 2000U;
 
     /* Check if user clicked ".. (Root)" to go back */
-    if (strcmp(item_name, ".. (Root)") == 0)
+    if (strcmp(s_clicked_item, ".. (Root)") == 0)
     {
       if (g_usb_status_label != NULL)
       {
@@ -177,25 +180,24 @@ static void list_btn_event_cb(lv_event_t * e)
     /* Check if clicked item is a directory in cache */
     for (uint32_t i = 0; i < g_dir_cache.count; i++)
     {
-      if (strcmp(g_dir_cache.items[i].name, item_name) == 0)
+      if (strcmp(g_dir_cache.items[i].name, s_clicked_item) == 0)
       {
         if (g_dir_cache.items[i].is_dir)
         {
-          char next_path[STORAGE_MAX_PATH_LEN];
           if (strcmp(g_dir_cache.path, "/") == 0)
           {
-            snprintf(next_path, sizeof(next_path), "/%s", item_name);
+            snprintf(s_next_path, sizeof(s_next_path), "/%s", s_clicked_item);
           }
           else
           {
-            snprintf(next_path, sizeof(next_path), "%.180s/%.50s", g_dir_cache.path, item_name);
+            snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", g_dir_cache.path, s_clicked_item);
           }
 
           if (g_usb_status_label != NULL)
           {
-            lv_label_set_text_fmt(g_usb_status_label, "Dir: %s", item_name);
+            lv_label_set_text_fmt(g_usb_status_label, "Dir: %s", s_clicked_item);
           }
-          OSTasks_RequestDirList(next_path);
+          OSTasks_RequestDirList(s_next_path);
           return;
         }
         break;
@@ -205,7 +207,7 @@ static void list_btn_event_cb(lv_event_t * e)
     /* It is a regular file */
     if (g_usb_status_label != NULL)
     {
-      lv_label_set_text_fmt(g_usb_status_label, "File: %s", item_name);
+      lv_label_set_text_fmt(g_usb_status_label, "File: %s", s_clicked_item);
     }
   }
 }
@@ -233,10 +235,6 @@ static void Populate_File_List_From_Cache(void)
 {
   if (g_file_list_obj == NULL) return;
 
-  /* CRITICAL: Reset all LVGL input devices (mouse/touch/keypad) so they don't
-   * hold a dangling pointer to a button object that is about to be deleted! */
-  lv_indev_reset(NULL, NULL);
-
   lv_group_t * grp = lv_group_get_default();
   if (grp != NULL)
   {
@@ -245,9 +243,8 @@ static void Populate_File_List_From_Cache(void)
 
   lv_obj_clean(g_file_list_obj);
 
-  char title_buf[256];
-  snprintf(title_buf, sizeof(title_buf), "Folder: %.240s", g_dir_cache.path);
-  lv_list_add_text(g_file_list_obj, title_buf);
+  snprintf(s_title_buf, sizeof(s_title_buf), "Folder: %s", g_dir_cache.path);
+  lv_list_add_text(g_file_list_obj, s_title_buf);
 
   if (!g_dir_cache.io_success)
   {

@@ -96,6 +96,8 @@ void HardFault_Handler(void)
   while (1)
   {
     /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_HardFault_IRQn 0 */
   }
 }
@@ -111,6 +113,8 @@ void MemManage_Handler(void)
   while (1)
   {
     /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_MemoryManagement_IRQn 0 */
   }
 }
@@ -126,6 +130,8 @@ void BusFault_Handler(void)
   while (1)
   {
     /* USER CODE BEGIN W1_BusFault_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_BusFault_IRQn 0 */
   }
 }
