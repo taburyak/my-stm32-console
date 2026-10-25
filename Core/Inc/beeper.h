@@ -59,6 +59,9 @@ void Beeper_ErrorAlert(void);
  */
 void Beeper_Process(void);
 
+void Beeper_SetMuted(bool muted);
+bool Beeper_IsMuted(void);
+
 #ifdef __cplusplus
 }
 #endif

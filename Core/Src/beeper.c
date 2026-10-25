@@ -3,6 +3,7 @@
 /* Internal state of the beeper timers */
 static uint32_t beep_end_tick = 0;
 static bool     is_beeping    = false;
+static bool     is_muted      = false;
 
 /* Internal state for patterns (melodies/alarms) */
 typedef enum {
@@ -24,6 +25,7 @@ void Beeper_Init(void)
 
 void Beeper_On(void)
 {
+    if (is_muted) return;
     HAL_GPIO_WritePin(BEEPER_GPIO_Port, BEEPER_Pin, GPIO_PIN_SET);
 }
 
@@ -134,4 +136,20 @@ void Beeper_Process(void)
                 break;
         }
     }
+}
+
+void Beeper_SetMuted(bool muted)
+{
+    is_muted = muted;
+    if (muted)
+    {
+        Beeper_Off();
+        is_beeping = false;
+        current_pattern = PATTERN_NONE;
+    }
+}
+
+bool Beeper_IsMuted(void)
+{
+    return is_muted;
 }

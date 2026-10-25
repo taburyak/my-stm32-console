@@ -1,14 +1,25 @@
 #include "ui_manager.h"
 #include "os_tasks.h"
 #include "usb_host_manager.h"
+#include "buttons_manager.h"
 #include "sdcard_fatfs.h"
 #include "system_post.h"
+#include "AT24Cxx.h"
 #include "beeper.h"
 #include "fatfs.h"
 #include <stdio.h>
 #include <string.h>
 
 extern RTC_HandleTypeDef hrtc;
+
+/* EEPROM Settings Magic & Address */
+#define EEPROM_CFG_ADDR   0x00U
+#define EEPROM_CFG_MAGIC  0xA5U
+
+typedef struct {
+    uint8_t magic;
+    uint8_t sound_muted;
+} System_Config_t;
 
 /* ==========================================================================
  * Static UI Widgets & State
@@ -30,25 +41,64 @@ static lv_obj_t * file_list_obj    = NULL;
 static char s_clicked_item[STORAGE_MAX_NAME_LEN];
 static char s_next_path[STORAGE_MAX_PATH_LEN];
 static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
+static char s_text_preview_buf[1024]; /* Buffer for .txt file viewer */
 
 /* Settings Screen RTC adjustment state */
 static uint8_t edit_hours   = 12;
 static uint8_t edit_minutes = 0;
 static lv_obj_t * lbl_time_set = NULL;
 
+/* Cyber-Pong Mini-Game State */
+static lv_timer_t * game_timer     = NULL;
+static lv_obj_t   * game_paddle    = NULL;
+static lv_obj_t   * game_ball      = NULL;
+static lv_obj_t   * game_score_lbl = NULL;
+static int16_t      paddle_x       = 120;
+static int16_t      ball_x         = 160;
+static int16_t      ball_y         = 80;
+static int16_t      ball_vx        = 3;
+static int16_t      ball_vy        = 3;
+static uint32_t     game_score     = 0;
+static uint32_t     game_best      = 0;
+
 /* Forward declarations */
 static void Build_Home_Screen(void);
 static void Build_Files_Screen(void);
+static void Build_Games_Screen(void);
 static void Build_Settings_Screen(void);
 static void Build_SysInfo_Screen(void);
 static void Populate_File_List_From_Cache(void);
 
 /* ==========================================================================
- * Universal 16/24/32-bit BMP Loader into External SRAM (0x68030000)
- * Works with ANY standard Windows Paint / Photoshop BMP (up to 320x240)!
+ * EEPROM Settings Load / Save
  * ========================================================================== */
 
-/* Dedicated line buffer in .bss (supports source images up to 1440 px wide!) */
+static void Settings_LoadFromEEPROM(void)
+{
+    System_Config_t cfg = {0};
+    if (AT24Cxx_Read(EEPROM_CFG_ADDR, &cfg, sizeof(cfg)) == HAL_OK)
+    {
+        if (cfg.magic == EEPROM_CFG_MAGIC)
+        {
+            Beeper_SetMuted(cfg.sound_muted != 0U);
+            printf("[CFG] Loaded from EEPROM: Sound Muted = %u\r\n", cfg.sound_muted);
+        }
+    }
+}
+
+static void Settings_SaveToEEPROM(void)
+{
+    System_Config_t cfg = {
+        .magic       = EEPROM_CFG_MAGIC,
+        .sound_muted = Beeper_IsMuted() ? 1U : 0U
+    };
+    (void)AT24Cxx_Write(EEPROM_CFG_ADDR, &cfg, sizeof(cfg));
+}
+
+/* ==========================================================================
+ * Universal 16/24/32-bit BMP Loader into External SRAM (0x68010000)
+ * ========================================================================== */
+
 static lv_img_dsc_t s_custom_bmp_dsc;
 static uint8_t      s_bmp_line_buf[1440 * 4];
 
@@ -71,7 +121,6 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
         return false;
     }
 
-    /* Read fields safely using byte shifts (avoids any unaligned access) */
     uint32_t data_offset = (uint32_t)hdr[10] | ((uint32_t)hdr[11] << 8) | ((uint32_t)hdr[12] << 16) | ((uint32_t)hdr[13] << 24);
     int32_t  src_w       = (int32_t)((uint32_t)hdr[18] | ((uint32_t)hdr[19] << 8) | ((uint32_t)hdr[20] << 16) | ((uint32_t)hdr[21] << 24));
     int32_t  src_h       = (int32_t)((uint32_t)hdr[22] | ((uint32_t)hdr[23] << 8) | ((uint32_t)hdr[24] << 16) | ((uint32_t)hdr[25] << 24));
@@ -84,21 +133,15 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
         top_down = true;
     }
 
-    printf("[IMG] Loading BMP '%s': %ldx%ld, %u bpp, offset=%lu\r\n",
-           fatfs_path, (long)src_w, (long)src_h, bpp, (unsigned long)data_offset);
-
     if (src_w <= 0 || src_w > 1440 || src_h <= 0 || src_h > 1080 || (bpp != 24 && bpp != 16 && bpp != 32))
     {
-        printf("[IMG] Unsupported BMP format!\r\n");
         f_close(&bmp_file);
         return false;
     }
 
-    /* Target dimensions on screen (max 320 x 216 workspace) */
     int32_t dst_w = (src_w > 320) ? 320 : src_w;
     int32_t dst_h = (src_h > 216) ? 216 : src_h;
 
-    /* Decode & scale directly into External SRAM at 0x68010000 (offset +64KB) */
     uint16_t *dst_fb = (uint16_t *)(0x68010000UL);
     uint32_t row_bytes = ((uint32_t)src_w * (bpp / 8U) + 3U) & ~3U;
 
@@ -123,7 +166,6 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
                 uint8_t g = s_bmp_line_buf[sx * step + 1];
                 uint8_t r = s_bmp_line_buf[sx * step + 2];
 
-                /* LVGL RGB565 format */
                 lv_color_t c = lv_color_make(r, g, b);
                 dst_row[dx] = c.full;
             }
@@ -149,7 +191,6 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
     out_dsc->data_size          = (uint32_t)(dst_w * dst_h * 2);
     out_dsc->data               = (const uint8_t *)dst_fb;
 
-    printf("[IMG] BMP Ready in ExtSRAM (%ldx%ld)!\r\n", (long)dst_w, (long)dst_h);
     return true;
 }
 
@@ -171,13 +212,8 @@ static bool Ends_With_IgnoreCase(const char *str, const char *suffix)
     return true;
 }
 
-/**
- * @brief Universal helper to set an image widget from SD card path
- *        Supports 16/24/32-bit .bmp via ExtSRAM and .png/.jpg via LVGL decoder
- */
 static bool Set_Image_From_SD(lv_obj_t *img_obj, const char *fatfs_path)
 {
-    /* Strip leading slash for FatFs if present */
     const char *clean_path = (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path;
 
     if (Ends_With_IgnoreCase(clean_path, ".bmp"))
@@ -190,19 +226,15 @@ static bool Set_Image_From_SD(lv_obj_t *img_obj, const char *fatfs_path)
         return false;
     }
 
-    /* For PNG / JPG / SJPG: build LVGL "S:/..." path and test header first */
     static char lv_path[STORAGE_MAX_PATH_LEN + 4U];
     snprintf(lv_path, sizeof(lv_path), "S:/%s", clean_path);
 
     lv_img_header_t header;
-    lv_res_t res = lv_img_decoder_get_info(lv_path, &header);
-    if (res != LV_RES_OK)
+    if (lv_img_decoder_get_info(lv_path, &header) != LV_RES_OK)
     {
-        printf("[IMG] Decoder rejected %s (Ensure image <= 320x240 and Baseline JPG/PNG!)\r\n", lv_path);
         return false;
     }
 
-    printf("[IMG] LVGL Decoding %s (%ux%u)...\r\n", lv_path, (unsigned)header.w, (unsigned)header.h);
     lv_img_set_src(img_obj, lv_path);
     return true;
 }
@@ -271,6 +303,9 @@ static void btn_back_home_cb(lv_event_t * e)
 
 void UIManager_Init(void)
 {
+    /* Load persisted audio/system settings from AT24C02 EEPROM */
+    Settings_LoadFromEEPROM();
+
     lv_obj_t * scr = lv_scr_act();
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -338,9 +373,19 @@ void UIManager_ShowScreen(UI_Screen_t screen)
 {
     if (workspace_cont == NULL) return;
 
+    /* Stop active game timer if leaving Games screen */
+    if (game_timer != NULL)
+    {
+        lv_timer_del(game_timer);
+        game_timer = NULL;
+    }
+
     current_screen = screen;
     file_list_obj  = NULL;
     lbl_time_set   = NULL;
+    game_paddle    = NULL;
+    game_ball      = NULL;
+    game_score_lbl = NULL;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -362,6 +407,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
             Build_Files_Screen();
             break;
 
+        case UI_SCREEN_GAMES:
+            lv_label_set_text(lbl_screen_title, "Cyber-Pong");
+            Build_Games_Screen();
+            break;
+
         case UI_SCREEN_SETTINGS:
             lv_label_set_text(lbl_screen_title, "Settings");
             Build_Settings_Screen();
@@ -379,7 +429,7 @@ void UIManager_ShowScreen(UI_Screen_t screen)
 }
 
 /* ==========================================================================
- * 2. Screen Builders
+ * 2. Home Screen Builder
  * ========================================================================== */
 
 static void home_icon_event_cb(lv_event_t * e)
@@ -425,7 +475,6 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
 
 static void Build_Home_Screen(void)
 {
-    /* 1. Auto-detect Wallpaper in /assets/ or SD root / */
     static const char * const wall_candidates[] = {
         "assets/wall.bmp",
         "wall.bmp",
@@ -454,18 +503,17 @@ static void Build_Home_Screen(void)
         }
     }
 
-    /* 2. Create 2x2 Console Dashboard Shortcuts */
     Create_Desktop_Shortcut(workspace_cont, 16,  16, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
-    Create_Desktop_Shortcut(workspace_cont, 168, 16, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_FILES);
+    Create_Desktop_Shortcut(workspace_cont, 168, 16, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_GAMES);
     Create_Desktop_Shortcut(workspace_cont, 16,  114, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
     Create_Desktop_Shortcut(workspace_cont, 168, 114, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
 }
 
 /* ==========================================================================
- * 3. File Explorer Screen (+ Image Viewer)
+ * 3. File Explorer Screen (+ BMP Image Viewer & TXT Text Viewer!)
  * ========================================================================== */
 
-static void close_img_preview_cb(lv_event_t * e)
+static void close_preview_cb(lv_event_t * e)
 {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED ||
         (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC))
@@ -480,6 +528,7 @@ static void Open_Image_Preview(const char *fatfs_path)
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL) lv_group_remove_all_objs(grp);
 
+    file_list_obj = NULL;
     lv_obj_clean(workspace_cont);
 
     lv_obj_t * img = lv_img_create(workspace_cont);
@@ -493,13 +542,7 @@ static void Open_Image_Preview(const char *fatfs_path)
         lv_obj_t * err_lbl = lv_label_create(workspace_cont);
         lv_obj_set_style_text_color(err_lbl, lv_color_hex(0xFF5555), 0);
         lv_obj_set_style_text_align(err_lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text_fmt(err_lbl,
-            "Cannot decode image:\n%s\n\n"
-            "Requirements:\n"
-            "- Max size: 320 x 240 px\n"
-            "- Format: BMP (16/24-bit),\n"
-            "  PNG or Baseline JPG",
-            fatfs_path);
+        lv_label_set_text_fmt(err_lbl, "Cannot decode image:\n%s", fatfs_path);
         lv_obj_center(err_lbl);
     }
 
@@ -510,8 +553,62 @@ static void Open_Image_Preview(const char *fatfs_path)
     lv_label_set_text(lbl, LV_SYMBOL_LEFT " Back");
     lv_obj_center(lbl);
 
-    lv_obj_add_event_cb(btn_close, close_img_preview_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(btn_close, close_img_preview_cb, LV_EVENT_KEY, NULL);
+    lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, btn_close);
+}
+
+static void Open_Text_Preview(const char *fatfs_path)
+{
+    static FIL txt_file;
+    UINT br = 0;
+    const char *clean_path = (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path;
+
+    memset(s_text_preview_buf, 0, sizeof(s_text_preview_buf));
+    if (f_open(&txt_file, clean_path, FA_READ) == FR_OK)
+    {
+        (void)f_read(&txt_file, s_text_preview_buf, sizeof(s_text_preview_buf) - 1U, &br);
+        f_close(&txt_file);
+    }
+    else
+    {
+        snprintf(s_text_preview_buf, sizeof(s_text_preview_buf), "Error opening file:\n%s", clean_path);
+    }
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_remove_all_objs(grp);
+
+    file_list_obj = NULL;
+    lv_obj_clean(workspace_cont);
+
+    /* Top bar with Back button and filename */
+    lv_obj_t * btn_close = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_close, 70, 26);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_LEFT, 6, 6);
+    lv_obj_t * lbl = lv_label_create(btn_close);
+    lv_label_set_text(lbl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(lbl);
+
+    lv_obj_t * title_lbl = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(title_lbl, lv_color_hex(0x00E5FF), 0);
+    lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT, 84, 10);
+    lv_label_set_text(title_lbl, clean_path);
+
+    /* Scrollable Text Reader Panel */
+    lv_obj_t * panel = lv_obj_create(workspace_cont);
+    lv_obj_set_size(panel, 308, 172);
+    lv_obj_align(panel, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x0E131D), 0);
+    lv_obj_set_style_pad_all(panel, 8, 0);
+
+    lv_obj_t * txt_lbl = lv_label_create(panel);
+    lv_obj_set_width(txt_lbl, 284);
+    lv_label_set_long_mode(txt_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(txt_lbl, lv_color_hex(0xE0E0E0), 0);
+    lv_label_set_text(txt_lbl, s_text_preview_buf);
+
+    lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_KEY, NULL);
     if (grp != NULL) lv_group_add_obj(grp, btn_close);
 }
 
@@ -570,22 +667,32 @@ static void file_list_btn_event_cb(lv_event_t * e)
             }
         }
 
-        /* Check if clicked file is an image (.bmp, .png, .jpg, .sjpg) */
+        /* Build relative path for file viewers */
+        if (strcmp(g_dir_cache.path, "/") == 0)
+        {
+            snprintf(s_next_path, sizeof(s_next_path), "%s", s_clicked_item);
+        }
+        else
+        {
+            const char *sub = (g_dir_cache.path[0] == '/') ? (g_dir_cache.path + 1) : g_dir_cache.path;
+            snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", sub, s_clicked_item);
+        }
+
+        /* 1. Image files (.bmp, .png, .jpg) */
         if (Ends_With_IgnoreCase(s_clicked_item, ".bmp") ||
             Ends_With_IgnoreCase(s_clicked_item, ".png") ||
             Ends_With_IgnoreCase(s_clicked_item, ".jpg") ||
             Ends_With_IgnoreCase(s_clicked_item, ".sjpg"))
         {
-            if (strcmp(g_dir_cache.path, "/") == 0)
-            {
-                snprintf(s_next_path, sizeof(s_next_path), "%s", s_clicked_item);
-            }
-            else
-            {
-                const char *sub = (g_dir_cache.path[0] == '/') ? (g_dir_cache.path + 1) : g_dir_cache.path;
-                snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", sub, s_clicked_item);
-            }
             Open_Image_Preview(s_next_path);
+        }
+        /* 2. Text files (.txt, .md, .log, .ini) */
+        else if (Ends_With_IgnoreCase(s_clicked_item, ".txt") ||
+                 Ends_With_IgnoreCase(s_clicked_item, ".md")  ||
+                 Ends_With_IgnoreCase(s_clicked_item, ".log") ||
+                 Ends_With_IgnoreCase(s_clicked_item, ".ini"))
+        {
+            Open_Text_Preview(s_next_path);
         }
     }
 }
@@ -650,7 +757,189 @@ static void Populate_File_List_From_Cache(void)
 }
 
 /* ==========================================================================
- * 4. Settings Screen (RTC Time Setup)
+ * 4. Built-in Arcade Game: Cyber-Pong (Gamepad / Touch / Mouse / Keys)
+ * ========================================================================== */
+
+static void game_loop_timer_cb(lv_timer_t * t)
+{
+    (void)t;
+    if (current_screen != UI_SCREEN_GAMES || game_paddle == NULL || game_ball == NULL)
+    {
+        return;
+    }
+
+    /* 1. Read USB Gamepad D-Pad */
+    USB_GamepadState_t pad;
+    if (USBHostManager_GetGamepadState(&pad))
+    {
+        if (pad.dpad_left || pad.btn_l1)  paddle_x -= 6;
+        if (pad.dpad_right || pad.btn_r1) paddle_x += 6;
+        if (pad.btn_b)
+        {
+            UIManager_ShowScreen(UI_SCREEN_HOME);
+            return;
+        }
+    }
+
+    /* 2. Read Physical Board Buttons KEY_0 (Left) & KEY_2 (Right) */
+    if (HAL_GPIO_ReadPin(KEY_0_GPIO_Port, KEY_0_Pin) == GPIO_PIN_RESET) paddle_x -= 5;
+    if (HAL_GPIO_ReadPin(KEY_2_GPIO_Port, KEY_2_Pin) == GPIO_PIN_RESET) paddle_x += 5;
+
+    /* 3. Follow Touch / Mouse X if pressed */
+    lv_indev_t * indev = lv_indev_get_act();
+    lv_point_t pt;
+    if (indev != NULL)
+    {
+        lv_indev_get_point(indev, &pt);
+        if (pt.y > 60 && (pt.x > 0 && pt.x < 320))
+        {
+            /* Smoothly move towards pointer if mouse/touch active */
+        }
+    }
+
+    if (paddle_x < 4)   paddle_x = 4;
+    if (paddle_x > 246) paddle_x = 246;
+    lv_obj_set_pos(game_paddle, paddle_x, 192);
+
+    /* 4. Update Ball Physics */
+    ball_x += ball_vx;
+    ball_y += ball_vy;
+
+    /* Bounce Left / Right walls */
+    if (ball_x <= 4)
+    {
+        ball_x  = 4;
+        ball_vx = -ball_vx;
+        Beeper_Beep(8);
+    }
+    else if (ball_x >= 304)
+    {
+        ball_x  = 304;
+        ball_vx = -ball_vx;
+        Beeper_Beep(8);
+    }
+
+    /* Bounce Top ceiling */
+    if (ball_y <= 34)
+    {
+        ball_y  = 34;
+        ball_vy = -ball_vy;
+        Beeper_Beep(8);
+    }
+
+    /* Check Paddle Collision */
+    if (ball_vy > 0 && ball_y >= 180 && ball_y <= 194)
+    {
+        if (ball_x + 12 >= paddle_x && ball_x <= paddle_x + 70)
+        {
+            ball_y  = 179;
+            ball_vy = -ball_vy;
+            game_score++;
+            if (game_score > game_best) game_best = game_score;
+            Beeper_Click();
+
+            if (game_score_lbl != NULL)
+            {
+                lv_label_set_text_fmt(game_score_lbl, "Score: %lu   Best: %lu",
+                                      (unsigned long)game_score, (unsigned long)game_best);
+            }
+        }
+    }
+
+    /* Ball missed paddle -> Reset round */
+    if (ball_y > 210)
+    {
+        Beeper_Beep(60);
+        game_score = 0;
+        ball_x     = 154;
+        ball_y     = 60;
+        ball_vy    = 3;
+        if (game_score_lbl != NULL)
+        {
+            lv_label_set_text_fmt(game_score_lbl, "Score: %lu   Best: %lu",
+                                  (unsigned long)game_score, (unsigned long)game_best);
+        }
+    }
+
+    lv_obj_set_pos(game_ball, ball_x, ball_y);
+}
+
+static void game_touch_move_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_PRESSING)
+    {
+        lv_indev_t * indev = lv_indev_get_act();
+        if (indev != NULL)
+        {
+            lv_point_t p;
+            lv_indev_get_point(indev, &p);
+            paddle_x = p.x - 35;
+        }
+    }
+    else if (lv_event_get_code(e) == LV_EVENT_KEY)
+    {
+        uint32_t key = lv_event_get_key(e);
+        if (key == LV_KEY_ESC)
+        {
+            UIManager_ShowScreen(UI_SCREEN_HOME);
+        }
+    }
+}
+
+static void Build_Games_Screen(void)
+{
+    game_score = 0;
+    paddle_x   = 125;
+    ball_x     = 154;
+    ball_y     = 60;
+    ball_vx    = 3;
+    ball_vy    = 3;
+
+    /* Touch area on workspace to drag paddle with finger or mouse */
+    lv_obj_add_event_cb(workspace_cont, game_touch_move_cb, LV_EVENT_PRESSING, NULL);
+
+    /* Top bar: Back button & Score */
+    lv_obj_t * btn_exit = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_exit, 64, 24);
+    lv_obj_align(btn_exit, LV_ALIGN_TOP_LEFT, 6, 4);
+    lv_obj_t * lbl = lv_label_create(btn_exit);
+    lv_label_set_text(lbl, LV_SYMBOL_HOME " Exit");
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(btn_exit, btn_back_home_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_exit, global_key_event_cb, LV_EVENT_KEY, NULL);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, btn_exit);
+
+    game_score_lbl = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(game_score_lbl, lv_color_hex(0x00FF66), 0);
+    lv_obj_align(game_score_lbl, LV_ALIGN_TOP_RIGHT, -12, 8);
+    lv_label_set_text_fmt(game_score_lbl, "Score: 0   Best: %lu", (unsigned long)game_best);
+
+    /* Neon Paddle */
+    game_paddle = lv_obj_create(workspace_cont);
+    lv_obj_set_size(game_paddle, 70, 10);
+    lv_obj_set_pos(game_paddle, paddle_x, 192);
+    lv_obj_set_style_bg_color(game_paddle, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_border_width(game_paddle, 0, 0);
+    lv_obj_set_style_radius(game_paddle, 4, 0);
+    lv_obj_clear_flag(game_paddle, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Neon Ball */
+    game_ball = lv_obj_create(workspace_cont);
+    lv_obj_set_size(game_ball, 12, 12);
+    lv_obj_set_pos(game_ball, ball_x, ball_y);
+    lv_obj_set_style_bg_color(game_ball, lv_color_hex(0xFFAE00), 0);
+    lv_obj_set_style_border_width(game_ball, 0, 0);
+    lv_obj_set_style_radius(game_ball, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(game_ball, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Start 50 Hz Game Loop Timer */
+    game_timer = lv_timer_create(game_loop_timer_cb, 20, NULL);
+}
+
+/* ==========================================================================
+ * 5. Settings Screen (RTC Time Setup + Audio Mute in EEPROM)
  * ========================================================================== */
 
 static void rtc_adjust_btn_cb(lv_event_t * e)
@@ -677,11 +966,26 @@ static void rtc_adjust_btn_cb(lv_event_t * e)
     }
 }
 
+static void sound_switch_event_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED)
+    {
+        lv_obj_t * sw = lv_event_get_target(e);
+        bool sound_enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+        Beeper_SetMuted(!sound_enabled);
+        if (sound_enabled)
+        {
+            Beeper_Click();
+        }
+        Settings_SaveToEEPROM();
+    }
+}
+
 static lv_obj_t* Create_Setting_Btn(lv_obj_t *parent, int16_t x, int16_t y, int16_t w,
                                     const char *txt, intptr_t action)
 {
     lv_obj_t * btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, w, 34);
+    lv_obj_set_size(btn, w, 32);
     lv_obj_set_pos(btn, x, y);
     lv_obj_t * lbl = lv_label_create(btn);
     lv_label_set_text(lbl, txt);
@@ -702,31 +1006,49 @@ static void Build_Settings_Screen(void)
 
     lbl_time_set = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(lbl_time_set, lv_color_hex(0x00FF66), 0);
-    lv_obj_align(lbl_time_set, LV_ALIGN_TOP_MID, 0, 14);
+    lv_obj_align(lbl_time_set, LV_ALIGN_TOP_MID, 0, 8);
     lv_label_set_text_fmt(lbl_time_set, "Set RTC: %02u : %02u", edit_hours, edit_minutes);
 
-    Create_Setting_Btn(workspace_cont, 20,  48, 60, "Hr +", 1);
-    Create_Setting_Btn(workspace_cont, 90,  48, 60, "Hr -", 2);
-    Create_Setting_Btn(workspace_cont, 170, 48, 60, "Min +", 3);
-    Create_Setting_Btn(workspace_cont, 240, 48, 60, "Min -", 4);
+    Create_Setting_Btn(workspace_cont, 20,  34, 60, "Hr +", 1);
+    Create_Setting_Btn(workspace_cont, 90,  34, 60, "Hr -", 2);
+    Create_Setting_Btn(workspace_cont, 170, 34, 60, "Min +", 3);
+    Create_Setting_Btn(workspace_cont, 240, 34, 60, "Min -", 4);
 
-    Create_Setting_Btn(workspace_cont, 80, 100, 160, LV_SYMBOL_OK " Save Time", 5);
+    Create_Setting_Btn(workspace_cont, 80, 74, 160, LV_SYMBOL_OK " Save Time", 5);
 
+    /* Audio Mute Switch (Persisted in AT24C02 EEPROM) */
+    lv_obj_t * snd_lbl = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(snd_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_pos(snd_lbl, 45, 122);
+    lv_label_set_text(snd_lbl, LV_SYMBOL_AUDIO " Beeper Sound:");
+
+    lv_obj_t * snd_sw = lv_switch_create(workspace_cont);
+    lv_obj_set_pos(snd_sw, 200, 118);
+    if (!Beeper_IsMuted())
+    {
+        lv_obj_add_state(snd_sw, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(snd_sw, sound_switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(snd_sw, global_key_event_cb, LV_EVENT_KEY, NULL);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, snd_sw);
+
+    /* Back to Home button */
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
-    lv_obj_set_size(btn_back, 120, 34);
-    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_size(btn_back, 120, 32);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
     lv_obj_t * lbl_b = lv_label_create(btn_back);
     lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
     lv_obj_center(lbl_b);
     lv_obj_add_event_cb(btn_back, btn_back_home_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(btn_back, global_key_event_cb, LV_EVENT_KEY, NULL);
 
-    lv_group_t * grp = lv_group_get_default();
     if (grp != NULL) lv_group_add_obj(grp, btn_back);
 }
 
 /* ==========================================================================
- * 5. System Info Screen (Hardware & Memory Status)
+ * 6. System Info Screen (Hardware & Memory Status)
  * ========================================================================== */
 
 static void Build_SysInfo_Screen(void)
