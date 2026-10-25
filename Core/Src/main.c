@@ -101,9 +101,9 @@ const osThreadAttr_t sandboxTask_attributes = {
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                                           // Region 1: Internal SRAM (~0x20000000)
-    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (SRAM_EXT_SIZE_BYTES - SRAM_HEAP_OFFSET) }, // Region 2: External SRAM (0x68000000)
-    { NULL, 0 }                                                                                       // The Terminator
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                         // Region 1: Internal SRAM (~0x20000000)
+    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (128U * 1024U) },         // Region 2: External SRAM (0x68060000..0x6807FFFF)
+    { NULL, 0 }                                                                     // The Terminator
 };
 
 /* Framebuffer in External SRAM (Bank 3) */
@@ -922,7 +922,11 @@ void StartDefaultTask(void *argument)
     Beeper_BootMelody();
   }
 
-  /* 5. Full Peripherals Initialization */
+  /* 5. LVGL Initialization (Owned exclusively by this task) */
+  LVGL_Port_Init();
+  printf("[INIT] LVGL Ready.\r\n");
+
+  /* 6. Full Peripherals Initialization */
   if (W25qxx_Init())
   {
     printf("[INIT] W25QXX Flash Ready.\r\n");
@@ -940,10 +944,6 @@ void StartDefaultTask(void *argument)
   {
     printf("[INIT] SD Card FileSystem FAILED.\r\n");
   }
-
-  /* 6. LVGL Initialization (Owned exclusively by this task) */
-  LVGL_Port_Init();
-  printf("[INIT] LVGL Ready.\r\n");
 
   /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
   OSTasks_Init();

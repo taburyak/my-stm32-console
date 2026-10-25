@@ -36,12 +36,163 @@ static uint8_t edit_hours   = 12;
 static uint8_t edit_minutes = 0;
 static lv_obj_t * lbl_time_set = NULL;
 
+/* Dedicated 320x240 RGB565 Image Canvas Buffer in External SRAM Framebuffer 2 (0x68030000) */
+static lv_img_dsc_t s_custom_bmp_dsc;
+static uint8_t      s_bmp_line_buf[320 * 4]; /* Static line buffer in .bss */
+
 /* Forward declarations */
 static void Build_Home_Screen(void);
 static void Build_Files_Screen(void);
 static void Build_Settings_Screen(void);
 static void Build_SysInfo_Screen(void);
 static void Populate_File_List_From_Cache(void);
+
+/* ==========================================================================
+ * Universal 16/24/32-bit BMP Loader into External SRAM (0x68030000)
+ * Works with ANY standard Windows Paint / Photoshop BMP (up to 320x240)!
+ * ========================================================================== */
+
+static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
+{
+    static FIL bmp_file;
+    UINT br = 0;
+    uint8_t hdr[54];
+
+    if (f_open(&bmp_file, fatfs_path, FA_READ) != FR_OK)
+    {
+        printf("[IMG] Cannot open file: %s\r\n", fatfs_path);
+        return false;
+    }
+
+    if (f_read(&bmp_file, hdr, 54, &br) != FR_OK || br < 54 || hdr[0] != 'B' || hdr[1] != 'M')
+    {
+        printf("[IMG] Invalid BMP header: %s\r\n", fatfs_path);
+        f_close(&bmp_file);
+        return false;
+    }
+
+    uint32_t data_offset = *(uint32_t *)&hdr[10];
+    int32_t  width       = *(int32_t *)&hdr[18];
+    int32_t  height      = *(int32_t *)&hdr[22];
+    uint16_t bpp         = *(uint16_t *)&hdr[28];
+
+    bool top_down = false;
+    if (height < 0)
+    {
+        height   = -height;
+        top_down = true;
+    }
+
+    printf("[IMG] BMP %s: %ldx%ld, %u bpp\r\n", fatfs_path, (long)width, (long)height, bpp);
+
+    if (width <= 0 || width > 320 || height <= 0 || height > 240 || (bpp != 24 && bpp != 16 && bpp != 32))
+    {
+        printf("[IMG] Unsupported BMP size/bpp (Max 320x240, 16/24/32bpp)!\r\n");
+        f_close(&bmp_file);
+        return false;
+    }
+
+    /* Decode directly into External SRAM Framebuffer 2 (0x68030000) */
+    uint16_t *dst_fb = (uint16_t *)(0x68030000UL);
+    uint32_t row_bytes = ((uint32_t)width * (bpp / 8U) + 3U) & ~3U;
+
+    for (int32_t y = 0; y < height; y++)
+    {
+        int32_t target_y = top_down ? y : (height - 1 - y);
+        uint32_t file_pos = data_offset + (uint32_t)y * row_bytes;
+
+        f_lseek(&bmp_file, file_pos);
+        if (f_read(&bmp_file, s_bmp_line_buf, row_bytes, &br) != FR_OK)
+        {
+            break;
+        }
+
+        uint16_t *dst_row = &dst_fb[target_y * width];
+
+        if (bpp == 24 || bpp == 32)
+        {
+            uint8_t step = bpp / 8U;
+            for (int32_t x = 0; x < width; x++)
+            {
+                uint8_t b = s_bmp_line_buf[x * step + 0];
+                uint8_t g = s_bmp_line_buf[x * step + 1];
+                uint8_t r = s_bmp_line_buf[x * step + 2];
+                dst_row[x] = (uint16_t)(((r & 0xF8U) << 8) | ((g & 0xFCU) << 3) | (b >> 3));
+            }
+        }
+        else if (bpp == 16)
+        {
+            memcpy(dst_row, s_bmp_line_buf, (size_t)width * 2U);
+        }
+    }
+
+    f_close(&bmp_file);
+
+    memset(out_dsc, 0, sizeof(lv_img_dsc_t));
+    out_dsc->header.always_zero = 0;
+    out_dsc->header.w           = (uint32_t)width;
+    out_dsc->header.h           = (uint32_t)height;
+    out_dsc->header.cf          = LV_IMG_CF_TRUE_COLOR;
+    out_dsc->data_size          = (uint32_t)(width * height * 2);
+    out_dsc->data               = (const uint8_t *)dst_fb;
+
+    printf("[IMG] BMP successfully loaded into External SRAM!\r\n");
+    return true;
+}
+
+static bool Ends_With_IgnoreCase(const char *str, const char *suffix)
+{
+    size_t str_len = strlen(str);
+    size_t suf_len = strlen(suffix);
+    if (suf_len > str_len) return false;
+
+    const char *p = str + (str_len - suf_len);
+    for (size_t i = 0; i < suf_len; i++)
+    {
+        char c1 = p[i];
+        char c2 = suffix[i];
+        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        if (c1 != c2) return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Universal helper to set an image widget from SD card path
+ *        Supports 16/24/32-bit .bmp via ExtSRAM and .png/.jpg via LVGL decoder
+ */
+static bool Set_Image_From_SD(lv_obj_t *img_obj, const char *fatfs_path)
+{
+    /* Strip leading slash for FatFs if present */
+    const char *clean_path = (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path;
+
+    if (Ends_With_IgnoreCase(clean_path, ".bmp"))
+    {
+        if (Load_BMP_To_ExtSRAM(clean_path, &s_custom_bmp_dsc))
+        {
+            lv_img_set_src(img_obj, &s_custom_bmp_dsc);
+            return true;
+        }
+        return false;
+    }
+
+    /* For PNG / JPG / SJPG: build LVGL "S:/..." path and test header first */
+    static char lv_path[STORAGE_MAX_PATH_LEN + 4U];
+    snprintf(lv_path, sizeof(lv_path), "S:/%s", clean_path);
+
+    lv_img_header_t header;
+    lv_res_t res = lv_img_decoder_get_info(lv_path, &header);
+    if (res != LV_RES_OK)
+    {
+        printf("[IMG] Decoder rejected %s (Ensure image <= 320x240 and Baseline JPG/PNG!)\r\n", lv_path);
+        return false;
+    }
+
+    printf("[IMG] LVGL Decoding %s (%ux%u)...\r\n", lv_path, (unsigned)header.w, (unsigned)header.h);
+    lv_img_set_src(img_obj, lv_path);
+    return true;
+}
 
 /* ==========================================================================
  * Helper: Read & Write Hardware RTC
@@ -52,7 +203,6 @@ static void RTC_GetDateTime(uint8_t *hours, uint8_t *minutes, uint8_t *seconds)
     RTC_TimeTypeDef sTime = {0};
     RTC_DateTypeDef sDate = {0};
 
-    /* Note: STM32 HAL requires reading Date after Time to unlock shadow registers! */
     if (HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN) == HAL_OK)
     {
         (void)HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
@@ -121,19 +271,16 @@ void UIManager_Init(void)
     lv_obj_set_style_bg_color(status_bar, lv_color_hex(0x12161F), 0);
     lv_obj_set_style_pad_all(status_bar, 2, 0);
 
-    /* Left: Screen Title */
     lbl_screen_title = lv_label_create(status_bar);
     lv_obj_set_style_text_color(lbl_screen_title, lv_color_hex(0x00E5FF), 0);
     lv_obj_align(lbl_screen_title, LV_ALIGN_LEFT_MID, 4, 0);
     lv_label_set_text(lbl_screen_title, "STM32 OS");
 
-    /* Center: Peripheral Status Badges (SD, KBD, MOUSE, PAD) */
     lbl_status_icons = lv_label_create(status_bar);
     lv_label_set_recolor(lbl_status_icons, true);
     lv_obj_align(lbl_status_icons, LV_ALIGN_CENTER, 10, 0);
     lv_label_set_text(lbl_status_icons, "#555555 SD K M G#");
 
-    /* Right: RTC Clock (HH:MM:SS) */
     lbl_clock = lv_label_create(status_bar);
     lv_obj_set_style_text_color(lbl_clock, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(lbl_clock, LV_ALIGN_RIGHT_MID, -4, 0);
@@ -162,12 +309,10 @@ void UIManager_Update(void)
     }
     last_status_tick = HAL_GetTick();
 
-    /* 1. Update RTC Clock string */
     uint8_t hrs = 0, mins = 0, secs = 0;
     RTC_GetDateTime(&hrs, &mins, &secs);
     lv_label_set_text_fmt(lbl_clock, "%02u:%02u:%02u", hrs, mins, secs);
 
-    /* 2. Update Peripheral Status Indicators (Green = Active, Dark Gray = Inactive) */
     const char *c_sd  = SDCard_IsMounted()             ? "#00FF66 SD#" : "#555555 SD#";
     const char *c_kbd = USBHostManager_IsKeyboardReady()? "#00E5FF K#"  : "#555555 K#";
     const char *c_mse = USBHostManager_IsMouseReady()   ? "#00E5FF M#"  : "#555555 M#";
@@ -184,14 +329,12 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     file_list_obj  = NULL;
     lbl_time_set   = NULL;
 
-    /* Clear focus group before destroying old widgets */
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
     {
         lv_group_remove_all_objs(grp);
     }
 
-    /* Clean workspace container */
     lv_obj_clean(workspace_cont);
 
     switch (screen)
@@ -245,11 +388,10 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x252F48), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_90, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_80, 0);
     lv_obj_set_style_border_width(btn, 2, 0);
     lv_obj_set_style_border_color(btn, lv_color_hex(accent_hex), 0);
 
-    /* Highlight border when focused via Gamepad / Keyboard */
     lv_obj_set_style_border_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(btn, 3, LV_STATE_FOCUSED);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
@@ -270,19 +412,33 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
 
 static void Build_Home_Screen(void)
 {
-    /* 1. Optional Wallpaper from SD Card: check if /assets/wall.bmp exists */
+    /* 1. Auto-detect Wallpaper in /assets/ */
+    static const char * const wall_candidates[] = {
+        "assets/wall.bmp",
+        "assets/wall.png",
+        "assets/wall.jpg",
+        "assets/console_wallpaper_raw.png"
+    };
+
     static FILINFO fno;
-    if (SDCard_IsMounted() && f_stat("assets/wall.bmp", &fno) == FR_OK)
+    if (SDCard_IsMounted())
     {
-        lv_obj_t * bg_img = lv_img_create(workspace_cont);
-        lv_img_set_src(bg_img, "S:/assets/wall.bmp");
-        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
-    }
-    else if (SDCard_IsMounted() && f_stat("assets/wall.png", &fno) == FR_OK)
-    {
-        lv_obj_t * bg_img = lv_img_create(workspace_cont);
-        lv_img_set_src(bg_img, "S:/assets/wall.png");
-        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+        for (size_t i = 0; i < sizeof(wall_candidates) / sizeof(wall_candidates[0]); i++)
+        {
+            if (f_stat(wall_candidates[i], &fno) == FR_OK)
+            {
+                lv_obj_t * bg_img = lv_img_create(workspace_cont);
+                if (Set_Image_From_SD(bg_img, wall_candidates[i]))
+                {
+                    lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+                    break;
+                }
+                else
+                {
+                    lv_obj_del(bg_img);
+                }
+            }
+        }
     }
 
     /* 2. Create 2x2 Console Dashboard Shortcuts */
@@ -293,26 +449,8 @@ static void Build_Home_Screen(void)
 }
 
 /* ==========================================================================
- * 3. File Explorer Screen (+ Image Viewer for .bmp / .png / .jpg!)
+ * 3. File Explorer Screen (+ Image Viewer)
  * ========================================================================== */
-
-static bool Ends_With_IgnoreCase(const char *str, const char *suffix)
-{
-    size_t str_len = strlen(str);
-    size_t suf_len = strlen(suffix);
-    if (suf_len > str_len) return false;
-
-    const char *p = str + (str_len - suf_len);
-    for (size_t i = 0; i < suf_len; i++)
-    {
-        char c1 = p[i];
-        char c2 = suffix[i];
-        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
-        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
-        if (c1 != c2) return false;
-    }
-    return true;
-}
 
 static void close_img_preview_cb(lv_event_t * e)
 {
@@ -324,7 +462,7 @@ static void close_img_preview_cb(lv_event_t * e)
     }
 }
 
-static void Open_Image_Preview(const char *full_lvgl_path)
+static void Open_Image_Preview(const char *fatfs_path)
 {
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL) lv_group_remove_all_objs(grp);
@@ -332,8 +470,25 @@ static void Open_Image_Preview(const char *full_lvgl_path)
     lv_obj_clean(workspace_cont);
 
     lv_obj_t * img = lv_img_create(workspace_cont);
-    lv_img_set_src(img, full_lvgl_path);
-    lv_obj_center(img);
+    if (Set_Image_From_SD(img, fatfs_path))
+    {
+        lv_obj_center(img);
+    }
+    else
+    {
+        lv_obj_del(img);
+        lv_obj_t * err_lbl = lv_label_create(workspace_cont);
+        lv_obj_set_style_text_color(err_lbl, lv_color_hex(0xFF5555), 0);
+        lv_obj_set_style_text_align(err_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text_fmt(err_lbl,
+            "Cannot decode image:\n%s\n\n"
+            "Requirements:\n"
+            "- Max size: 320 x 240 px\n"
+            "- Format: BMP (16/24-bit),\n"
+            "  PNG or Baseline JPG",
+            fatfs_path);
+        lv_obj_center(err_lbl);
+    }
 
     lv_obj_t * btn_close = lv_btn_create(workspace_cont);
     lv_obj_set_size(btn_close, 70, 26);
@@ -410,11 +565,12 @@ static void file_list_btn_event_cb(lv_event_t * e)
         {
             if (strcmp(g_dir_cache.path, "/") == 0)
             {
-                snprintf(s_next_path, sizeof(s_next_path), "S:/%s", s_clicked_item);
+                snprintf(s_next_path, sizeof(s_next_path), "%s", s_clicked_item);
             }
             else
             {
-                snprintf(s_next_path, sizeof(s_next_path), "S:%.60s/%.50s", g_dir_cache.path, s_clicked_item);
+                const char *sub = (g_dir_cache.path[0] == '/') ? (g_dir_cache.path + 1) : g_dir_cache.path;
+                snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", sub, s_clicked_item);
             }
             Open_Image_Preview(s_next_path);
         }
@@ -448,7 +604,6 @@ static void Populate_File_List_From_Cache(void)
 
     lv_obj_clean(file_list_obj);
 
-    /* Top Entry: Back to Home Screen */
     lv_obj_t * home_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_HOME, "[ Home Screen ]");
     lv_obj_add_event_cb(home_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(home_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
@@ -537,16 +692,13 @@ static void Build_Settings_Screen(void)
     lv_obj_align(lbl_time_set, LV_ALIGN_TOP_MID, 0, 14);
     lv_label_set_text_fmt(lbl_time_set, "Set RTC: %02u : %02u", edit_hours, edit_minutes);
 
-    /* Hour/Minute +/- buttons */
     Create_Setting_Btn(workspace_cont, 20,  48, 60, "Hr +", 1);
     Create_Setting_Btn(workspace_cont, 90,  48, 60, "Hr -", 2);
     Create_Setting_Btn(workspace_cont, 170, 48, 60, "Min +", 3);
     Create_Setting_Btn(workspace_cont, 240, 48, 60, "Min -", 4);
 
-    /* Save to RTC button */
     Create_Setting_Btn(workspace_cont, 80, 100, 160, LV_SYMBOL_OK " Save Time", 5);
 
-    /* Back to Home button */
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
     lv_obj_set_size(btn_back, 120, 34);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -14);
