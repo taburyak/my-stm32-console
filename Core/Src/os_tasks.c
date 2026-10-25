@@ -23,7 +23,7 @@ CCMRAM_BUF static StackType_t  inputTaskStack[INPUT_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t inputTaskTCB;
 static osThreadId_t            inputAudioTaskHandle = NULL;
 
-static StackType_t  storageTaskStack[STORAGE_TASK_STACK_WORDS];
+CCMRAM_BUF static StackType_t  storageTaskStack[STORAGE_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t storageTaskTCB;
 static osThreadId_t            storageIoTaskHandle = NULL;
 

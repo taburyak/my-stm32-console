@@ -9,6 +9,7 @@
 #include "fatfs.h"
 #include <stdio.h>
 #include <string.h>
+#include "ccmram.h"
 
 extern RTC_HandleTypeDef hrtc;
 
@@ -41,7 +42,8 @@ static lv_obj_t * file_list_obj    = NULL;
 static char s_clicked_item[STORAGE_MAX_NAME_LEN];
 static char s_next_path[STORAGE_MAX_PATH_LEN];
 static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
-static char s_text_preview_buf[1024]; /* Buffer for .txt file viewer */
+#define EXT_TEXT_PREVIEW_BUF  ((char *)0x68008000UL)
+#define EXT_TEXT_PREVIEW_SIZE 2048U
 
 /* Settings Screen RTC adjustment state */
 static uint8_t edit_hours   = 12;
@@ -100,7 +102,7 @@ static void Settings_SaveToEEPROM(void)
  * ========================================================================== */
 
 static lv_img_dsc_t s_custom_bmp_dsc;
-static uint8_t      s_bmp_line_buf[1440 * 4];
+#define s_bmp_line_buf ((uint8_t *)0x68009000UL) /* 6 KB line buffer in External SRAM */
 
 static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
 {
@@ -564,15 +566,15 @@ static void Open_Text_Preview(const char *fatfs_path)
     UINT br = 0;
     const char *clean_path = (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path;
 
-    memset(s_text_preview_buf, 0, sizeof(s_text_preview_buf));
+    memset(EXT_TEXT_PREVIEW_BUF, 0, EXT_TEXT_PREVIEW_SIZE);
     if (f_open(&txt_file, clean_path, FA_READ) == FR_OK)
     {
-        (void)f_read(&txt_file, s_text_preview_buf, sizeof(s_text_preview_buf) - 1U, &br);
+        (void)f_read(&txt_file, EXT_TEXT_PREVIEW_BUF, EXT_TEXT_PREVIEW_SIZE - 1U, &br);
         f_close(&txt_file);
     }
     else
     {
-        snprintf(s_text_preview_buf, sizeof(s_text_preview_buf), "Error opening file:\n%s", clean_path);
+        snprintf(EXT_TEXT_PREVIEW_BUF, EXT_TEXT_PREVIEW_SIZE, "Error opening file:\n%s", clean_path);
     }
 
     lv_group_t * grp = lv_group_get_default();
@@ -605,7 +607,7 @@ static void Open_Text_Preview(const char *fatfs_path)
     lv_obj_set_width(txt_lbl, 284);
     lv_label_set_long_mode(txt_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(txt_lbl, lv_color_hex(0xE0E0E0), 0);
-    lv_label_set_text(txt_lbl, s_text_preview_buf);
+    lv_label_set_text(txt_lbl, EXT_TEXT_PREVIEW_BUF);
 
     lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_KEY, NULL);
