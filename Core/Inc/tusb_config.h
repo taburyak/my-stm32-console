@@ -11,9 +11,9 @@ extern "C" {
 
 /* 2. Enable USB Host Mode on Port 0 (USB_OTG_FS Full-Speed) */
 #define CFG_TUH_ENABLED              1
-#define CFG_TUH_MAX_SPEED            OPT_SPEED_FULL
+#define CFG_TUH_MAX_SPEED            TUSB_SPEED_FULL
 #define BOARD_TUH_RHPORT             0
-#define BOARD_TUH_MAX_SPEED          OPT_SPEED_FULL
+#define BOARD_TUH_MAX_SPEED          TUSB_SPEED_FULL
 
 /* 3. Memory alignment & section (Standard DMA-safe Internal SRAM) */
 #define CFG_TUSB_MEM_SECTION

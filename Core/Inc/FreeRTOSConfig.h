@@ -183,6 +183,11 @@ standard names. */
     } else { \
         __set_CONTROL( __get_CONTROL() & ~1 ); \
     }
+
+/* Compatibility alias for TinyUSB OSAL FreeRTOS */
+#ifndef pdTICKS_TO_MS
+#define pdTICKS_TO_MS(xTicks) ((TickType_t)((xTicks) * (1000UL / configTICK_RATE_HZ)))
+#endif
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */
