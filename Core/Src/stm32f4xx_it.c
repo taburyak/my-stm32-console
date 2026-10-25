@@ -23,6 +23,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "tusb.h"
+#include "status_led.h"
+#include "beeper.h"
+#include "usb_host_manager.h"
+#include "sram_ext.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -301,31 +305,50 @@ __attribute__((naked)) void SVC_Handler(void)
     );
 }
 
-// C-handler for system calls
+// C-handler for system calls from Unprivileged Sandbox (External SRAM)
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
-  // Get SVC number (it's in the instruction code before return address)
+  /* Stack frame contains: r0, r1, r2, r3, r12, lr, pc (svc_args[6]), xPSR */
   uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
 
-  if (svc_number == 0)
+  if (svc_number == 0U)
   {
-    // This is FreeRTOS start. Pass control to it.
+    /* SVC 0 is reserved for FreeRTOS kernel scheduler launch */
     vPortSVCHandler();
   }
   else
   {
-    // This is a call from your user script!
-    switch(svc_number)
+    switch (svc_number)
     {
-      case 1:
-        // Example: sys_led_toggle
+      case 1U: /*SVC 1: sys_led_toggle(led_id) */
+        StatusLED_Toggle((StatusLED_t)svc_args[0]);
         break;
-      case 2:
-        // Example: sys_draw_pixel
-        // Your graphics engine call code
+
+      case 2U: /* SVC 2: sys_beep(duration_ms) */
+        Beeper_Beep((uint16_t)svc_args[0]);
         break;
+
+      case 3U: /* SVC 3: uint32_t sys_get_tick(void) -> returns in r0 */
+        svc_args[0] = HAL_GetTick();
+        break;
+
+      case 4U: /* SVC 4: bool sys_get_gamepad(USB_GamepadState_t *dst) -> returns in r0 */
+        {
+          USB_GamepadState_t *dst = (USB_GamepadState_t *)svc_args[0];
+          /* Security check: ensure destination pointer is in allowed RAM */
+          if (dst != NULL && (SRAM_EXT_IsAddressInSRAM(dst) || ((uint32_t)dst >= 0x20000000U && (uint32_t)dst < 0x20020000U)))
+          {
+            svc_args[0] = USBHostManager_GetGamepadState(dst) ? 1U : 0U;
+          }
+          else
+          {
+            svc_args[0] = 0U;
+          }
+        }
+        break;
+
       default:
-        break; // Unknown call
+        break;
     }
   }
 }
