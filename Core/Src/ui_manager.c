@@ -36,10 +36,6 @@ static uint8_t edit_hours   = 12;
 static uint8_t edit_minutes = 0;
 static lv_obj_t * lbl_time_set = NULL;
 
-/* Dedicated 320x240 RGB565 Image Canvas Buffer in External SRAM Framebuffer 2 (0x68030000) */
-static lv_img_dsc_t s_custom_bmp_dsc;
-static uint8_t      s_bmp_line_buf[320 * 4]; /* Static line buffer in .bss */
-
 /* Forward declarations */
 static void Build_Home_Screen(void);
 static void Build_Files_Screen(void);
@@ -51,6 +47,10 @@ static void Populate_File_List_From_Cache(void);
  * Universal 16/24/32-bit BMP Loader into External SRAM (0x68030000)
  * Works with ANY standard Windows Paint / Photoshop BMP (up to 320x240)!
  * ========================================================================== */
+
+/* Dedicated line buffer in .bss (supports source images up to 1440 px wide!) */
+static lv_img_dsc_t s_custom_bmp_dsc;
+static uint8_t      s_bmp_line_buf[1440 * 4];
 
 static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
 {
@@ -71,58 +71,71 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
         return false;
     }
 
-    uint32_t data_offset = *(uint32_t *)&hdr[10];
-    int32_t  width       = *(int32_t *)&hdr[18];
-    int32_t  height      = *(int32_t *)&hdr[22];
-    uint16_t bpp         = *(uint16_t *)&hdr[28];
+    /* Read fields safely using byte shifts (avoids any unaligned access) */
+    uint32_t data_offset = (uint32_t)hdr[10] | ((uint32_t)hdr[11] << 8) | ((uint32_t)hdr[12] << 16) | ((uint32_t)hdr[13] << 24);
+    int32_t  src_w       = (int32_t)((uint32_t)hdr[18] | ((uint32_t)hdr[19] << 8) | ((uint32_t)hdr[20] << 16) | ((uint32_t)hdr[21] << 24));
+    int32_t  src_h       = (int32_t)((uint32_t)hdr[22] | ((uint32_t)hdr[23] << 8) | ((uint32_t)hdr[24] << 16) | ((uint32_t)hdr[25] << 24));
+    uint16_t bpp         = (uint16_t)((uint16_t)hdr[28] | ((uint16_t)hdr[29] << 8));
 
     bool top_down = false;
-    if (height < 0)
+    if (src_h < 0)
     {
-        height   = -height;
+        src_h    = -src_h;
         top_down = true;
     }
 
-    printf("[IMG] BMP %s: %ldx%ld, %u bpp\r\n", fatfs_path, (long)width, (long)height, bpp);
+    printf("[IMG] Loading BMP '%s': %ldx%ld, %u bpp, offset=%lu\r\n",
+           fatfs_path, (long)src_w, (long)src_h, bpp, (unsigned long)data_offset);
 
-    if (width <= 0 || width > 320 || height <= 0 || height > 240 || (bpp != 24 && bpp != 16 && bpp != 32))
+    if (src_w <= 0 || src_w > 1440 || src_h <= 0 || src_h > 1080 || (bpp != 24 && bpp != 16 && bpp != 32))
     {
-        printf("[IMG] Unsupported BMP size/bpp (Max 320x240, 16/24/32bpp)!\r\n");
+        printf("[IMG] Unsupported BMP format!\r\n");
         f_close(&bmp_file);
         return false;
     }
 
-    /* Decode directly into External SRAM Framebuffer 2 (0x68030000) */
-    uint16_t *dst_fb = (uint16_t *)(0x68030000UL);
-    uint32_t row_bytes = ((uint32_t)width * (bpp / 8U) + 3U) & ~3U;
+    /* Target dimensions on screen (max 320 x 216 workspace) */
+    int32_t dst_w = (src_w > 320) ? 320 : src_w;
+    int32_t dst_h = (src_h > 216) ? 216 : src_h;
 
-    for (int32_t y = 0; y < height; y++)
+    /* Decode & scale directly into External SRAM at 0x68010000 (offset +64KB) */
+    uint16_t *dst_fb = (uint16_t *)(0x68010000UL);
+    uint32_t row_bytes = ((uint32_t)src_w * (bpp / 8U) + 3U) & ~3U;
+
+    for (int32_t dy = 0; dy < dst_h; dy++)
     {
-        int32_t target_y = top_down ? y : (height - 1 - y);
-        uint32_t file_pos = data_offset + (uint32_t)y * row_bytes;
+        int32_t sy = (dy * src_h) / dst_h;
+        int32_t file_row = top_down ? sy : (src_h - 1 - sy);
+        uint32_t file_pos = data_offset + (uint32_t)file_row * row_bytes;
 
-        f_lseek(&bmp_file, file_pos);
-        if (f_read(&bmp_file, s_bmp_line_buf, row_bytes, &br) != FR_OK)
-        {
-            break;
-        }
+        if (f_lseek(&bmp_file, file_pos) != FR_OK) break;
+        if (f_read(&bmp_file, s_bmp_line_buf, row_bytes, &br) != FR_OK) break;
 
-        uint16_t *dst_row = &dst_fb[target_y * width];
+        uint16_t *dst_row = &dst_fb[dy * dst_w];
 
         if (bpp == 24 || bpp == 32)
         {
             uint8_t step = bpp / 8U;
-            for (int32_t x = 0; x < width; x++)
+            for (int32_t dx = 0; dx < dst_w; dx++)
             {
-                uint8_t b = s_bmp_line_buf[x * step + 0];
-                uint8_t g = s_bmp_line_buf[x * step + 1];
-                uint8_t r = s_bmp_line_buf[x * step + 2];
-                dst_row[x] = (uint16_t)(((r & 0xF8U) << 8) | ((g & 0xFCU) << 3) | (b >> 3));
+                int32_t sx = (dx * src_w) / dst_w;
+                uint8_t b = s_bmp_line_buf[sx * step + 0];
+                uint8_t g = s_bmp_line_buf[sx * step + 1];
+                uint8_t r = s_bmp_line_buf[sx * step + 2];
+
+                /* LVGL RGB565 format */
+                lv_color_t c = lv_color_make(r, g, b);
+                dst_row[dx] = c.full;
             }
         }
         else if (bpp == 16)
         {
-            memcpy(dst_row, s_bmp_line_buf, (size_t)width * 2U);
+            uint16_t *src16 = (uint16_t *)s_bmp_line_buf;
+            for (int32_t dx = 0; dx < dst_w; dx++)
+            {
+                int32_t sx = (dx * src_w) / dst_w;
+                dst_row[dx] = src16[sx];
+            }
         }
     }
 
@@ -130,13 +143,13 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
 
     memset(out_dsc, 0, sizeof(lv_img_dsc_t));
     out_dsc->header.always_zero = 0;
-    out_dsc->header.w           = (uint32_t)width;
-    out_dsc->header.h           = (uint32_t)height;
+    out_dsc->header.w           = (uint32_t)dst_w;
+    out_dsc->header.h           = (uint32_t)dst_h;
     out_dsc->header.cf          = LV_IMG_CF_TRUE_COLOR;
-    out_dsc->data_size          = (uint32_t)(width * height * 2);
+    out_dsc->data_size          = (uint32_t)(dst_w * dst_h * 2);
     out_dsc->data               = (const uint8_t *)dst_fb;
 
-    printf("[IMG] BMP successfully loaded into External SRAM!\r\n");
+    printf("[IMG] BMP Ready in ExtSRAM (%ldx%ld)!\r\n", (long)dst_w, (long)dst_h);
     return true;
 }
 
@@ -388,7 +401,7 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x252F48), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_80, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_60, 0);
     lv_obj_set_style_border_width(btn, 2, 0);
     lv_obj_set_style_border_color(btn, lv_color_hex(accent_hex), 0);
 
@@ -412,12 +425,12 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
 
 static void Build_Home_Screen(void)
 {
-    /* 1. Auto-detect Wallpaper in /assets/ */
+    /* 1. Auto-detect Wallpaper in /assets/ or SD root / */
     static const char * const wall_candidates[] = {
         "assets/wall.bmp",
+        "wall.bmp",
         "assets/wall.png",
-        "assets/wall.jpg",
-        "assets/console_wallpaper_raw.png"
+        "assets/wall.jpg"
     };
 
     static FILINFO fno;

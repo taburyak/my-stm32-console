@@ -828,13 +828,13 @@ void MPU_Config_UserSandbox(void)
   MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 2: External SRAM (Sandbox) — Read, Write, Execute (Non-cacheable FSMC bus)
+  // Region 2: External SRAM (Sandbox & Framebuffers) — Normal Non-Cacheable Memory (TEX=1, C=0, B=0)
   MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
   MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
   MPU_InitStruct.BaseAddress      = 0x68000000;
   MPU_InitStruct.Size             = MPU_REGION_SIZE_1MB;
   MPU_InitStruct.SubRegionDisable = 0x0;
-  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1; // CRITICAL: Normal Memory (allows unaligned access!)
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_ENABLE;
   MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
