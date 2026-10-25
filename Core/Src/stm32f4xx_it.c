@@ -22,6 +22,11 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "tusb.h"
+#include "status_led.h"
+#include "beeper.h"
+#include "usb_host_manager.h"
+#include "sram_ext.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,11 +61,11 @@ void Custom_SVC_Handler_C(uint32_t *svc_args);
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern HCD_HandleTypeDef hhcd_USB_OTG_FS;
 extern DMA_HandleTypeDef hdma_sdio_rx;
 extern DMA_HandleTypeDef hdma_sdio_tx;
 extern SD_HandleTypeDef hsd;
 extern UART_HandleTypeDef huart3;
+extern HCD_HandleTypeDef hhcd_USB_OTG_FS;
 extern TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN EV */
@@ -96,6 +101,8 @@ void HardFault_Handler(void)
   while (1)
   {
     /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_HardFault_IRQn 0 */
   }
 }
@@ -111,6 +118,8 @@ void MemManage_Handler(void)
   while (1)
   {
     /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_MemoryManagement_IRQn 0 */
   }
 }
@@ -126,6 +135,8 @@ void BusFault_Handler(void)
   while (1)
   {
     /* USER CODE BEGIN W1_BusFault_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_BusFault_IRQn 0 */
   }
 }
@@ -258,7 +269,8 @@ void DMA2_Stream3_IRQHandler(void)
 void OTG_FS_IRQHandler(void)
 {
   /* USER CODE BEGIN OTG_FS_IRQn 0 */
-
+  tuh_int_handler(0, true);
+  return;
   /* USER CODE END OTG_FS_IRQn 0 */
   HAL_HCD_IRQHandler(&hhcd_USB_OTG_FS);
   /* USER CODE BEGIN OTG_FS_IRQn 1 */
@@ -293,31 +305,50 @@ __attribute__((naked)) void SVC_Handler(void)
     );
 }
 
-// C-handler for system calls
+// C-handler for system calls from Unprivileged Sandbox (External SRAM)
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
-  // Get SVC number (it's in the instruction code before return address)
+  /* Stack frame contains: r0, r1, r2, r3, r12, lr, pc (svc_args[6]), xPSR */
   uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
 
-  if (svc_number == 0)
+  if (svc_number == 0U)
   {
-    // This is FreeRTOS start. Pass control to it.
+    /* SVC 0 is reserved for FreeRTOS kernel scheduler launch */
     vPortSVCHandler();
   }
   else
   {
-    // This is a call from your user script!
-    switch(svc_number)
+    switch (svc_number)
     {
-      case 1:
-        // Example: sys_led_toggle
+      case 1U: /*SVC 1: sys_led_toggle(led_id) */
+        StatusLED_Toggle((StatusLED_t)svc_args[0]);
         break;
-      case 2:
-        // Example: sys_draw_pixel
-        // Your graphics engine call code
+
+      case 2U: /* SVC 2: sys_beep(duration_ms) */
+        Beeper_Beep((uint16_t)svc_args[0]);
         break;
+
+      case 3U: /* SVC 3: uint32_t sys_get_tick(void) -> returns in r0 */
+        svc_args[0] = HAL_GetTick();
+        break;
+
+      case 4U: /* SVC 4: bool sys_get_gamepad(USB_GamepadState_t *dst) -> returns in r0 */
+        {
+          USB_GamepadState_t *dst = (USB_GamepadState_t *)svc_args[0];
+          /* Security check: ensure destination pointer is in allowed RAM */
+          if (dst != NULL && (SRAM_EXT_IsAddressInSRAM(dst) || ((uint32_t)dst >= 0x20000000U && (uint32_t)dst < 0x20020000U)))
+          {
+            svc_args[0] = USBHostManager_GetGamepadState(dst) ? 1U : 0U;
+          }
+          else
+          {
+            svc_args[0] = 0U;
+          }
+        }
+        break;
+
       default:
-        break; // Unknown call
+        break;
     }
   }
 }

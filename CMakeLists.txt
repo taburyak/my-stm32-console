@@ -58,8 +58,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     FATFS/App/fatfs.c
     FATFS/Target/sd_diskio.c
     FATFS/Target/bsp_driver_sd.c
-    USB_HOST/App/usb_host.c
-    USB_HOST/Target/usbh_conf.c
     Libs/lvgl_port/lv_port_console.c
     Core/Src/status_led.c
     Core/Src/buttons_manager.c
@@ -69,20 +67,34 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/sram_ext.c
     Core/Src/sdcard_fatfs.c
     Core/Src/usb_host_manager.c
+    Core/Src/os_tasks.c
+    Libs/tinyusb/src/tusb.c
+    Libs/tinyusb/src/common/tusb_fifo.c
+    Libs/tinyusb/src/host/usbh.c
+    Libs/tinyusb/src/host/hub.c
+    Libs/tinyusb/src/class/hid/hid_host.c
+    Libs/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
+    Libs/tinyusb/src/portable/synopsys/dwc2/hcd_dwc2.c
+    Libs/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+    Core/Src/ui_manager.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    Core/Inc
     Libs/ILI9341/inc
     Libs/XPT2046
     Libs/AT24XXX
     Libs/W25QXX
     FATFS/App
     FATFS/Target
-    USB_HOST/App
-    USB_HOST/Target
     Libs/lvgl
     Libs/lvgl_port
+    Libs/tinyusb/src
+    Libs/tinyusb/src/common
+    Libs/tinyusb/src/host
+    Libs/tinyusb/src/class/hid
+    Libs/tinyusb/src/portable/synopsys/dwc2
 )
 
 # Add project symbols (macros)

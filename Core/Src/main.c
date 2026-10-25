@@ -20,7 +20,6 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "fatfs.h"
-#include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -39,6 +38,8 @@
 #include "sram_ext.h"
 #include "sdcard_fatfs.h"
 #include "usb_host_manager.h"
+#include "os_tasks.h"
+#include "ui_manager.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,6 +65,8 @@ CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
 
+RTC_HandleTypeDef hrtc;
+
 SD_HandleTypeDef hsd;
 DMA_HandleTypeDef hdma_sdio_rx;
 DMA_HandleTypeDef hdma_sdio_tx;
@@ -71,6 +74,8 @@ DMA_HandleTypeDef hdma_sdio_tx;
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart3;
+
+HCD_HandleTypeDef hhcd_USB_OTG_FS;
 
 DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 SRAM_HandleTypeDef hsram1;
@@ -96,15 +101,13 @@ const osThreadAttr_t sandboxTask_attributes = {
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                                           // Region 1: Internal SRAM (~0x20000000)
-    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (SRAM_EXT_SIZE_BYTES - SRAM_HEAP_OFFSET) }, // Region 2: External SRAM (0x68000000)
-    { NULL, 0 }                                                                                       // The Terminator
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                         // Region 1: Internal SRAM (~0x20000000)
+    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (128U * 1024U) },         // Region 2: External SRAM (0x68060000..0x6807FFFF)
+    { NULL, 0 }                                                                     // The Terminator
 };
 
 /* Framebuffer in External SRAM (Bank 3) */
 uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
-
-extern ApplicationTypeDef Appli_state;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -117,6 +120,8 @@ static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SDIO_SD_Init(void);
+static void MX_USB_OTG_FS_HCD_Init(void);
+static void MX_RTC_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -137,81 +142,6 @@ int _write(int file, char *ptr, int len)
 {
     HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
     return len;
-}
-
-static lv_obj_t * g_usb_status_label = NULL;
-
-static void list_btn_event_cb(lv_event_t * e)
-{
-  lv_event_code_t code = lv_event_get_code(e);
-  lv_obj_t * obj = lv_event_get_target(e);
-
-  if (code == LV_EVENT_CLICKED)
-  {
-    const char * file_name = lv_list_get_btn_text(lv_obj_get_parent(obj), obj);
-    // Beeper_Click();
-    if (g_usb_status_label != NULL)
-    {
-      lv_label_set_text_fmt(g_usb_status_label, "Selected: %s", file_name);
-    }
-  }
-}
-
-/**
- * @brief Scans folder on SD card and displays its contents in LVGL list widget
- */
-static void Create_File_List(lv_obj_t *parent, const char *path)
-{
-  lv_obj_t * list = lv_list_create(parent);
-  lv_obj_set_size(list, 300, 190);
-  lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 8);
-
-  /* Create bottom status label for USB Keyboard debugging without UART */
-  g_usb_status_label = lv_label_create(parent);
-  lv_obj_align(g_usb_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -6);
-  lv_label_set_text(g_usb_status_label, "USB: Waiting for keyboard...");
-
-  char title_buf[64];
-  snprintf(title_buf, sizeof(title_buf), "Folder: %s", path);
-  lv_list_add_text(list, title_buf);
-
-  DIR dir;
-  static FILINFO fno;
-  FRESULT fr = f_opendir(&dir, path);
-
-  if (fr != FR_OK)
-  {
-    lv_list_add_text(list, "Failed to open directory");
-    return;
-  }
-
-  lv_group_t * grp = lv_group_get_default();
-  uint32_t count = 0;
-
-  while (1)
-  {
-    fr = f_readdir(&dir, &fno);
-    if (fr != FR_OK || fno.fname[0] == 0) break;
-
-    const char *icon = (fno.fattrib & AM_DIR) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
-
-    lv_obj_t * btn = lv_list_add_btn(list, icon, fno.fname);
-    lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Add button to keyboard navigation group */
-    if (grp != NULL)
-    {
-      lv_group_add_obj(grp, btn);
-    }
-    count++;
-  }
-
-  f_closedir(&dir);
-
-  if (count == 0)
-  {
-    lv_list_add_text(list, "(Empty directory)");
-  }
 }
 /* USER CODE END 0 */
 
@@ -252,6 +182,8 @@ int main(void)
   MX_SPI1_Init();
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
+  MX_USB_OTG_FS_HCD_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
   // IMPORTANT: Configure and enable the MPU before the OS starts
@@ -331,8 +263,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -416,6 +349,76 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef sDate = {0};
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN Check_RTC_BKUP */
+  /* If backup register already holds magic value 0x32F4, battery kept RTC alive:
+  * skip resetting time/date to 00:00:00! */
+  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == 0x32F4U)
+  {
+    return;
+  }
+  HAL_PWR_EnableBkUpAccess();
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F4U);
+  /* USER CODE END Check_RTC_BKUP */
+
+  /** Initialize RTC and set the Time and Date
+  */
+  sTime.Hours = 0x0;
+  sTime.Minutes = 0x0;
+  sTime.Seconds = 0x0;
+  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+  sDate.Month = RTC_MONTH_JANUARY;
+  sDate.Date = 0x1;
+  sDate.Year = 0x0;
+
+  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
 
 }
 
@@ -515,6 +518,41 @@ static void MX_USART3_UART_Init(void)
   /* USER CODE BEGIN USART3_Init 2 */
 
   /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief USB_OTG_FS Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USB_OTG_FS_HCD_Init(void)
+{
+
+  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
+  /* Initialize USB_OTG_FS GPIOs (PA11/PA12), Clock, and NVIC via CubeMX MSP,
+   * then return immediately so TinyUSB (hcd_dwc2) owns the USB_OTG_FS registers! */
+  hhcd_USB_OTG_FS.Instance = USB_OTG_FS;
+  HAL_HCD_MspInit(&hhcd_USB_OTG_FS);
+  return;
+  /* USER CODE END USB_OTG_FS_Init 0 */
+
+  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
+
+  /* USER CODE END USB_OTG_FS_Init 1 */
+  hhcd_USB_OTG_FS.Instance = USB_OTG_FS;
+  hhcd_USB_OTG_FS.Init.Host_channels = 8;
+  hhcd_USB_OTG_FS.Init.speed = HCD_SPEED_FULL;
+  hhcd_USB_OTG_FS.Init.dma_enable = DISABLE;
+  hhcd_USB_OTG_FS.Init.phy_itface = HCD_PHY_EMBEDDED;
+  hhcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
+  if (HAL_HCD_Init(&hhcd_USB_OTG_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
+
+  /* USER CODE END USB_OTG_FS_Init 2 */
 
 }
 
@@ -790,11 +828,18 @@ void MPU_Config_UserSandbox(void)
   MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 2: External SRAM (Sandbox) — Read, Write, Execute
-  MPU_InitStruct.Number = MPU_REGION_NUMBER2;
-  MPU_InitStruct.BaseAddress = 0x68000000;
-  MPU_InitStruct.Size = MPU_REGION_SIZE_1MB;
-  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+  // Region 2: External SRAM (Sandbox & Framebuffers) — Normal Non-Cacheable Memory (TEX=1, C=0, B=0)
+  MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
+  MPU_InitStruct.BaseAddress      = 0x68000000;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_1MB;
+  MPU_InitStruct.SubRegionDisable = 0x0;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1; // CRITICAL: Normal Memory (allows unaligned access!)
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+  MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_ENABLE;
+  MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+  MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
+  MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
   // Enable the MPU. The background region will allow the kernel to access the peripherals (0x40000000)
@@ -839,13 +884,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* init code for USB_HOST */
-  MX_USB_HOST_Init();
   /* USER CODE BEGIN 5 */
-  printf("[OS] Kernel Task Started.\r\n");
+  printf("[OS] GuiRenderTask (DefaultTask) Started.\r\n");
 
   printf("\r\n----------------------------------------\r\n");
-  printf("  STM32F407 Console OS - Step 1 Boot\r\n");
+  printf("  STM32F407 Console OS - Multi-Tasking  \r\n");
   printf("----------------------------------------\r\n");
 
   USBHostManager_Init();
@@ -854,7 +897,7 @@ void StartDefaultTask(void *argument)
   uint32_t sys_freq = HAL_RCC_GetSysClockFreq();
   printf("System Clock Frequency: %lu MHz\r\n", sys_freq / 1000000);
 
-    /* 1. Run Power-On Self-Test (POST) */
+  /* 1. Run Power-On Self-Test (POST) */
   POST_Status_t post_status = POST_RunSelfTest();
 
   /* 2. Initialize feedback subsystems */
@@ -871,19 +914,19 @@ void StartDefaultTask(void *argument)
   /* 4. Process POST status result */
   if (post_status == POST_ERR_SRAM || post_status == POST_ERR_CCMRAM || post_status == POST_ERR_DISPLAY)
   {
-    /* Critical hardware failure */
     StatusLED_Set(STATUS_LED_ERROR, STATUS_LED_ON);
     Beeper_ErrorAlert();
   }
   else
   {
-    /* All critical checks passed (POST_OK or POST_WARN_OPTIONAL) */
     Beeper_BootMelody();
   }
 
-  /* 5. Full Peripherals Initialization */
+  /* 5. LVGL Initialization (Owned exclusively by this task) */
+  LVGL_Port_Init();
+  printf("[INIT] LVGL Ready.\r\n");
 
-  // Initialize W25QXX Flash
+  /* 6. Full Peripherals Initialization */
   if (W25qxx_Init())
   {
     printf("[INIT] W25QXX Flash Ready.\r\n");
@@ -893,7 +936,6 @@ void StartDefaultTask(void *argument)
     printf("[INIT] W25QXX Flash FAILED.\r\n");
   }
 
-  /* --- SD Card & Directory Initialization --- */
   if (SDCard_InitSystemDirs())
   {
     printf("[INIT] SD Card FileSystem Ready.\r\n");
@@ -903,144 +945,42 @@ void StartDefaultTask(void *argument)
     printf("[INIT] SD Card FileSystem FAILED.\r\n");
   }
 
-  /* --- LVGL Initialization --- */
-  LVGL_Port_Init();
-  printf("[INIT] LVGL Ready.\r\n");
+  /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
+  OSTasks_Init();
 
-
-  /* Create file list from root directory */
-  Create_File_List(lv_scr_act(), "/");
+  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) */
+  UIManager_Init();
 
   uint32_t last_heartbeat_tick = 0;
-  Button_Message_t btn_msg;
+  Gui_EventMsg_t gui_evt;
 
-  /* Infinite loop */
+  /* Infinite GUI & Render Loop (~66 FPS / 15ms period) */
   for(;;)
   {
-    /* 1. Process button state (debounce, hold timers) */
-    Buttons_Process();
-
-    /* 2. Process button event queue */
-    while (Buttons_GetEvent(&btn_msg))
+    /* 1. Check for completed async events from StorageIoTask */
+    while (OSTasks_GetGuiEvent(&gui_evt))
     {
-      switch (btn_msg.event)
+      if (gui_evt.type == GUI_EVT_DIR_READY || gui_evt.type == GUI_EVT_STORAGE_ERROR)
       {
-        case BUTTON_EVENT_PRESSED:
-          printf("[BTN] KEY_%d PRESSED\r\n", btn_msg.id);
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
-          Beeper_Click();
-          break;
-
-        case BUTTON_EVENT_SHORT_RELEASE:
-          printf("[BTN] KEY_%d SHORT RELEASE (<1s)\r\n", btn_msg.id);
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-          break;
-
-        case BUTTON_EVENT_LONG_PRESS:
-          printf("[BTN] KEY_%d LONG PRESS (>=1s)!\r\n", btn_msg.id);
-          StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
-          /* Тестова умова: якщо довго утримуємо KEY_3 - програємо сигнал тривоги */
-          if (btn_msg.id == BUTTON_KEY3)
-          {
-            Beeper_ErrorAlert();
-          }
-          else
-          {
-            Beeper_Click();
-          }
-          break;
-
-        default:
-          break;
+        UIManager_OnDirReady();
       }
     }
 
-    /* Process Beeper state */
-    Beeper_Process();
-
-    /* 3. Non-blocking Heartbeat on LD0 (1 Hz) */
+    /* 2. Non-blocking Heartbeat on LD0 (1 Hz) */
     if ((HAL_GetTick() - last_heartbeat_tick) >= 500)
     {
       last_heartbeat_tick = HAL_GetTick();
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
     }
 
-    /* 4. LVGL Graphics Processing */
+    /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
+    UIManager_Update();
+
+    /* 4. LVGL Graphics Rendering */
     lv_timer_handler();
 
-    /* Wakeup USB Host state machine for HID polling in RTOS mode */
-    USBHostManager_TaskPoll();
-
-    /* Visual USB Debug Monitor on LCD (every 100ms) */
-    static uint32_t last_usb_ui_tick = 0;
-    static uint32_t prev_irq_cnt = 0xFFFFFFFF;
-    static uint8_t  prev_host_id = 0xFF;
-    static uint8_t  prev_hid_st  = 0xFF;
-
-    if ((HAL_GetTick() - last_usb_ui_tick) >= 100)
-    {
-      last_usb_ui_tick = HAL_GetTick();
-
-      if (g_usb_dbg.irq_event_count != prev_irq_cnt ||
-          g_usb_dbg.last_host_id != prev_host_id ||
-          g_usb_dbg.hid_state != prev_hid_st)
-      {
-        prev_irq_cnt = g_usb_dbg.irq_event_count;
-        prev_host_id = g_usb_dbg.last_host_id;
-        prev_hid_st  = g_usb_dbg.hid_state;
-
-        if (USBHostManager_IsKeyboardReady())
-        {
-          char ch_disp = (g_usb_dbg.last_ascii >= 32 && g_usb_dbg.last_ascii <= 126)
-                         ? (char)g_usb_dbg.last_ascii : '?';
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "KBD St:%d | Sc:0x%02X '%c' Cnt:%lu",
-                                g_usb_dbg.hid_state,
-                                g_usb_dbg.last_scancode,
-                                ch_disp,
-                                (unsigned long)g_usb_dbg.irq_event_count);
-        }
-        else if (USBHostManager_IsMouseReady())
-        {
-          char b_l = (g_usb_dbg.mouse_btns & 0x01) ? 'L' : '-';
-          char b_m = (g_usb_dbg.mouse_btns & 0x04) ? 'M' : '-';
-          char b_r = (g_usb_dbg.mouse_btns & 0x02) ? 'R' : '-';
-
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "M X:%d Y:%d %c%c%c [%02X %02X %02X %02X]",
-                                (int)g_usb_dbg.mouse_x,
-                                (int)g_usb_dbg.mouse_y,
-                                b_l, b_m, b_r,
-                                g_usb_dbg.raw_report[0],
-                                g_usb_dbg.raw_report[1],
-                                g_usb_dbg.raw_report[2],
-                                g_usb_dbg.raw_report[3]);
-        }
-        else if (USBHostManager_IsGamepadReady())
-        {
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "PAD [%02X %02X %02X %02X %02X %02X %02X]",
-                                g_usb_dbg.raw_report[0],
-                                g_usb_dbg.raw_report[1],
-                                g_usb_dbg.raw_report[2],
-                                g_usb_dbg.raw_report[3],
-                                g_usb_dbg.raw_report[4],
-                                g_usb_dbg.raw_report[5],
-                                g_usb_dbg.raw_report[6]);
-        }
-        else
-        {
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "USB State:%d Type:%d HidSt:%d",
-                                g_usb_dbg.last_host_id,
-                                g_usb_dbg.detected_dev_type,
-                                g_usb_dbg.hid_state);
-        }
-      }
-    }
-
-    /* 5. Pause 5ms to release OS time slices */
-    osDelay(5);
+    /* 5. Pause 15ms (~66 FPS frame pacing) */
+    osDelay(15);
   }
   /* USER CODE END 5 */
 }
