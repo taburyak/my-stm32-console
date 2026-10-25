@@ -1,0 +1,604 @@
+#include "ui_manager.h"
+#include "os_tasks.h"
+#include "usb_host_manager.h"
+#include "sdcard_fatfs.h"
+#include "system_post.h"
+#include "beeper.h"
+#include "fatfs.h"
+#include <stdio.h>
+#include <string.h>
+
+extern RTC_HandleTypeDef hrtc;
+
+/* ==========================================================================
+ * Static UI Widgets & State
+ * ========================================================================== */
+
+static UI_Screen_t current_screen = UI_SCREEN_HOME;
+
+/* Top Status Bar widgets (always visible, 320x24) */
+static lv_obj_t * status_bar       = NULL;
+static lv_obj_t * lbl_screen_title = NULL;
+static lv_obj_t * lbl_status_icons = NULL;
+static lv_obj_t * lbl_clock        = NULL;
+
+/* Main Workspace Container (below status bar, 320x216) */
+static lv_obj_t * workspace_cont   = NULL;
+
+/* File Explorer specific widgets & static buffers (zero stack usage) */
+static lv_obj_t * file_list_obj    = NULL;
+static char s_clicked_item[STORAGE_MAX_NAME_LEN];
+static char s_next_path[STORAGE_MAX_PATH_LEN];
+static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
+
+/* Settings Screen RTC adjustment state */
+static uint8_t edit_hours   = 12;
+static uint8_t edit_minutes = 0;
+static lv_obj_t * lbl_time_set = NULL;
+
+/* Forward declarations */
+static void Build_Home_Screen(void);
+static void Build_Files_Screen(void);
+static void Build_Settings_Screen(void);
+static void Build_SysInfo_Screen(void);
+static void Populate_File_List_From_Cache(void);
+
+/* ==========================================================================
+ * Helper: Read & Write Hardware RTC
+ * ========================================================================== */
+
+static void RTC_GetDateTime(uint8_t *hours, uint8_t *minutes, uint8_t *seconds)
+{
+    RTC_TimeTypeDef sTime = {0};
+    RTC_DateTypeDef sDate = {0};
+
+    /* Note: STM32 HAL requires reading Date after Time to unlock shadow registers! */
+    if (HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN) == HAL_OK)
+    {
+        (void)HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+        if (hours)   *hours   = sTime.Hours;
+        if (minutes) *minutes = sTime.Minutes;
+        if (seconds) *seconds = sTime.Seconds;
+    }
+}
+
+static void RTC_SetTimeManual(uint8_t hours, uint8_t minutes)
+{
+    RTC_TimeTypeDef sTime = {0};
+    sTime.Hours          = hours % 24U;
+    sTime.Minutes        = minutes % 60U;
+    sTime.Seconds        = 0U;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
+    HAL_PWR_EnableBkUpAccess();
+    (void)HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F4U);
+}
+
+/* ==========================================================================
+ * Global Key Event Handler (ESC / Gamepad B -> Back to Home Screen)
+ * ========================================================================== */
+
+static void global_key_event_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_KEY)
+    {
+        uint32_t key = lv_event_get_key(e);
+        if (key == LV_KEY_ESC && current_screen != UI_SCREEN_HOME)
+        {
+            Beeper_Click();
+            UIManager_ShowScreen(UI_SCREEN_HOME);
+        }
+    }
+}
+
+static void btn_back_home_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        Beeper_Click();
+        UIManager_ShowScreen(UI_SCREEN_HOME);
+    }
+}
+
+/* ==========================================================================
+ * 1. Top Status Bar & Workspace Initialization
+ * ========================================================================== */
+
+void UIManager_Init(void)
+{
+    lv_obj_t * scr = lv_scr_act();
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 1. Create Top Status Bar (320 x 24 px) */
+    status_bar = lv_obj_create(scr);
+    lv_obj_set_size(status_bar, 320, 24);
+    lv_obj_align(status_bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(status_bar, 0, 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_hex(0x12161F), 0);
+    lv_obj_set_style_pad_all(status_bar, 2, 0);
+
+    /* Left: Screen Title */
+    lbl_screen_title = lv_label_create(status_bar);
+    lv_obj_set_style_text_color(lbl_screen_title, lv_color_hex(0x00E5FF), 0);
+    lv_obj_align(lbl_screen_title, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_label_set_text(lbl_screen_title, "STM32 OS");
+
+    /* Center: Peripheral Status Badges (SD, KBD, MOUSE, PAD) */
+    lbl_status_icons = lv_label_create(status_bar);
+    lv_label_set_recolor(lbl_status_icons, true);
+    lv_obj_align(lbl_status_icons, LV_ALIGN_CENTER, 10, 0);
+    lv_label_set_text(lbl_status_icons, "#555555 SD K M G#");
+
+    /* Right: RTC Clock (HH:MM:SS) */
+    lbl_clock = lv_label_create(status_bar);
+    lv_obj_set_style_text_color(lbl_clock, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(lbl_clock, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_label_set_text(lbl_clock, "00:00:00");
+
+    /* 2. Create Main Workspace Container (320 x 216 px) */
+    workspace_cont = lv_obj_create(scr);
+    lv_obj_set_size(workspace_cont, 320, 216);
+    lv_obj_align(workspace_cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_clear_flag(workspace_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(workspace_cont, 0, 0);
+    lv_obj_set_style_border_width(workspace_cont, 0, 0);
+    lv_obj_set_style_pad_all(workspace_cont, 0, 0);
+    lv_obj_set_style_bg_color(workspace_cont, lv_color_hex(0x1B2234), 0);
+
+    /* 3. Show Home Screen by default */
+    UIManager_ShowScreen(UI_SCREEN_HOME);
+}
+
+void UIManager_Update(void)
+{
+    static uint32_t last_status_tick = 0;
+    if ((HAL_GetTick() - last_status_tick) < 250U)
+    {
+        return;
+    }
+    last_status_tick = HAL_GetTick();
+
+    /* 1. Update RTC Clock string */
+    uint8_t hrs = 0, mins = 0, secs = 0;
+    RTC_GetDateTime(&hrs, &mins, &secs);
+    lv_label_set_text_fmt(lbl_clock, "%02u:%02u:%02u", hrs, mins, secs);
+
+    /* 2. Update Peripheral Status Indicators (Green = Active, Dark Gray = Inactive) */
+    const char *c_sd  = SDCard_IsMounted()             ? "#00FF66 SD#" : "#555555 SD#";
+    const char *c_kbd = USBHostManager_IsKeyboardReady()? "#00E5FF K#"  : "#555555 K#";
+    const char *c_mse = USBHostManager_IsMouseReady()   ? "#00E5FF M#"  : "#555555 M#";
+    const char *c_pad = USBHostManager_IsGamepadReady() ? "#FFAE00 G#"  : "#555555 G#";
+
+    lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s", c_sd, c_kbd, c_mse, c_pad);
+}
+
+void UIManager_ShowScreen(UI_Screen_t screen)
+{
+    if (workspace_cont == NULL) return;
+
+    current_screen = screen;
+    file_list_obj  = NULL;
+    lbl_time_set   = NULL;
+
+    /* Clear focus group before destroying old widgets */
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_remove_all_objs(grp);
+    }
+
+    /* Clean workspace container */
+    lv_obj_clean(workspace_cont);
+
+    switch (screen)
+    {
+        case UI_SCREEN_HOME:
+            lv_label_set_text(lbl_screen_title, "STM32 OS");
+            Build_Home_Screen();
+            break;
+
+        case UI_SCREEN_FILES:
+            lv_label_set_text(lbl_screen_title, "SD Explorer");
+            Build_Files_Screen();
+            break;
+
+        case UI_SCREEN_SETTINGS:
+            lv_label_set_text(lbl_screen_title, "Settings");
+            Build_Settings_Screen();
+            break;
+
+        case UI_SCREEN_SYSINFO:
+            lv_label_set_text(lbl_screen_title, "System Info");
+            Build_SysInfo_Screen();
+            break;
+
+        default:
+            Build_Home_Screen();
+            break;
+    }
+}
+
+/* ==========================================================================
+ * 2. Screen Builders
+ * ========================================================================== */
+
+static void home_icon_event_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        UI_Screen_t target = (UI_Screen_t)(uintptr_t)lv_event_get_user_data(e);
+        Beeper_Click();
+        UIManager_ShowScreen(target);
+    }
+}
+
+static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
+                                    const char *symbol, const char *title,
+                                    uint32_t accent_hex, UI_Screen_t target_screen)
+{
+    lv_obj_t * btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, 136, 84);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x252F48), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(accent_hex), 0);
+
+    /* Highlight border when focused via Gamepad / Keyboard */
+    lv_obj_set_style_border_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(btn, 3, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
+
+    lv_obj_t * lbl = lv_label_create(btn);
+    lv_label_set_text_fmt(lbl, "%s\n%s", symbol, title);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(lbl);
+
+    lv_obj_add_event_cb(btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)target_screen);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, btn);
+    }
+}
+
+static void Build_Home_Screen(void)
+{
+    /* 1. Optional Wallpaper from SD Card: check if /assets/wall.bmp exists */
+    static FILINFO fno;
+    if (SDCard_IsMounted() && f_stat("assets/wall.bmp", &fno) == FR_OK)
+    {
+        lv_obj_t * bg_img = lv_img_create(workspace_cont);
+        lv_img_set_src(bg_img, "S:/assets/wall.bmp");
+        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+    }
+    else if (SDCard_IsMounted() && f_stat("assets/wall.png", &fno) == FR_OK)
+    {
+        lv_obj_t * bg_img = lv_img_create(workspace_cont);
+        lv_img_set_src(bg_img, "S:/assets/wall.png");
+        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+    }
+
+    /* 2. Create 2x2 Console Dashboard Shortcuts */
+    Create_Desktop_Shortcut(workspace_cont, 16,  16, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
+    Create_Desktop_Shortcut(workspace_cont, 168, 16, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_FILES);
+    Create_Desktop_Shortcut(workspace_cont, 16,  114, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
+    Create_Desktop_Shortcut(workspace_cont, 168, 114, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
+}
+
+/* ==========================================================================
+ * 3. File Explorer Screen (+ Image Viewer for .bmp / .png / .jpg!)
+ * ========================================================================== */
+
+static bool Ends_With_IgnoreCase(const char *str, const char *suffix)
+{
+    size_t str_len = strlen(str);
+    size_t suf_len = strlen(suffix);
+    if (suf_len > str_len) return false;
+
+    const char *p = str + (str_len - suf_len);
+    for (size_t i = 0; i < suf_len; i++)
+    {
+        char c1 = p[i];
+        char c2 = suffix[i];
+        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        if (c1 != c2) return false;
+    }
+    return true;
+}
+
+static void close_img_preview_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED ||
+        (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC))
+    {
+        Beeper_Click();
+        UIManager_ShowScreen(UI_SCREEN_FILES);
+    }
+}
+
+static void Open_Image_Preview(const char *full_lvgl_path)
+{
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_remove_all_objs(grp);
+
+    lv_obj_clean(workspace_cont);
+
+    lv_obj_t * img = lv_img_create(workspace_cont);
+    lv_img_set_src(img, full_lvgl_path);
+    lv_obj_center(img);
+
+    lv_obj_t * btn_close = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_close, 70, 26);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_LEFT, 6, 6);
+    lv_obj_t * lbl = lv_label_create(btn_close);
+    lv_label_set_text(lbl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(lbl);
+
+    lv_obj_add_event_cb(btn_close, close_img_preview_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_close, close_img_preview_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, btn_close);
+}
+
+static void file_list_btn_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * obj = lv_event_get_target(e);
+
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        UIManager_ShowScreen(UI_SCREEN_HOME);
+        return;
+    }
+
+    if (code == LV_EVENT_CLICKED && file_list_obj != NULL && obj != NULL)
+    {
+        const char * raw_name = lv_list_get_btn_text(file_list_obj, obj);
+        if (raw_name == NULL) return;
+
+        strncpy(s_clicked_item, raw_name, sizeof(s_clicked_item) - 1U);
+        s_clicked_item[sizeof(s_clicked_item) - 1U] = '\0';
+
+        Beeper_Click();
+
+        if (strcmp(s_clicked_item, "[ Home Screen ]") == 0)
+        {
+            UIManager_ShowScreen(UI_SCREEN_HOME);
+            return;
+        }
+
+        if (strcmp(s_clicked_item, ".. (Root)") == 0)
+        {
+            OSTasks_RequestDirList("/");
+            return;
+        }
+
+        for (uint32_t i = 0; i < g_dir_cache.count; i++)
+        {
+            if (strcmp(g_dir_cache.items[i].name, s_clicked_item) == 0)
+            {
+                if (g_dir_cache.items[i].is_dir)
+                {
+                    if (strcmp(g_dir_cache.path, "/") == 0)
+                    {
+                        snprintf(s_next_path, sizeof(s_next_path), "/%s", s_clicked_item);
+                    }
+                    else
+                    {
+                        snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", g_dir_cache.path, s_clicked_item);
+                    }
+                    OSTasks_RequestDirList(s_next_path);
+                    return;
+                }
+                break;
+            }
+        }
+
+        /* Check if clicked file is an image (.bmp, .png, .jpg, .sjpg) */
+        if (Ends_With_IgnoreCase(s_clicked_item, ".bmp") ||
+            Ends_With_IgnoreCase(s_clicked_item, ".png") ||
+            Ends_With_IgnoreCase(s_clicked_item, ".jpg") ||
+            Ends_With_IgnoreCase(s_clicked_item, ".sjpg"))
+        {
+            if (strcmp(g_dir_cache.path, "/") == 0)
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "S:/%s", s_clicked_item);
+            }
+            else
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "S:%.60s/%.50s", g_dir_cache.path, s_clicked_item);
+            }
+            Open_Image_Preview(s_next_path);
+        }
+    }
+}
+
+static void Build_Files_Screen(void)
+{
+    file_list_obj = lv_list_create(workspace_cont);
+    lv_obj_set_size(file_list_obj, 308, 204);
+    lv_obj_align(file_list_obj, LV_ALIGN_CENTER, 0, 0);
+
+    lv_list_add_text(file_list_obj, "Scanning SD card...");
+    OSTasks_RequestDirList(g_dir_cache.path[0] != '\0' ? g_dir_cache.path : "/");
+}
+
+void UIManager_OnDirReady(void)
+{
+    if (current_screen == UI_SCREEN_FILES && file_list_obj != NULL)
+    {
+        Populate_File_List_From_Cache();
+    }
+}
+
+static void Populate_File_List_From_Cache(void)
+{
+    if (file_list_obj == NULL) return;
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_remove_all_objs(grp);
+
+    lv_obj_clean(file_list_obj);
+
+    /* Top Entry: Back to Home Screen */
+    lv_obj_t * home_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_HOME, "[ Home Screen ]");
+    lv_obj_add_event_cb(home_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(home_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, home_btn);
+
+    snprintf(s_title_buf, sizeof(s_title_buf), "Folder: %s", g_dir_cache.path);
+    lv_list_add_text(file_list_obj, s_title_buf);
+
+    if (!g_dir_cache.io_success)
+    {
+        lv_list_add_text(file_list_obj, "SD Card Error / Not Mounted");
+        return;
+    }
+
+    if (strcmp(g_dir_cache.path, "/") != 0)
+    {
+        lv_obj_t * up_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_UP, ".. (Root)");
+        lv_obj_add_event_cb(up_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(up_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
+        if (grp != NULL) lv_group_add_obj(grp, up_btn);
+    }
+
+    for (uint32_t i = 0; i < g_dir_cache.count; i++)
+    {
+        const char *icon = g_dir_cache.items[i].is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
+        lv_obj_t * btn = lv_list_add_btn(file_list_obj, icon, g_dir_cache.items[i].name);
+        lv_obj_add_event_cb(btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
+        if (grp != NULL) lv_group_add_obj(grp, btn);
+    }
+}
+
+/* ==========================================================================
+ * 4. Settings Screen (RTC Time Setup)
+ * ========================================================================== */
+
+static void rtc_adjust_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        intptr_t action = (intptr_t)lv_event_get_user_data(e);
+        Beeper_Click();
+
+        if (action == 1)      edit_hours = (edit_hours + 1U) % 24U;
+        else if (action == 2) edit_hours = (edit_hours == 0U) ? 23U : (edit_hours - 1U);
+        else if (action == 3) edit_minutes = (edit_minutes + 1U) % 60U;
+        else if (action == 4) edit_minutes = (edit_minutes == 0U) ? 59U : (edit_minutes - 1U);
+        else if (action == 5)
+        {
+            RTC_SetTimeManual(edit_hours, edit_minutes);
+            Beeper_BootMelody();
+        }
+
+        if (lbl_time_set != NULL)
+        {
+            lv_label_set_text_fmt(lbl_time_set, "Set RTC: %02u : %02u", edit_hours, edit_minutes);
+        }
+    }
+}
+
+static lv_obj_t* Create_Setting_Btn(lv_obj_t *parent, int16_t x, int16_t y, int16_t w,
+                                    const char *txt, intptr_t action)
+{
+    lv_obj_t * btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, w, 34);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_t * lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, txt);
+    lv_obj_center(lbl);
+
+    lv_obj_add_event_cb(btn, rtc_adjust_btn_cb, LV_EVENT_CLICKED, (void *)action);
+    lv_obj_add_event_cb(btn, global_key_event_cb, LV_EVENT_KEY, NULL);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, btn);
+    return btn;
+}
+
+static void Build_Settings_Screen(void)
+{
+    uint8_t sec_dummy = 0;
+    RTC_GetDateTime(&edit_hours, &edit_minutes, &sec_dummy);
+
+    lbl_time_set = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl_time_set, lv_color_hex(0x00FF66), 0);
+    lv_obj_align(lbl_time_set, LV_ALIGN_TOP_MID, 0, 14);
+    lv_label_set_text_fmt(lbl_time_set, "Set RTC: %02u : %02u", edit_hours, edit_minutes);
+
+    /* Hour/Minute +/- buttons */
+    Create_Setting_Btn(workspace_cont, 20,  48, 60, "Hr +", 1);
+    Create_Setting_Btn(workspace_cont, 90,  48, 60, "Hr -", 2);
+    Create_Setting_Btn(workspace_cont, 170, 48, 60, "Min +", 3);
+    Create_Setting_Btn(workspace_cont, 240, 48, 60, "Min -", 4);
+
+    /* Save to RTC button */
+    Create_Setting_Btn(workspace_cont, 80, 100, 160, LV_SYMBOL_OK " Save Time", 5);
+
+    /* Back to Home button */
+    lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_back, 120, 34);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_t * lbl_b = lv_label_create(btn_back);
+    lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
+    lv_obj_center(lbl_b);
+    lv_obj_add_event_cb(btn_back, btn_back_home_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_back, global_key_event_cb, LV_EVENT_KEY, NULL);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, btn_back);
+}
+
+/* ==========================================================================
+ * 5. System Info Screen (Hardware & Memory Status)
+ * ========================================================================== */
+
+static void Build_SysInfo_Screen(void)
+{
+    const POST_Report_t *rep = POST_GetReport();
+    uint32_t total_mb = 0, free_mb = 0;
+    (void)SDCard_GetFreeSpace(&total_mb, &free_mb);
+
+    lv_obj_t * panel = lv_obj_create(workspace_cont);
+    lv_obj_set_size(panel, 296, 145);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x101520), 0);
+
+    lv_obj_t * info_lbl = lv_label_create(panel);
+    lv_obj_set_style_text_color(info_lbl, lv_color_hex(0xE0E0E0), 0);
+    lv_label_set_text_fmt(info_lbl,
+        "MCU: STM32F407ZET6 @ 168 MHz\n"
+        "FSMC SRAM: %lu KB (%s)\n"
+        "CCM RAM: 64 KB (%s)\n"
+        "SPI Flash W25Q: ID 0x%06X\n"
+        "EEPROM AT24C02: %s\n"
+        "SD Card: %lu MB Free / %lu MB",
+        (unsigned long)rep->sram_size_kb, rep->sram_ok ? "OK" : "ERR",
+        rep->ccmram_ok ? "OK" : "ERR",
+        (unsigned int)rep->flash_id,
+        rep->eeprom_ok ? "OK" : "Missing",
+        (unsigned long)free_mb, (unsigned long)total_mb);
+
+    lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_back, 120, 34);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_t * lbl_b = lv_label_create(btn_back);
+    lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
+    lv_obj_center(lbl_b);
+    lv_obj_add_event_cb(btn_back, btn_back_home_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_back, global_key_event_cb, LV_EVENT_KEY, NULL);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, btn_back);
+}

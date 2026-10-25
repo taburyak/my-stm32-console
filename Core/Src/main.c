@@ -39,6 +39,7 @@
 #include "sdcard_fatfs.h"
 #include "usb_host_manager.h"
 #include "os_tasks.h"
+#include "ui_manager.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -141,144 +142,6 @@ int _write(int file, char *ptr, int len)
 {
     HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
     return len;
-}
-
-static lv_obj_t * g_usb_status_label  = NULL;
-static lv_obj_t * g_file_list_obj     = NULL;
-static uint32_t   g_status_hold_until = 0;
-
-/* Static buffers in .bss to keep LVGL callback stack usage near zero! */
-static char s_clicked_item[STORAGE_MAX_NAME_LEN];
-static char s_next_path[STORAGE_MAX_PATH_LEN];
-static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
-
-static void list_btn_event_cb(lv_event_t * e)
-{
-  lv_event_code_t code = lv_event_get_code(e);
-  lv_obj_t * obj = lv_event_get_target(e);
-
-  if (code == LV_EVENT_CLICKED && g_file_list_obj != NULL && obj != NULL)
-  {
-    const char * raw_name = lv_list_get_btn_text(g_file_list_obj, obj);
-    if (raw_name == NULL) return;
-
-    /* Copy button text into static buffer (zero stack pressure) */
-    strncpy(s_clicked_item, raw_name, sizeof(s_clicked_item) - 1U);
-    s_clicked_item[sizeof(s_clicked_item) - 1U] = '\0';
-
-    Beeper_Click();
-    g_status_hold_until = HAL_GetTick() + 2000U;
-
-    /* Check if user clicked ".. (Root)" to go back */
-    if (strcmp(s_clicked_item, ".. (Root)") == 0)
-    {
-      if (g_usb_status_label != NULL)
-      {
-        lv_label_set_text(g_usb_status_label, "Opening: / ...");
-      }
-      OSTasks_RequestDirList("/");
-      return;
-    }
-
-    /* Check if clicked item is a directory in cache */
-    for (uint32_t i = 0; i < g_dir_cache.count; i++)
-    {
-      if (strcmp(g_dir_cache.items[i].name, s_clicked_item) == 0)
-      {
-        if (g_dir_cache.items[i].is_dir)
-        {
-          if (strcmp(g_dir_cache.path, "/") == 0)
-          {
-            snprintf(s_next_path, sizeof(s_next_path), "/%s", s_clicked_item);
-          }
-          else
-          {
-            snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", g_dir_cache.path, s_clicked_item);
-          }
-
-          if (g_usb_status_label != NULL)
-          {
-            lv_label_set_text_fmt(g_usb_status_label, "Dir: %s", s_clicked_item);
-          }
-          OSTasks_RequestDirList(s_next_path);
-          return;
-        }
-        break;
-      }
-    }
-
-    /* It is a regular file */
-    if (g_usb_status_label != NULL)
-    {
-      lv_label_set_text_fmt(g_usb_status_label, "File: %s", s_clicked_item);
-    }
-  }
-}
-
-/**
- * @brief Creates the LVGL file list container and bottom HUD status label
- */
-static void Create_File_Explorer_UI(lv_obj_t *parent)
-{
-  g_file_list_obj = lv_list_create(parent);
-  lv_obj_set_size(g_file_list_obj, 300, 190);
-  lv_obj_align(g_file_list_obj, LV_ALIGN_TOP_MID, 0, 8);
-
-  g_usb_status_label = lv_label_create(parent);
-  lv_obj_align(g_usb_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -6);
-  lv_label_set_text(g_usb_status_label, "USB: Waiting for device...");
-
-  lv_list_add_text(g_file_list_obj, "Loading SD card...");
-}
-
-/**
- * @brief Populates the LVGL list widget from the async g_dir_cache buffer
- */
-static void Populate_File_List_From_Cache(void)
-{
-  if (g_file_list_obj == NULL) return;
-
-  lv_group_t * grp = lv_group_get_default();
-  if (grp != NULL)
-  {
-    lv_group_remove_all_objs(grp);
-  }
-
-  lv_obj_clean(g_file_list_obj);
-
-  snprintf(s_title_buf, sizeof(s_title_buf), "Folder: %s", g_dir_cache.path);
-  lv_list_add_text(g_file_list_obj, s_title_buf);
-
-  if (!g_dir_cache.io_success)
-  {
-    lv_list_add_text(g_file_list_obj, "Failed to open directory");
-    return;
-  }
-
-  /* Add ".. (Root)" navigation button if inside a subfolder */
-  if (strcmp(g_dir_cache.path, "/") != 0)
-  {
-    lv_obj_t * up_btn = lv_list_add_btn(g_file_list_obj, LV_SYMBOL_UP, ".. (Root)");
-    lv_obj_add_event_cb(up_btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
-    if (grp != NULL) lv_group_add_obj(grp, up_btn);
-  }
-
-  for (uint32_t i = 0; i < g_dir_cache.count; i++)
-  {
-    const char *icon = g_dir_cache.items[i].is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
-    lv_obj_t * btn = lv_list_add_btn(g_file_list_obj, icon, g_dir_cache.items[i].name);
-    lv_obj_add_event_cb(btn, list_btn_event_cb, LV_EVENT_CLICKED, NULL);
-
-    if (grp != NULL)
-    {
-      lv_group_add_obj(grp, btn);
-    }
-  }
-
-  if (g_dir_cache.count == 0)
-  {
-    lv_list_add_text(g_file_list_obj, "(Empty directory)");
-  }
 }
 /* USER CODE END 0 */
 
@@ -523,7 +386,14 @@ static void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
-
+  /* If backup register already holds magic value 0x32F4, battery kept RTC alive:
+  * skip resetting time/date to 00:00:00! */
+  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == 0x32F4U)
+  {
+    return;
+  }
+  HAL_PWR_EnableBkUpAccess();
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F4U);
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
@@ -1078,9 +948,8 @@ void StartDefaultTask(void *argument)
   /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
   OSTasks_Init();
 
-  /* 8. Create UI and request async root directory listing from StorageIoTask */
-  Create_File_Explorer_UI(lv_scr_act());
-  OSTasks_RequestDirList("/");
+  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) */
+  UIManager_Init();
 
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;
@@ -1093,7 +962,7 @@ void StartDefaultTask(void *argument)
     {
       if (gui_evt.type == GUI_EVT_DIR_READY || gui_evt.type == GUI_EVT_STORAGE_ERROR)
       {
-        Populate_File_List_From_Cache();
+        UIManager_OnDirReady();
       }
     }
 
@@ -1104,73 +973,8 @@ void StartDefaultTask(void *argument)
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
     }
 
-    /* 3. Visual USB Debug Monitor on LCD (every 100ms) */
-    static uint32_t last_usb_ui_tick = 0;
-    static uint32_t prev_irq_cnt = 0xFFFFFFFF;
-    static uint8_t  prev_host_id = 0xFF;
-    static uint8_t  prev_hid_st  = 0xFF;
-
-    if ((HAL_GetTick() - last_usb_ui_tick) >= 100 && HAL_GetTick() >= g_status_hold_until)
-    {
-      last_usb_ui_tick = HAL_GetTick();
-
-      if (g_usb_dbg.irq_event_count != prev_irq_cnt ||
-          g_usb_dbg.last_host_id != prev_host_id ||
-          g_usb_dbg.hid_state != prev_hid_st)
-      {
-        prev_irq_cnt = g_usb_dbg.irq_event_count;
-        prev_host_id = g_usb_dbg.last_host_id;
-        prev_hid_st  = g_usb_dbg.hid_state;
-
-        if (USBHostManager_IsKeyboardReady())
-        {
-          char ch_disp = (g_usb_dbg.last_ascii >= 32 && g_usb_dbg.last_ascii <= 126)
-                         ? (char)g_usb_dbg.last_ascii : '?';
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "KBD St:%d | Sc:0x%02X '%c' Cnt:%lu",
-                                g_usb_dbg.hid_state,
-                                g_usb_dbg.last_scancode,
-                                ch_disp,
-                                (unsigned long)g_usb_dbg.irq_event_count);
-        }
-        else if (USBHostManager_IsMouseReady())
-        {
-          char b_l = (g_usb_dbg.mouse_btns & 0x01) ? 'L' : '-';
-          char b_m = (g_usb_dbg.mouse_btns & 0x04) ? 'M' : '-';
-          char b_r = (g_usb_dbg.mouse_btns & 0x02) ? 'R' : '-';
-
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "M X:%d Y:%d %c%c%c [%02X %02X %02X %02X]",
-                                (int)g_usb_dbg.mouse_x,
-                                (int)g_usb_dbg.mouse_y,
-                                b_l, b_m, b_r,
-                                g_usb_dbg.raw_report[0],
-                                g_usb_dbg.raw_report[1],
-                                g_usb_dbg.raw_report[2],
-                                g_usb_dbg.raw_report[3]);
-        }
-        else if (USBHostManager_IsGamepadReady())
-        {
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "PAD [%02X %02X %02X %02X %02X %02X %02X]",
-                                g_usb_dbg.raw_report[0],
-                                g_usb_dbg.raw_report[1],
-                                g_usb_dbg.raw_report[2],
-                                g_usb_dbg.raw_report[3],
-                                g_usb_dbg.raw_report[4],
-                                g_usb_dbg.raw_report[5],
-                                g_usb_dbg.raw_report[6]);
-        }
-        else
-        {
-          lv_label_set_text_fmt(g_usb_status_label,
-                                "USB State:%d Type:%d HidSt:%d",
-                                g_usb_dbg.last_host_id,
-                                g_usb_dbg.detected_dev_type,
-                                g_usb_dbg.hid_state);
-        }
-      }
-    }
+    /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
+    UIManager_Update();
 
     /* 4. LVGL Graphics Rendering */
     lv_timer_handler();
