@@ -9,9 +9,10 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Dedicated Sandbox Region in External SRAM (Upper 512 KB: 0x68080000) */
-#define APP_SANDBOX_BASE_ADDR   0x68080000UL
-#define APP_SANDBOX_MAX_SIZE    (256U * 1024U) /* 256 KB for .bin code + data */
+/* Dedicated 0-Wait-State Code Sandbox in Internal SRAM2 (0x20018000, 16 KB)
+ * + 512 KB External SRAM Data Sandbox (0x68080000) */
+#define APP_SANDBOX_BASE_ADDR   0x20018000UL
+#define APP_SANDBOX_MAX_SIZE    (16U * 1024U) /* 16 KB 0-WS Code + .data */
 
 /* Unified Input Bitmask returned by SVC 6 (sys_get_keys) */
 #define APP_KEY_LEFT            (1UL << 0)
