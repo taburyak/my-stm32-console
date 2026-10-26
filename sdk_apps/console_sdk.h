@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Screen dimensions */
 #define LCD_W 320
@@ -73,6 +74,39 @@ static inline void sys_delay_ms(uint32_t ms)
     {
         __asm volatile ("wfi" : : : "memory");
     }
+}
+
+/* Minimal memory functions for -nostdlib compilation (GCC implicit calls) */
+__attribute__((used)) static inline void *memset(void *s, int c, size_t n)
+{
+    uint8_t *p = (uint8_t *)s;
+    while (n--) *p++ = (uint8_t)c;
+    return s;
+}
+
+__attribute__((used)) static inline void *memcpy(void *dest, const void *src, size_t n)
+{
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    while (n--) *d++ = *s++;
+    return dest;
+}
+
+__attribute__((used)) static inline void *memmove(void *dest, const void *src, size_t n)
+{
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    if (d < s)
+    {
+        while (n--) *d++ = *s++;
+    }
+    else
+    {
+        d += n;
+        s += n;
+        while (n--) *--d = *--s;
+    }
+    return dest;
 }
 
 #endif /* CONSOLE_SDK_H */
