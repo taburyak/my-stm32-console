@@ -86,6 +86,7 @@ extern volatile USB_DebugInfo_t g_usb_dbg;
 /* --- Public Function Prototypes --- */
 void USBHostManager_Init(void);
 void USBHostManager_TaskPoll(void);
+void USBHostManager_FlushInputQueues(void);
 
 bool USBHostManager_IsKeyboardReady(void);
 bool USBHostManager_IsMouseReady(void);

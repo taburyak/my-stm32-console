@@ -61,6 +61,7 @@ void Beeper_Process(void);
 
 void Beeper_SetMuted(bool muted);
 bool Beeper_IsMuted(void);
+void Beeper_PlayTone(uint16_t freq_hz, uint16_t duration_ms);
 
 #ifdef __cplusplus
 }

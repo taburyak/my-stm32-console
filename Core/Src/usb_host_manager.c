@@ -1,6 +1,7 @@
 #include "usb_host_manager.h"
 #include "status_led.h"
 #include "beeper.h"
+#include "app_loader.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -36,6 +37,12 @@ static uint8_t const keycode2ascii[128][2] = { HID_KEYCODE_TO_ASCII };
 
 static void enqueue_key(uint8_t scancode, uint8_t ascii, bool is_pressed)
 {
+    /* Do not enqueue LVGL navigation keys while a native Sandbox app owns the screen */
+    if (AppLoader_IsRunning())
+    {
+        return;
+    }
+
     uint8_t next_head = (kbd_head + 1U) % KBD_QUEUE_SIZE;
     if (next_head != kbd_tail)
     {
@@ -44,6 +51,13 @@ static void enqueue_key(uint8_t scancode, uint8_t ascii, bool is_pressed)
         kbd_queue[kbd_head].is_pressed = is_pressed;
         kbd_head = next_head;
     }
+}
+
+void USBHostManager_FlushInputQueues(void)
+{
+    kbd_head = 0;
+    kbd_tail = 0;
+    memset(&prev_kbd_report, 0, sizeof(prev_kbd_report));
 }
 
 void USBHostManager_Init(void)
@@ -271,7 +285,7 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
     bool down  = (hat == 3U || hat == 4U || hat == 5U);
     bool left  = (hat == 5U || hat == 6U || hat == 7U);
 
-    /* Edge detection: push LVGL navigation keys on press */
+    /* Edge detection: push LVGL navigation keys on press (ignored if Sandbox app is active) */
     if (up && !current_gamepad_state.dpad_up)       enqueue_key(0x52, 0, true);    /* Up Arrow */
     if (down && !current_gamepad_state.dpad_down)   enqueue_key(0x51, 0, true);    /* Down Arrow */
     if (left && !current_gamepad_state.dpad_left)   enqueue_key(0x50, 0, true);    /* Left Arrow */
@@ -303,9 +317,6 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
  * TinyUSB Host HID Callbacks
  * ========================================================================== */
 
-/**
- * @brief Invoked when a device with HID interface is mounted
- */
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_report, uint16_t desc_len)
 {
     (void)desc_report;
@@ -343,13 +354,9 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
         Beeper_BootMelody();
     }
 
-    /* Request first report from the device */
     (void)tuh_hid_receive_report(dev_addr, instance);
 }
 
-/**
- * @brief Invoked when a device with HID interface is unmounted
- */
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
     uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
@@ -378,14 +385,10 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
     Beeper_Click();
 }
 
-/**
- * @brief Invoked when a report is received from the HID device Interrupt IN endpoint
- */
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len)
 {
     g_usb_dbg.irq_event_count++;
 
-    /* Save first 8 raw report bytes for LCD HUD & Watch diagnostics */
     uint8_t copy_len = (len < 8U) ? (uint8_t)len : 8U;
     for (uint8_t i = 0; i < copy_len; i++)
     {
@@ -407,6 +410,5 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         Parse_Gamepad_Report(report, len);
     }
 
-    /* Continue requesting reports from the endpoint */
     (void)tuh_hid_receive_report(dev_addr, instance);
 }

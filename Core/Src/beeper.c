@@ -153,3 +153,13 @@ bool Beeper_IsMuted(void)
 {
     return is_muted;
 }
+
+void Beeper_PlayTone(uint16_t freq_hz, uint16_t duration_ms)
+{
+    if (is_muted || duration_ms == 0U || freq_hz == 0U)
+    {
+        return;
+    }
+    /* Active transducer on PG7 is driven via non-blocking timer duration */
+    Beeper_Beep(duration_ms);
+}

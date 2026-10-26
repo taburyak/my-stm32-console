@@ -28,6 +28,7 @@
 #include "usb_host_manager.h"
 #include "sram_ext.h"
 #include "ili9341_simple.h"
+#include "XPT2046_touch.h"
 #include "app_loader.h"
 /* USER CODE END Includes */
 
@@ -316,7 +317,7 @@ __attribute__((naked)) void SVC_Handler(void)
     );
 }
 
-// C-handler for system calls (SVC 1..255) from Unprivileged Sandbox (External SRAM)
+// C-handler for system calls (SVC 1..255) from Unprivileged Sandbox
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
   /* Stack frame contains: r0, r1, r2, r3, r12, lr, pc (svc_args[6]), xPSR */
@@ -339,8 +340,7 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
     case 4U: /* SVC 4: bool sys_get_gamepad(USB_GamepadState_t *dst) -> returns in r0 */
       {
         USB_GamepadState_t *dst = (USB_GamepadState_t *)svc_args[0];
-        /* Security check: ensure destination pointer is in allowed RAM */
-        if (dst != NULL && (SRAM_EXT_IsAddressInSRAM(dst) || ((uint32_t)dst >= 0x20000000U && (uint32_t)dst < 0x20020000U)))
+        if (AppLoader_IsUserBufferValid(dst, sizeof(USB_GamepadState_t)))
         {
           svc_args[0] = USBHostManager_GetGamepadState(dst) ? 1U : 0U;
         }
@@ -370,8 +370,6 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
           {
             LCD_DataWrite(color);
           }
-          /* Ensure FSMC write buffer to Bank 4 (LCD) is completely drained
-           * before CPU fetches next instruction from Bank 3 (External SRAM)! */
           __DSB();
           __ISB();
         }
@@ -382,11 +380,119 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
       svc_args[0] = AppLoader_ReadInputMask_Privileged();
       break;
 
-    case 7U: /* SVC 7: reserved / nop */
-      break;
-
     case 8U: /* SVC 8: void sys_exit(void) */
       AppLoader_RequestExit();
+      break;
+
+    case 9U: /* SVC 9: void sys_draw_pixel(x, y, color565) */
+      {
+        uint16_t x     = (uint16_t)svc_args[0];
+        uint16_t y     = (uint16_t)svc_args[1];
+        uint16_t color = (uint16_t)svc_args[2];
+        if (x < 320U && y < 240U)
+        {
+          lcdSetWindow(x, y, x, y);
+          LCD_DataWrite(color);
+          __DSB();
+          __ISB();
+        }
+      }
+      break;
+
+    case 10U: /* SVC 10: void sys_draw_sprite(packed_xy, packed_wh, const uint16_t *bitmap) */
+      {
+        uint16_t x = (uint16_t)(svc_args[0] >> 16);
+        uint16_t y = (uint16_t)(svc_args[0] & 0xFFFFU);
+        uint16_t w = (uint16_t)(svc_args[1] >> 16);
+        uint16_t h = (uint16_t)(svc_args[1] & 0xFFFFU);
+        const uint16_t *bmp = (const uint16_t *)svc_args[2];
+        uint32_t total_px = (uint32_t)w * (uint32_t)h;
+
+        if (x < 320U && y < 240U && w > 0U && h > 0U &&
+            (x + w <= 320U) && (y + h <= 240U) &&
+            AppLoader_IsUserBufferValid(bmp, total_px * 2U))
+        {
+          lcdSetWindow(x, y, x + w - 1U, y + h - 1U);
+          while (total_px--)
+          {
+            LCD_DataWrite(*bmp++);
+          }
+          __DSB();
+          __ISB();
+        }
+      }
+      break;
+
+    case 11U: /* SVC 11: void sys_draw_text(const App_DrawTextParams_t *params) */
+      AppLoader_DrawText_Privileged((const App_DrawTextParams_t *)svc_args[0]);
+      break;
+
+    case 12U: /* SVC 12: void sys_clear_screen(uint16_t color565) */
+      {
+        uint16_t color = (uint16_t)(svc_args[0] & 0xFFFFU);
+        lcdSetWindow(0U, 0U, 319U, 239U);
+        uint32_t total = 320UL * 240UL;
+        while (total--)
+        {
+          LCD_DataWrite(color);
+        }
+        __DSB();
+        __ISB();
+      }
+      break;
+
+    case 13U: /* SVC 13: bool sys_get_mouse(USB_MouseEvent_t *dst) -> USB Mouse or XPT2046 Touch */
+      {
+        USB_MouseEvent_t *dst = (USB_MouseEvent_t *)svc_args[0];
+        if (!AppLoader_IsUserBufferValid(dst, sizeof(USB_MouseEvent_t)))
+        {
+          svc_args[0] = 0U;
+          break;
+        }
+
+        if (USBHostManager_GetMouseState(dst))
+        {
+          svc_args[0] = 1U;
+        }
+        else
+        {
+          uint16_t tx = 0, ty = 0;
+          if (XPT2046_TouchPressed() && XPT2046_TouchGetCoordinates(&tx, &ty))
+          {
+            dst->x          = (int16_t)tx;
+            dst->y          = (int16_t)ty;
+            dst->delta_x    = 0;
+            dst->delta_y    = 0;
+            dst->btn_left   = true;
+            dst->btn_right  = false;
+            dst->btn_middle = false;
+            svc_args[0]     = 1U;
+          }
+          else
+          {
+            dst->btn_left   = false;
+            dst->btn_right  = false;
+            dst->btn_middle = false;
+            svc_args[0]     = 0U;
+          }
+        }
+      }
+      break;
+
+    case 14U: /* SVC 14: void sys_play_tone(uint16_t freq_hz, uint16_t duration_ms) */
+      Beeper_PlayTone((uint16_t)svc_args[0], (uint16_t)svc_args[1]);
+      break;
+
+    case 15U: /* SVC 15: bool sys_save_state(const char *filename, const void *data, uint32_t len) */
+      svc_args[0] = AppLoader_SaveState_Privileged((const char *)svc_args[0],
+                                                   (const void *)svc_args[1],
+                                                   svc_args[2]) ? 1U : 0U;
+      break;
+
+    case 16U: /* SVC 16: uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
+      svc_args[0] = AppLoader_LoadState_Privileged((const char *)svc_args[0],
+                                                   (void *)svc_args[1],
+                                                   svc_args[2]);
       break;
 
     default:
