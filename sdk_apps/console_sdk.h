@@ -249,7 +249,6 @@ static inline void sys_draw_number_padded(uint16_t x, uint16_t y, uint32_t num,
     sys_draw_text(x, y, buf, fg, bg, scale);
 }
 
-static inline void sys_ delay_ms(uint32_t ms) __attribute__((deprecated));
 static inline void sys_delay_ms(uint32_t ms)
 {
     uint32_t start = sys_get_tick();

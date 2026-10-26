@@ -2,27 +2,47 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* 16 KB 0-Wait-State Code/Data Sandbox in STM32F407 Internal SRAM2 */
-    SANDBOX_RAM (rwx) : ORIGIN = 0x20018000, LENGTH = 16K
+    /* 16 KB 0-Wait-State Internal SRAM2 for Code, Constants, Data & Small BSS */
+    APP_RAM (xrw) : ORIGIN = 0x20018000, LENGTH = 16K
+    /* 512 KB External FSMC SRAM for Large Game Buffers & Assets */
+    EXT_RAM (rw)  : ORIGIN = 0x68080000, LENGTH = 512K
 }
 
 SECTIONS
 {
-    .text 0x20018000 :
+    .text : ALIGN(4)
     {
         KEEP(*(.text.entry))
         *(.text*)
+        . = ALIGN(4);
         *(.rodata*)
-    } > SANDBOX_RAM
+        . = ALIGN(4);
+    } > APP_RAM
 
-    .data :
+    .data : ALIGN(4)
     {
         *(.data*)
-    } > SANDBOX_RAM
+        . = ALIGN(4);
+    } > APP_RAM
 
-    .bss :
+    /* Disallow C++ exception tables / unwinding that bloat raw binaries */
+    /DISCARD/ :
+    {
+        *(.ARM.exidx*)
+        *(.ARM.extab*)
+        *(.eh_frame*)
+    }
+
+    .bss (NOLOAD) : ALIGN(4)
     {
         *(.bss*)
         *(COMMON)
-    } > SANDBOX_RAM
+        . = ALIGN(4);
+    } > APP_RAM
+
+    .ext_bss (NOLOAD) : ALIGN(4)
+    {
+        *(.ext_bss*)
+        . = ALIGN(4);
+    } > EXT_RAM
 }
