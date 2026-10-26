@@ -8,7 +8,7 @@ This project is a functional "Console OS" prototype for the STM32F407 Discovery 
 - **Graphic Engine**: 320x240 LCD support (ILI9341) with DMA-accelerated frame buffer rendering from external SRAM.
 - **USB Host**: Support for USB Keyboards (HID class).
 - **Security**: Hardware isolation using the **MPU (Memory Protection Unit)**. A "Sandbox" task runs in unprivileged mode to demonstrate system protection.
-- **Memory Management**: 
+- **Memory Management**:
     - **Internal SRAM**: Used for kernel and critical tasks.
     - **External SRAM (1MB)**: Used for frame buffers and user heap (Heap_5).
     - **EEPROM (AT24Cxx)**: Support for non-volatile storage via I2C.

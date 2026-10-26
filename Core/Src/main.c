@@ -40,6 +40,7 @@
 #include "usb_host_manager.h"
 #include "os_tasks.h"
 #include "ui_manager.h"
+#include "app_loader.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +94,7 @@ osThreadId_t sandboxTaskHandle;
 
 const osThreadAttr_t sandboxTask_attributes = {
   .name = "sandboxTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 
@@ -850,19 +851,11 @@ void MPU_Config_UserSandbox(void)
 
 void SandboxTask(void *argument)
 {
-  // This task will run in Unprivileged Mode!
+  (void)argument;
+  /* Runs in Unprivileged Mode (tag == 1) */
   for(;;)
   {
-    // 1. SAFE CALL: We don't access the registers directly; instead, we make a request to the kernel via SVC
-
-    // Since the task is unprivileged, the standard osDelay/vTaskDelay may cause an error,
-    // if it attempts to access kernel variables that the MPU has restricted access to.
-    // Therefore, we create an artificial delay using a loop:
-    for(volatile uint32_t i = 0; i < 2000000; i++) {}
-
-    // 2. PROTECTION DEMONSTRATION:
-    // Uncomment the line below. This is direct access to the GPIO peripherals.
-    // Since we are in the Sandbox, this call SHOULD trigger a MemManage Fault (HardFault)!
+    AppLoader_SandboxTaskLoop();
   }
 }
 
@@ -955,9 +948,27 @@ void StartDefaultTask(void *argument)
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;
 
+  bool was_app_running = false;
+
   /* Infinite GUI & Render Loop (~66 FPS / 15ms period) */
   for(;;)
   {
+    /* If an external .bin app is running in SandboxTask, yield display to it */
+    if (AppLoader_IsRunning())
+    {
+      was_app_running = true;
+      osDelay(20);
+      continue;
+    }
+    else if (was_app_running)
+    {
+      /* External app just exited! Restore LVGL screen redraw */
+      was_app_running = false;
+      Beeper_Click();
+      UIManager_ShowScreen(UI_SCREEN_GAMES);
+      lv_obj_invalidate(lv_scr_act());
+    }
+
     /* 1. Check for completed async events from StorageIoTask */
     while (OSTasks_GetGuiEvent(&gui_evt))
     {

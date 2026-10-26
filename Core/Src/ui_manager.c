@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ccmram.h"
+#include "app_loader.h"
 
 extern RTC_HandleTypeDef hrtc;
 
@@ -27,6 +28,7 @@ typedef struct {
  * ========================================================================== */
 
 static UI_Screen_t current_screen = UI_SCREEN_HOME;
+static int8_t      s_pending_screen = -1; /* Deferred screen switch to avoid LVGL use-after-free */
 
 /* Top Status Bar widgets (always visible, 320x24) */
 static lv_obj_t * status_bar       = NULL;
@@ -70,6 +72,8 @@ static void Build_Games_Screen(void);
 static void Build_Settings_Screen(void);
 static void Build_SysInfo_Screen(void);
 static void Populate_File_List_From_Cache(void);
+static void Build_CyberPong_Screen(void);
+static void Populate_Games_List_From_Cache(void);
 
 /* ==========================================================================
  * EEPROM Settings Load / Save
@@ -285,7 +289,7 @@ static void global_key_event_cb(lv_event_t * e)
         if (key == LV_KEY_ESC && current_screen != UI_SCREEN_HOME)
         {
             Beeper_Click();
-            UIManager_ShowScreen(UI_SCREEN_HOME);
+            s_pending_screen = (int8_t)UI_SCREEN_HOME;
         }
     }
 }
@@ -352,7 +356,16 @@ void UIManager_Init(void)
 
 void UIManager_Update(void)
 {
+    /* Process deferred screen transitions safely outside LVGL input callbacks! */
+    if (s_pending_screen >= 0)
+    {
+        UI_Screen_t target = (UI_Screen_t)s_pending_screen;
+        s_pending_screen = -1;
+        UIManager_ShowScreen(target);
+    }
+
     static uint32_t last_status_tick = 0;
+
     if ((HAL_GetTick() - last_status_tick) < 250U)
     {
         return;
@@ -375,7 +388,7 @@ void UIManager_ShowScreen(UI_Screen_t screen)
 {
     if (workspace_cont == NULL) return;
 
-    /* Stop active game timer if leaving Games screen */
+    /* Stop active internal game timer if leaving Cyber-Pong screen */
     if (game_timer != NULL)
     {
         lv_timer_del(game_timer);
@@ -410,8 +423,13 @@ void UIManager_ShowScreen(UI_Screen_t screen)
             break;
 
         case UI_SCREEN_GAMES:
-            lv_label_set_text(lbl_screen_title, "Cyber-Pong");
+            lv_label_set_text(lbl_screen_title, "Games Hub");
             Build_Games_Screen();
+            break;
+
+        case UI_SCREEN_CYBER_PONG:
+            lv_label_set_text(lbl_screen_title, "ROM: Cyber-Pong");
+            Build_CyberPong_Screen();
             break;
 
         case UI_SCREEN_SETTINGS:
@@ -521,7 +539,7 @@ static void close_preview_cb(lv_event_t * e)
         (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC))
     {
         Beeper_Click();
-        UIManager_ShowScreen(UI_SCREEN_FILES);
+        s_pending_screen = (int8_t)UI_SCREEN_FILES;
     }
 }
 
@@ -622,7 +640,7 @@ static void file_list_btn_event_cb(lv_event_t * e)
     if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
     {
         Beeper_Click();
-        UIManager_ShowScreen(UI_SCREEN_HOME);
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
         return;
     }
 
@@ -696,6 +714,11 @@ static void file_list_btn_event_cb(lv_event_t * e)
         {
             Open_Text_Preview(s_next_path);
         }
+        /* 3. Native Binary Apps (.bin) */
+        else if (Ends_With_IgnoreCase(s_clicked_item, ".bin"))
+        {
+            (void)AppLoader_LoadAndRun(s_next_path);
+        }
     }
 }
 
@@ -714,6 +737,10 @@ void UIManager_OnDirReady(void)
     if (current_screen == UI_SCREEN_FILES && file_list_obj != NULL)
     {
         Populate_File_List_From_Cache();
+    }
+    else if (current_screen == UI_SCREEN_GAMES && file_list_obj != NULL)
+    {
+        Populate_Games_List_From_Cache();
     }
 }
 
@@ -759,13 +786,132 @@ static void Populate_File_List_From_Cache(void)
 }
 
 /* ==========================================================================
+ * 4A. Games Hub Menu (Internal ROM + External .bin + Script .c)
+ * ========================================================================== */
+
+static void games_hub_btn_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * obj = lv_event_get_target(e);
+
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+        return;
+    }
+
+    if (code == LV_EVENT_CLICKED && file_list_obj != NULL && obj != NULL)
+    {
+        const char * txt = lv_list_get_btn_text(file_list_obj, obj);
+        if (txt == NULL) return;
+
+        Beeper_Click();
+
+        if (strcmp(txt, "[ Home Screen ]") == 0)
+        {
+            UIManager_ShowScreen(UI_SCREEN_HOME);
+            return;
+        }
+
+        if (strcmp(txt, "Internal: Cyber-Pong") == 0)
+        {
+            UIManager_ShowScreen(UI_SCREEN_CYBER_PONG);
+            return;
+        }
+
+        /* External: <filename.bin> */
+        if (strncmp(txt, "External: ", 10) == 0)
+        {
+            const char *fname = txt + 10;
+            snprintf(s_next_path, sizeof(s_next_path), "games/%.60s", fname);
+            (void)AppLoader_LoadAndRun(s_next_path);
+            return;
+        }
+    }
+}
+
+static void Populate_Games_List_From_Cache(void)
+{
+    if (file_list_obj == NULL) return;
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_remove_all_objs(grp);
+
+    lv_obj_clean(file_list_obj);
+
+    /* 1. Back to Home Screen */
+    lv_obj_t * home_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_HOME, "[ Home Screen ]");
+    lv_obj_add_event_cb(home_btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(home_btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, home_btn);
+
+    /* 2. Built-in Firmware Games */
+    lv_list_add_text(file_list_obj, "Built-in Firmware Games:");
+    lv_obj_t * rom_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_PLAY, "Internal: Cyber-Pong");
+    lv_obj_set_style_text_color(rom_btn, lv_color_hex(0x00FF66), 0);
+    lv_obj_add_event_cb(rom_btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(rom_btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, rom_btn);
+
+    /* 3. SD Card Games (/games folder) */
+    lv_list_add_text(file_list_obj, "SD Card (/games):");
+
+    uint32_t ext_count = 0;
+    if (g_dir_cache.io_success)
+    {
+        for (uint32_t i = 0; i < g_dir_cache.count; i++)
+        {
+            if (g_dir_cache.items[i].is_dir) continue;
+
+            const char *fname = g_dir_cache.items[i].name;
+            if (Ends_With_IgnoreCase(fname, ".bin"))
+            {
+                snprintf(s_title_buf, sizeof(s_title_buf), "External: %.50s", fname);
+                lv_obj_t * btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_CHARGE, s_title_buf);
+                lv_obj_set_style_text_color(btn, lv_color_hex(0xFFAE00), 0);
+                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
+                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
+                if (grp != NULL) lv_group_add_obj(grp, btn);
+                ext_count++;
+            }
+            else if (Ends_With_IgnoreCase(fname, ".c"))
+            {
+                snprintf(s_title_buf, sizeof(s_title_buf), "Script: %.50s", fname);
+                lv_obj_t * btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_EDIT, s_title_buf);
+                lv_obj_set_style_text_color(btn, lv_color_hex(0x00E5FF), 0);
+                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
+                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
+                if (grp != NULL) lv_group_add_obj(grp, btn);
+                ext_count++;
+            }
+        }
+    }
+
+    if (ext_count == 0)
+    {
+        lv_list_add_text(file_list_obj, "No .bin or .c files in /games");
+    }
+}
+
+static void Build_Games_Screen(void)
+{
+    file_list_obj = lv_list_create(workspace_cont);
+    lv_obj_set_size(file_list_obj, 308, 204);
+    lv_obj_align(file_list_obj, LV_ALIGN_CENTER, 0, 0);
+
+    Populate_Games_List_From_Cache();
+    OSTasks_RequestDirList("/games");
+}
+
+/* ==========================================================================
  * 4. Built-in Arcade Game: Cyber-Pong (Gamepad / Touch / Mouse / Keys)
  * ========================================================================== */
 
 static void game_loop_timer_cb(lv_timer_t * t)
 {
     (void)t;
-    if (current_screen != UI_SCREEN_GAMES || game_paddle == NULL || game_ball == NULL)
+    if (current_screen != UI_SCREEN_CYBER_PONG || game_paddle == NULL || game_ball == NULL)
     {
         return;
     }
@@ -883,12 +1029,12 @@ static void game_touch_move_cb(lv_event_t * e)
         uint32_t key = lv_event_get_key(e);
         if (key == LV_KEY_ESC)
         {
-            UIManager_ShowScreen(UI_SCREEN_HOME);
+            UIManager_ShowScreen(UI_SCREEN_GAMES);
         }
     }
 }
 
-static void Build_Games_Screen(void)
+static void Build_CyberPong_Screen(void)
 {
     game_score = 0;
     paddle_x   = 125;

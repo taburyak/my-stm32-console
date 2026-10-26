@@ -27,6 +27,8 @@
 #include "beeper.h"
 #include "usb_host_manager.h"
 #include "sram_ext.h"
+#include "ili9341_simple.h"
+#include "app_loader.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,7 +98,11 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t hfsr  = SCB->HFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  volatile uint32_t bfar  = SCB->BFAR;
+  (void)cfsr; (void)hfsr; (void)mmfar; (void)bfar;
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -293,63 +299,94 @@ void DMA2_Stream6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-// Assembly wrapper to catch context
+// Assembly wrapper to catch context and route SVC 0 directly to FreeRTOS!
 __attribute__((naked)) void SVC_Handler(void)
 {
     __asm volatile(
-        "tst lr, #4 \n"
-        "ite eq \n"
-        "mrseq r0, msp \n"
-        "mrsne r0, psp \n"
-        "b Custom_SVC_Handler_C \n"
+        "tst lr, #4                \n" /* Test bit 2 of EXC_RETURN to see if MSP or PSP was used */
+        "ite eq                    \n"
+        "mrseq r0, msp             \n" /* r0 = stack frame pointer */
+        "mrsne r0, psp             \n"
+        "ldr r1, [r0, #24]         \n" /* r1 = stacked PC */
+        "ldrb r1, [r1, #-2]        \n" /* r1 = SVC number (byte from 'svc #N' instruction) */
+        "cbz r1, 1f                \n" /* If SVC number == 0, jump directly to vPortSVCHandler! */
+        "b Custom_SVC_Handler_C    \n" /* Otherwise, handle custom OS syscalls (1..8) in C */
+        "1:                        \n"
+        "b vPortSVCHandler         \n" /* Direct tail-jump with untouched MSP and LR! */
     );
 }
 
-// C-handler for system calls from Unprivileged Sandbox (External SRAM)
+// C-handler for system calls (SVC 1..255) from Unprivileged Sandbox (External SRAM)
 void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
   /* Stack frame contains: r0, r1, r2, r3, r12, lr, pc (svc_args[6]), xPSR */
   uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
 
-  if (svc_number == 0U)
+  switch (svc_number)
   {
-    /* SVC 0 is reserved for FreeRTOS kernel scheduler launch */
-    vPortSVCHandler();
-  }
-  else
-  {
-    switch (svc_number)
-    {
-      case 1U: /*SVC 1: sys_led_toggle(led_id) */
-        StatusLED_Toggle((StatusLED_t)svc_args[0]);
-        break;
+    case 1U: /* SVC 1: sys_led_toggle(led_id) */
+      StatusLED_Toggle((StatusLED_t)svc_args[0]);
+      break;
 
-      case 2U: /* SVC 2: sys_beep(duration_ms) */
-        Beeper_Beep((uint16_t)svc_args[0]);
-        break;
+    case 2U: /* SVC 2: sys_beep(duration_ms) */
+      Beeper_Beep((uint16_t)svc_args[0]);
+      break;
 
-      case 3U: /* SVC 3: uint32_t sys_get_tick(void) -> returns in r0 */
-        svc_args[0] = HAL_GetTick();
-        break;
+    case 3U: /* SVC 3: uint32_t sys_get_tick(void) -> returns in r0 */
+      svc_args[0] = HAL_GetTick();
+      break;
 
-      case 4U: /* SVC 4: bool sys_get_gamepad(USB_GamepadState_t *dst) -> returns in r0 */
+    case 4U: /* SVC 4: bool sys_get_gamepad(USB_GamepadState_t *dst) -> returns in r0 */
+      {
+        USB_GamepadState_t *dst = (USB_GamepadState_t *)svc_args[0];
+        /* Security check: ensure destination pointer is in allowed RAM */
+        if (dst != NULL && (SRAM_EXT_IsAddressInSRAM(dst) || ((uint32_t)dst >= 0x20000000U && (uint32_t)dst < 0x20020000U)))
         {
-          USB_GamepadState_t *dst = (USB_GamepadState_t *)svc_args[0];
-          /* Security check: ensure destination pointer is in allowed RAM */
-          if (dst != NULL && (SRAM_EXT_IsAddressInSRAM(dst) || ((uint32_t)dst >= 0x20000000U && (uint32_t)dst < 0x20020000U)))
+          svc_args[0] = USBHostManager_GetGamepadState(dst) ? 1U : 0U;
+        }
+        else
+        {
+          svc_args[0] = 0U;
+        }
+      }
+      break;
+
+    case 5U: /* SVC 5: sys_lcd_fill_rect(packed_xy, packed_wh, color565) */
+      {
+        uint16_t x     = (uint16_t)(svc_args[0] >> 16);
+        uint16_t y     = (uint16_t)(svc_args[0] & 0xFFFFU);
+        uint16_t w     = (uint16_t)(svc_args[1] >> 16);
+        uint16_t h     = (uint16_t)(svc_args[1] & 0xFFFFU);
+        uint16_t color = (uint16_t)(svc_args[2] & 0xFFFFU);
+
+        if (x < 320U && y < 240U && w > 0U && h > 0U)
+        {
+          if (x + w > 320U) w = 320U - x;
+          if (y + h > 240U) h = 240U - y;
+
+          lcdSetWindow(x, y, x + w - 1U, y + h - 1U);
+          uint32_t total = (uint32_t)w * (uint32_t)h;
+          while (total--)
           {
-            svc_args[0] = USBHostManager_GetGamepadState(dst) ? 1U : 0U;
-          }
-          else
-          {
-            svc_args[0] = 0U;
+            LCD_DataWrite(color);
           }
         }
-        break;
+      }
+      break;
 
-      default:
-        break;
-    }
+    case 6U: /* SVC 6: uint32_t sys_get_keys(void) -> returns bitmask in r0 */
+      svc_args[0] = AppLoader_ReadInputMask_Privileged();
+      break;
+
+    case 7U: /* SVC 7: reserved / nop */
+      break;
+
+    case 8U: /* SVC 8: void sys_exit(void) */
+      AppLoader_RequestExit();
+      break;
+
+    default:
+      break;
   }
 }
 /* USER CODE END 1 */
