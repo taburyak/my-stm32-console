@@ -65,16 +65,13 @@ __attribute__((noinline)) static void sys_exit(void)
     __asm volatile ("svc 8" : : : "memory");
 }
 
-/* Delay in milliseconds in Thread Mode (SysTick & TIM4 interrupts run freely!) */
+/* Delay in milliseconds using WFI (halts FSMC instruction fetching until next 1ms tick!) */
 static inline void sys_delay_ms(uint32_t ms)
 {
     uint32_t start = sys_get_tick();
     while ((sys_get_tick() - start) < ms)
     {
-        for (volatile uint32_t i = 0; i < 1000U; i++)
-        {
-            __asm volatile ("nop");
-        }
+        __asm volatile ("wfi" : : : "memory");
     }
 }
 

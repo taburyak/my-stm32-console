@@ -370,6 +370,10 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
           {
             LCD_DataWrite(color);
           }
+          /* Ensure FSMC write buffer to Bank 4 (LCD) is completely drained
+           * before CPU fetches next instruction from Bank 3 (External SRAM)! */
+          __DSB();
+          __ISB();
         }
       }
       break;

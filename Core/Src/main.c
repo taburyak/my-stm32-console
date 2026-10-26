@@ -796,7 +796,11 @@ static void MX_FSMC_Init(void)
   }
 
   /* USER CODE BEGIN FSMC_Init 2 */
-
+  /* Add 2 HCLK cycles of Bus Turnaround (BUSTURN) on Bank 3 (SRAM) and Bank 4 (LCD)
+   * to prevent FSMC data bus contention when switching between LCD writes and SRAM instruction fetches! */
+  FSMC_Bank1->BTCR[5] |= (2UL << 16); /* Bank 3 BUSTURN = 2 */
+  FSMC_Bank1->BTCR[7] |= (2UL << 16); /* Bank 4 BUSTURN = 2 */
+  __DSB();
   /* USER CODE END FSMC_Init 2 */
 }
 

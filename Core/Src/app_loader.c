@@ -132,7 +132,7 @@ void AppLoader_SandboxTaskLoop(void)
     }
     else
     {
-        /* Idle wait in unprivileged mode when no app is active */
-        for (volatile uint32_t i = 0; i < 50000U; i++) { __NOP(); }
+        /* Sleep until next interrupt when no external app is active */
+        __WFI();
     }
 }
