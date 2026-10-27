@@ -33,7 +33,8 @@ static osThreadId_t            storageIoTaskHandle = NULL;
  * ========================================================================== */
 
 /* Place directory cache in aligned Internal SRAM for fast & safe string operations */
-Storage_DirCache_t g_dir_cache __attribute__((aligned(4)));
+/* CPU-only data (filled by memcpy from FatFs FILINFO), so it can live in CCM RAM */
+CCMRAM_BUF Storage_DirCache_t g_dir_cache __attribute__((aligned(4)));
 
 /* FatFs working structures MUST reside in DMA-capable Internal SRAM (NOT CCM RAM!) */
 static DIR     s_fatfs_dir;

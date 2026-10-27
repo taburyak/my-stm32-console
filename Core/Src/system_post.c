@@ -3,15 +3,17 @@
 #include "fatfs.h"
 #include "AT24Cxx.h"
 #include "w25qxx.h"
+#include "ccmram.h"
 #include <stdio.h>
 #include <string.h>
 
 #define SRAM_BASE_ADDR    0x68000000U
 #define SRAM_SIZE_BYTES   (1024 * 1024) /* 1 MB */
-#define CCMRAM_BASE_ADDR  0x10000000U
-#define CCMRAM_SIZE_BYTES (64 * 1024)   /* 64 KB */
 
 static POST_Report_t post_report = {0};
+
+/* Dedicated CCM test word: the rest of CCM holds live task stacks and the RTOS heap */
+CCMRAM_BUF static volatile uint32_t s_ccm_test_word;
 
 /* External function prototype from display driver */
 extern uint16_t lcdReadID(void);
@@ -22,7 +24,7 @@ extern char SDPath[4];
  */
 static bool Test_CCMRAM(void)
 {
-    volatile uint32_t *ptr = (volatile uint32_t *)CCMRAM_BASE_ADDR;
+    volatile uint32_t *ptr = &s_ccm_test_word;
 
     /* Save original data */
     uint32_t orig_value = *ptr;
@@ -157,8 +159,8 @@ POST_Status_t POST_RunSelfTest(void)
         }
     }
 
-    /* 4. Test FatFs SD Card Mount */
-    FATFS fatfs_obj;
+    /* 4. Test FatFs SD Card Mount (FATFS window is a DMA target: must not be on a CCM task stack) */
+    static FATFS fatfs_obj;
     FRESULT fres = f_mount(&fatfs_obj, SDPath, 1);
     post_report.sd_ok = (fres == FR_OK);
     if (post_report.sd_ok)

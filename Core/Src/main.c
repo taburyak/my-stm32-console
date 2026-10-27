@@ -41,6 +41,7 @@
 #include "os_tasks.h"
 #include "ui_manager.h"
 #include "app_loader.h"
+#include "ccmram.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -90,11 +91,11 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
-/* Define an array for the internal part of the heap */
-uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
+/* Internal part of the heap in CCM: task stacks and RTOS objects must never be DMA targets */
+CCMRAM_BUF uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 (regions sorted by address) */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                          // Region 1: Internal SRAM
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                          // Region 1: CCM RAM
     { (uint8_t *)MM_EXT_OS_HEAP_BASE, MM_EXT_OS_HEAP_SIZE },         // Region 2: External SRAM 0x68040000..0x6807FFFF
     { NULL, 0 }                                                      // The Terminator
 };
@@ -105,6 +106,10 @@ uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
 /* App sandbox bounds defined only in linker/STM32F407ZG_console.ld */
 extern uint8_t _sapp_ram[];
 extern uint8_t _eapp_ram[];
+
+/* .ccmram is NOLOAD and not touched by the startup code */
+extern uint8_t _sccmram[];
+extern uint8_t _eccmram[];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -149,7 +154,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  memset(_sccmram, 0, (size_t)(_eccmram - _sccmram));
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
