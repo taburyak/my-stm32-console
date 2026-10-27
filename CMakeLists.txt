@@ -49,6 +49,7 @@ console_sdk_app(sdk_test  "${CMAKE_SOURCE_DIR}/sdk_apps/sdk_test.c")
 console_sdk_app(crash_test "${CMAKE_SOURCE_DIR}/sdk_apps/crash_test.c")
 console_sdk_app(file_test "${CMAKE_SOURCE_DIR}/sdk_apps/file_test.c")
 console_sdk_app(storage_test "${CMAKE_SOURCE_DIR}/sdk_apps/storage_test.c")
+console_sdk_app(media_test "${CMAKE_SOURCE_DIR}/sdk_apps/media_test.c")
 
 # Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
 set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")
@@ -113,6 +114,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_loader.c
     Core/Src/app_files.c
     Core/Src/app_storage.c
+    Core/Src/app_services.c
 )
 
 # Add include paths

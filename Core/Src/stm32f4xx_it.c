@@ -32,6 +32,7 @@
 #include "app_loader.h"
 #include "app_files.h"
 #include "app_storage.h"
+#include "app_services.h"
 #include "cmsis_os2.h"
 /* USER CODE END Includes */
 
@@ -363,7 +364,7 @@ static void Svc_EnterGate(uint32_t *frame, uint8_t number)
       ((uint32_t)frame < MM_APP_STACK_BASE) ||
       (free_stack < SVC_GATE_MIN_STACK_BYTES))
   {
-    frame[0] = (number >= SDK_SVC_FILE_OPEN) ? (uint32_t)SDK_ERR_IO : 0U;
+    frame[0] = (number > SDK_SVC_SLEEP_MS) ? (uint32_t)SDK_ERR_IO : 0U;
     return;
   }
 
@@ -417,6 +418,9 @@ uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2)
     case 18U: /* void sys_sleep_ms(uint32_t ms) */
       (void)osDelay((a0 > SDK_SLEEP_MAX_MS) ? SDK_SLEEP_MAX_MS : a0);
       return 0U;
+
+    case SDK_SVC_LCD_BLIT:
+      return (uint32_t)AppSvc_LcdBlit((const SDK_BlitParams_t *)a0);
 
     case SDK_SVC_FILE_OPEN:
       return (uint32_t)AppFiles_Open((const char *)a0, a1);
@@ -602,6 +606,7 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
     case 15U: /* SVC 15: bool sys_save_state(const char *filename, const void *data, uint32_t len) */
     case 16U: /* SVC 16: uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
     case 18U: /* SVC 18: void sys_sleep_ms(uint32_t ms) */
+    case SDK_SVC_LCD_BLIT:
     case SDK_SVC_FILE_OPEN:
     case SDK_SVC_FILE_READ:
     case SDK_SVC_FILE_WRITE:
@@ -631,6 +636,43 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
           svc_args[0] = 0U;
         }
       }
+      break;
+
+    case SDK_SVC_RANDOM:
+      svc_args[0] = AppSvc_Random();
+      break;
+
+    case SDK_SVC_INPUT_STATE:
+      svc_args[0] = AppSvc_GetInputState((SDK_InputState_t *)svc_args[0]) ? 1U : 0U;
+      break;
+
+    case SDK_SVC_AUDIO_PLAY:
+      svc_args[0] = (uint32_t)AppSvc_AudioPlay((const SDK_Note_t *)svc_args[0], svc_args[1], svc_args[2]);
+      break;
+
+    case SDK_SVC_AUDIO_STOP:
+      AppSvc_AudioStop();
+      svc_args[0] = (uint32_t)SDK_OK;
+      break;
+
+    case SDK_SVC_AUDIO_STATUS:
+      svc_args[0] = Beeper_IsSequencePlaying() ? 1U : 0U;
+      break;
+
+    case SDK_SVC_GPIO_GET_CAPS:
+      svc_args[0] = (uint32_t)AppSvc_GpioGetCaps((SDK_GpioCaps_t *)svc_args[0]);
+      break;
+
+    case SDK_SVC_GPIO_CONFIG:
+      svc_args[0] = (uint32_t)AppSvc_GpioConfig(svc_args[0], svc_args[1]);
+      break;
+
+    case SDK_SVC_GPIO_WRITE:
+      svc_args[0] = (uint32_t)AppSvc_GpioWrite(svc_args[0], svc_args[1]);
+      break;
+
+    case SDK_SVC_GPIO_READ:
+      svc_args[0] = (uint32_t)AppSvc_GpioRead(svc_args[0]);
       break;
 
     default:

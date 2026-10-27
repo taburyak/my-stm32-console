@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-#define SDK_API_VERSION         2U
+#define SDK_API_VERSION         3U
 
 #define SDK_SCREEN_W            320U
 #define SDK_SCREEN_H            240U
@@ -47,7 +47,15 @@ typedef struct {
 #define SDK_SVC_LOAD_STATE      16U /* blocking (kernel gate) */
 #define SDK_SVC_GET_INFO        17U
 #define SDK_SVC_SLEEP_MS        18U /* blocking (kernel gate) */
-/* 19..30 reserved */
+/* 19, 20 reserved */
+#define SDK_SVC_RANDOM          21U
+/* 22, 23 reserved */
+#define SDK_SVC_INPUT_STATE     24U
+#define SDK_SVC_LCD_BLIT        25U /* blocking (kernel gate) */
+/* 26, 27 reserved */
+#define SDK_SVC_AUDIO_PLAY      28U
+#define SDK_SVC_AUDIO_STOP      29U
+#define SDK_SVC_AUDIO_STATUS    30U
 #define SDK_SVC_FILE_OPEN       31U /* blocking (kernel gate) */
 #define SDK_SVC_FILE_READ       32U /* blocking (kernel gate) */
 #define SDK_SVC_FILE_WRITE      33U /* blocking (kernel gate) */
@@ -62,6 +70,10 @@ typedef struct {
 #define SDK_SVC_FLASH_READ      42U /* blocking (kernel gate) */
 #define SDK_SVC_FLASH_ERASE     43U /* blocking (kernel gate) */
 #define SDK_SVC_FLASH_WRITE     44U /* blocking (kernel gate) */
+#define SDK_SVC_GPIO_GET_CAPS   45U
+#define SDK_SVC_GPIO_CONFIG     46U
+#define SDK_SVC_GPIO_WRITE      47U
+#define SDK_SVC_GPIO_READ       48U
 
 #define SDK_SLEEP_MAX_MS        1000U
 
@@ -194,5 +206,46 @@ typedef struct {
     uint32_t devices;        /* SDK_DEV_* currently connected */
     uint32_t flags;          /* SDK_INFO_* */
 } SDK_SysInfo_t;
+
+/* ---- SDK_SVC_INPUT_STATE: all input devices in one call ---- */
+typedef struct {
+    uint32_t           tick;     /* ms, same clock as SDK_SVC_GET_TICK */
+    uint32_t           keys;     /* SDK_KEY_* */
+    uint32_t           devices;  /* SDK_DEV_* */
+    SDK_GamepadState_t pad;      /* pad.connected == 0 when absent */
+    SDK_MouseState_t   mouse;    /* mouse.source == SDK_MOUSE_SRC_NONE when absent */
+} SDK_InputState_t;
+
+/* ---- SDK_SVC_LCD_BLIT: RGB565 rectangle from app memory, rows stride pixels apart ---- */
+typedef struct {
+    uint16_t        x;
+    uint16_t        y;
+    uint16_t        w;
+    uint16_t        h;
+    const uint16_t *pixels;
+    uint16_t        stride;  /* pixels per source row, >= w */
+    uint16_t        reserved;
+} SDK_BlitParams_t;
+
+/* ---- SDK_SVC_AUDIO_*: note sequence copied by the OS and played in the background ---- */
+#define SDK_AUDIO_MAX_NOTES     64U
+#define SDK_AUDIO_LOOP          (1UL << 0)
+
+/* The buzzer has a fixed pitch: freq_hz > 0 sounds, 0 is a rest */
+typedef struct {
+    uint16_t freq_hz;
+    uint16_t duration_ms;
+} SDK_Note_t;
+
+/* ---- SDK_SVC_GPIO_*: user pins (none exposed yet; calls return SDK_ERR_NOT_SUPPORTED) ---- */
+#define SDK_GPIO_MODE_INPUT     0U
+#define SDK_GPIO_MODE_OUTPUT    1U
+#define SDK_GPIO_PULL_UP        (1UL << 4)
+#define SDK_GPIO_PULL_DOWN      (1UL << 5)
+
+typedef struct {
+    uint32_t pin_count;
+    uint32_t reserved[3];
+} SDK_GpioCaps_t;
 
 #endif /* CONSOLE_ABI_H */

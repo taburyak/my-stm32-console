@@ -1,5 +1,6 @@
 #include "app_loader.h"
 #include "app_files.h"
+#include "app_services.h"
 #include "fatfs.h"
 #include "ili9341_simple.h"
 #include "usb_host_manager.h"
@@ -354,6 +355,7 @@ void AppLoader_Service(void)
     }
 
     AppFiles_CloseAll();
+    AppSvc_ResetHardware();
 
     /* Flush any residual key/button events so LVGL does not auto-scroll on return */
     USBHostManager_FlushInputQueues();

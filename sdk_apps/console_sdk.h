@@ -48,6 +48,9 @@
  * 4. Shared Structures with OS Kernel: see console_abi.h
  * ========================================================================== */
 
+/* Places a zero-initialised variable in the 512 KB external SRAM app area */
+#define SDK_EXT_BSS __attribute__((section(".ext_bss")))
+
 /* ==========================================================================
  * 5. Freestanding Memory Helpers (defined in sdk_runtime.c)
  * ========================================================================== */
@@ -326,6 +329,84 @@ SDK_SYSCALL int32_t sys_flash_erase(uint32_t offset)
 SDK_SYSCALL int32_t sys_flash_write(uint32_t offset, const void *buf, uint32_t len)
 {
     return (int32_t)SDK_SVC_CALL3(SDK_SVC_FLASH_WRITE, offset, buf, len);
+}
+
+/* ---- Random, input, graphics, audio, GPIO ---- */
+
+/* 32 random bits from the hardware RNG */
+SDK_SYSCALL uint32_t sys_random(void)
+{
+    return SDK_SVC_CALL0(SDK_SVC_RANDOM);
+}
+
+/* Uniform value in [0, n) */
+static inline uint32_t sys_random_range(uint32_t n)
+{
+    return (n == 0U) ? 0U : (uint32_t)(((uint64_t)sys_random() * n) >> 32);
+}
+
+/* Keys, gamepad, mouse/touch and connected devices in one call */
+SDK_SYSCALL bool sys_input_get_state(SDK_InputState_t *dst)
+{
+    return SDK_SVC_CALL1(SDK_SVC_INPUT_STATE, dst) != 0U;
+}
+
+/* Copies an RGB565 rectangle to the screen (DMA when stride == w) */
+SDK_SYSCALL int32_t sys_lcd_blit_ptr(const SDK_BlitParams_t *params)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_LCD_BLIT, params);
+}
+
+static inline int32_t sys_lcd_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                   const uint16_t *pixels, uint16_t stride)
+{
+    volatile SDK_BlitParams_t p;
+    p.x        = x;
+    p.y        = y;
+    p.w        = w;
+    p.h        = h;
+    p.pixels   = pixels;
+    p.stride   = stride;
+    p.reserved = 0U;
+    return sys_lcd_blit_ptr((const SDK_BlitParams_t *)&p);
+}
+
+/* Plays up to SDK_AUDIO_MAX_NOTES notes in the background; flags: SDK_AUDIO_LOOP */
+SDK_SYSCALL int32_t sys_audio_play(const SDK_Note_t *notes, uint32_t count, uint32_t flags)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_AUDIO_PLAY, notes, count, flags);
+}
+
+SDK_SYSCALL void sys_audio_stop(void)
+{
+    (void)SDK_SVC_CALL0(SDK_SVC_AUDIO_STOP);
+}
+
+SDK_SYSCALL bool sys_audio_is_playing(void)
+{
+    return SDK_SVC_CALL0(SDK_SVC_AUDIO_STATUS) != 0U;
+}
+
+SDK_SYSCALL int32_t sys_gpio_get_caps(SDK_GpioCaps_t *dst)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_GPIO_GET_CAPS, dst);
+}
+
+/* mode: SDK_GPIO_MODE_* | SDK_GPIO_PULL_* */
+SDK_SYSCALL int32_t sys_gpio_config(uint32_t pin, uint32_t mode)
+{
+    return (int32_t)SDK_SVC_CALL2(SDK_SVC_GPIO_CONFIG, pin, mode);
+}
+
+SDK_SYSCALL int32_t sys_gpio_write(uint32_t pin, uint32_t value)
+{
+    return (int32_t)SDK_SVC_CALL2(SDK_SVC_GPIO_WRITE, pin, value);
+}
+
+/* Returns 0/1 or SDK_ERR_* */
+SDK_SYSCALL int32_t sys_gpio_read(uint32_t pin)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_GPIO_READ, pin);
 }
 
 #endif /* CONSOLE_SDK_H */
