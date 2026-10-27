@@ -23,7 +23,6 @@ static volatile uint32_t s_loaded_app_size   = 0;
 
 static StaticTask_t      s_sbx_tcb;
 static osThreadId_t      s_sbx_handle        = NULL;
-static uint32_t          s_app_entry         = 0;
 static const char       *s_last_error        = "";
 
 static volatile bool                  s_fault_pending = false;
@@ -192,7 +191,6 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
         printf("[LOADER] Rejected: %s\r\n", s_last_error);
         return false;
     }
-    s_app_entry = hdr->entry;
 
     /* Flush all pending key/button events before starting the game */
     USBHostManager_FlushInputQueues();
@@ -216,7 +214,7 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
     s_fault_pending    = false;
 
     /* Lower priority than the caller (GUI), so the tag is set before the task first runs */
-    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, NULL, &sbx_attr);
+    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, (void *)hdr->entry, &sbx_attr);
     if (s_sbx_handle == NULL)
     {
         s_last_error = "Cannot create app task";
@@ -402,12 +400,10 @@ static void AppLoader_ParkLoop(void)
     }
 }
 
-/* Sandbox task body (unprivileged via task tag 1) */
+/* Sandbox task body (unprivileged via task tag 1): must not touch kernel RAM, the entry comes in r0 */
 static void Sandbox_TaskEntry(void *argument)
 {
-    (void)argument;
-
-    App_Entry_t app_entry = (App_Entry_t)s_app_entry;
+    App_Entry_t app_entry = (App_Entry_t)argument;
     app_entry();
 
     __asm volatile ("svc 8" : : : "memory"); /* sys_exit() if the app returned without it */
