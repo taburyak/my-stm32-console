@@ -172,7 +172,7 @@ static void draw_static_ui(void)
     sys_draw_text(190, 184, "BEST:", COLOR_WHITE, COLOR_PANEL_BG, 1);
 }
 
-__attribute__((section(".text.entry"))) void _start(void)
+void app_main(void)
 {
     sdk_memset(g_tetris, 0, sizeof(Tetris_State_t));
     g_tetris->rng_state = sys_get_tick() ^ 0xCAFEBABEUL;

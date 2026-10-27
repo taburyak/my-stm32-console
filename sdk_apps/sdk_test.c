@@ -60,7 +60,7 @@ static void draw_static(const SDK_SysInfo_t *info)
     sys_draw_text(10, ROW(12), "A: SLEEP TEST   ESC / PAD B: EXIT", COLOR_AMBER, COLOR_DARK_BG, 1);
 }
 
-__attribute__((section(".text.entry"))) void _start(void)
+void app_main(void)
 {
     SDK_SysInfo_t info;
     sdk_memset(&info, 0, sizeof(info));

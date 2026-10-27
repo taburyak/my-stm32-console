@@ -1,0 +1,52 @@
+# Patches the CRC-32 word (.app_crc, last 4 bytes) of an SDK app and writes the final .bin
+# Inputs: ELF, BIN, CC, OBJCOPY
+
+function(run_checked)
+    execute_process(COMMAND ${ARGV} RESULT_VARIABLE res ERROR_VARIABLE err)
+    if(NOT res EQUAL 0)
+        message(FATAL_ERROR "sdk_app_crc: '${ARGV}' failed: ${err}")
+    endif()
+endfunction()
+
+set(raw_bin "${BIN}.raw")
+run_checked(${OBJCOPY} -O binary "${ELF}" "${raw_bin}")
+
+file(READ "${raw_bin}" hex HEX)
+string(REGEX MATCHALL ".." bytes "${hex}")
+list(LENGTH bytes n)
+if(n LESS 64)
+    message(FATAL_ERROR "sdk_app_crc: image too small (${n} bytes)")
+endif()
+math(EXPR body_len "${n} - 4")
+list(SUBLIST bytes 0 ${body_len} body)
+
+set(table "")
+foreach(i RANGE 255)
+    set(c ${i})
+    foreach(k RANGE 7)
+        math(EXPR lsb "${c} & 1")
+        if(lsb)
+            math(EXPR c "(${c} >> 1) ^ 0xEDB88320")
+        else()
+            math(EXPR c "${c} >> 1")
+        endif()
+    endforeach()
+    list(APPEND table ${c})
+endforeach()
+
+set(crc 4294967295)
+foreach(b IN LISTS body)
+    math(EXPR idx "(${crc} ^ 0x${b}) & 255")
+    list(GET table ${idx} t)
+    math(EXPR crc "(${crc} >> 8) ^ ${t}")
+endforeach()
+math(EXPR crc "${crc} ^ 0xFFFFFFFF" OUTPUT_FORMAT HEXADECIMAL)
+
+file(WRITE "${BIN}.crc.S" "    .section .text\n    .word ${crc}\n")
+run_checked(${CC} -c -mcpu=cortex-m4 -mthumb "${BIN}.crc.S" -o "${BIN}.crc.o")
+run_checked(${OBJCOPY} -O binary -j .text "${BIN}.crc.o" "${BIN}.crc")
+run_checked(${OBJCOPY} --update-section ".app_crc=${BIN}.crc" "${ELF}")
+run_checked(${OBJCOPY} -O binary "${ELF}" "${BIN}")
+file(REMOVE "${raw_bin}" "${BIN}.crc.S" "${BIN}.crc.o" "${BIN}.crc")
+
+message(STATUS "SDK app ${BIN}: ${n} bytes, CRC ${crc}")

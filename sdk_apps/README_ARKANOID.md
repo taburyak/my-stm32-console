@@ -15,10 +15,7 @@ so it is available without an SD card.
 
 ## Build for the SD card
 
-```bash
-arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -O2 -g3 -nostdlib \
-  "-Wl,--no-warn-rwx-segments" -T app_sram.ld arkanoid.c -o arkanoid.elf
-arm-none-eabi-objcopy -O binary arkanoid.elf arkanoid.bin
-```
+Built together with the firmware (CMake target `sdk_app_arkanoid`) into `build/<preset>/sdk_apps/arkanoid.bin`.
+The image carries the SDK app header and CRC; files built without the SDK runtime are rejected by the loader.
 
 Copy `arkanoid.bin` (and optionally a 64x64 BMP icon `arkanoid.bmp`) to `/games` on the SD card.

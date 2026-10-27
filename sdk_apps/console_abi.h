@@ -14,6 +14,20 @@
 #define SDK_SCREEN_W            320U
 #define SDK_SCREEN_H            240U
 
+/* ---- App image: header at the image start, CRC-32 (IEEE) of all preceding bytes in the last word ---- */
+#define SDK_APP_MAGIC           0x50504143UL /* "CAPP" */
+#define SDK_APP_NAME_LEN        16U
+
+typedef struct {
+    uint32_t magic;          /* SDK_APP_MAGIC */
+    uint16_t api_version;    /* SDK_API_VERSION the app was built against */
+    uint16_t header_size;    /* sizeof(SDK_AppHeader_t) */
+    uint32_t image_size;     /* file size in bytes, CRC word included */
+    uint32_t bss_end;        /* first address after .bss */
+    uint32_t entry;          /* Thumb entry address */
+    char     name[SDK_APP_NAME_LEN];
+} SDK_AppHeader_t;
+
 /* ---- Syscall numbers (svc #N) ---- */
 #define SDK_SVC_LED_TOGGLE      1U
 #define SDK_SVC_BEEP            2U

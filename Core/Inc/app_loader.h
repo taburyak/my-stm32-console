@@ -40,7 +40,8 @@ typedef struct {
 } AppLoader_FaultInfo_t;
 
 bool AppLoader_LoadAndRun(const char *fatfs_path);
-bool AppLoader_LoadAndRunImage(const uint8_t *image, uint32_t size, const char *name);
+bool AppLoader_LoadAndRunImage(const uint8_t *image, uint32_t size);
+const char *AppLoader_GetLastError(void);
 bool AppLoader_IsRunning(void);
 bool AppLoader_IsAppActive(void);
 void AppLoader_RequestExit(void);

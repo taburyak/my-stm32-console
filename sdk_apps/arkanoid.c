@@ -66,7 +66,7 @@ static void respawn_bricks(void)
     }
 }
 
-__attribute__((section(".text.entry"))) void _start(void)
+void app_main(void)
 {
     sdk_memset(g_pong, 0, sizeof(Pong_State_t));
 

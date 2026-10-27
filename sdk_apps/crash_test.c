@@ -17,7 +17,7 @@ static void draw_menu(void)
     sys_draw_text(10, 146, "ESC / PAD B : NORMAL EXIT", COLOR_WHITE, COLOR_DARK_BG, 1);
 }
 
-__attribute__((section(".text.entry"))) void _start(void)
+void app_main(void)
 {
     draw_menu();
 

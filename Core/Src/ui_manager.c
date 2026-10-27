@@ -619,6 +619,15 @@ static void set_wallpaper_cb(lv_event_t * e)
     }
 }
 
+static void Show_App_Load_Error(void)
+{
+    lv_obj_t * mbox = lv_msgbox_create(NULL, "Cannot start app", AppLoader_GetLastError(), NULL, false);
+    lv_obj_center(mbox);
+    /* With a NULL parent LVGL wraps the box in a dimmed modal backdrop: delete the backdrop */
+    lv_obj_del_delayed(lv_obj_get_parent(mbox), 3000);
+    Beeper_ErrorAlert();
+}
+
 static void Open_Image_Preview(const char *fatfs_path)
 {
     lv_group_t * grp = lv_group_get_default();
@@ -813,7 +822,10 @@ static void file_list_btn_event_cb(lv_event_t * e)
         /* 3. Native Binary Apps (.bin) */
         else if (Ends_With_IgnoreCase(s_clicked_item, ".bin"))
         {
-            (void)AppLoader_LoadAndRun(s_next_path);
+            if (!AppLoader_LoadAndRun(s_next_path))
+            {
+                Show_App_Load_Error();
+            }
         }
     }
 }
@@ -907,16 +919,20 @@ static void games_tile_event_cb(lv_event_t * e)
     }
 
     Beeper_Click();
+    bool started;
     if (s_games[idx].builtin)
     {
-        (void)AppLoader_LoadAndRunImage(g_rom_arkanoid_bin,
-                                        (uint32_t)(g_rom_arkanoid_bin_end - g_rom_arkanoid_bin),
-                                        s_games[idx].file);
+        started = AppLoader_LoadAndRunImage(g_rom_arkanoid_bin,
+                                            (uint32_t)(g_rom_arkanoid_bin_end - g_rom_arkanoid_bin));
     }
     else
     {
         snprintf(s_next_path, sizeof(s_next_path), "games/%.60s", s_games[idx].file);
-        (void)AppLoader_LoadAndRun(s_next_path);
+        started = AppLoader_LoadAndRun(s_next_path);
+    }
+    if (!started)
+    {
+        Show_App_Load_Error();
     }
 }
 

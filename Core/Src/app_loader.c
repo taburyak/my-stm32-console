@@ -23,6 +23,8 @@ static volatile uint32_t s_loaded_app_size   = 0;
 
 static StaticTask_t      s_sbx_tcb;
 static osThreadId_t      s_sbx_handle        = NULL;
+static uint32_t          s_app_entry         = 0;
+static const char       *s_last_error        = "";
 
 static volatile bool                  s_fault_pending = false;
 static volatile AppLoader_FaultInfo_t s_fault_info;
@@ -125,9 +127,73 @@ static void AppLoader_ClearSandboxes(void)
     memset((void *)APP_EXT_DATA_BASE_ADDR, 0, APP_EXT_DATA_MAX_SIZE);
 }
 
-/* Starts the image already placed at APP_SANDBOX_BASE_ADDR */
-static bool AppLoader_StartLoadedImage(uint32_t size, const char *name)
+/* CRC-32 (IEEE 802.3, reflected 0xEDB88320), same as sdk_apps/sdk_app_crc.cmake */
+static uint32_t AppLoader_Crc32(const uint8_t *data, uint32_t len)
 {
+    uint32_t crc = 0xFFFFFFFFUL;
+    for (uint32_t i = 0U; i < len; i++)
+    {
+        crc ^= data[i];
+        for (uint32_t k = 0U; k < 8U; k++)
+        {
+            crc = (crc >> 1) ^ (0xEDB88320UL & (0U - (crc & 1U)));
+        }
+    }
+    return crc ^ 0xFFFFFFFFUL;
+}
+
+/* Checks the image loaded at APP_SANDBOX_BASE_ADDR; sets s_last_error on failure */
+static bool AppLoader_ValidateImage(const SDK_AppHeader_t *hdr, uint32_t size)
+{
+    const uint32_t base = APP_SANDBOX_BASE_ADDR;
+
+    if (hdr->magic != SDK_APP_MAGIC)
+    {
+        s_last_error = "Not an SDK app\n(rebuild with the SDK)";
+        return false;
+    }
+    if (hdr->api_version == 0U || hdr->api_version > SDK_API_VERSION)
+    {
+        s_last_error = "App needs a newer OS\n(SDK API version)";
+        return false;
+    }
+    if (hdr->header_size < sizeof(SDK_AppHeader_t) || hdr->image_size != size ||
+        (size & 3U) != 0U || size < (hdr->header_size + 4U))
+    {
+        s_last_error = "Bad image header";
+        return false;
+    }
+    uint32_t stored_crc = *(const uint32_t *)(base + size - 4U);
+    if (AppLoader_Crc32((const uint8_t *)base, size - 4U) != stored_crc)
+    {
+        s_last_error = "CRC mismatch\n(file corrupted)";
+        return false;
+    }
+    if ((hdr->entry & 1U) == 0U || (hdr->entry & ~1U) < (base + hdr->header_size) ||
+        (hdr->entry & ~1U) >= (base + size - 4U))
+    {
+        s_last_error = "Bad entry point";
+        return false;
+    }
+    if (hdr->bss_end < (base + size) || hdr->bss_end > (base + APP_SANDBOX_MAX_SIZE))
+    {
+        s_last_error = "App RAM too large";
+        return false;
+    }
+    return true;
+}
+
+/* Starts the image already placed at APP_SANDBOX_BASE_ADDR */
+static bool AppLoader_StartLoadedImage(uint32_t size)
+{
+    const SDK_AppHeader_t *hdr = (const SDK_AppHeader_t *)APP_SANDBOX_BASE_ADDR;
+    if (!AppLoader_ValidateImage(hdr, size))
+    {
+        printf("[LOADER] Rejected: %s\r\n", s_last_error);
+        return false;
+    }
+    s_app_entry = hdr->entry;
+
     /* Flush all pending key/button events before starting the game */
     USBHostManager_FlushInputQueues();
     Buttons_Init();
@@ -153,28 +219,35 @@ static bool AppLoader_StartLoadedImage(uint32_t size, const char *name)
     s_sbx_handle = osThreadNew(Sandbox_TaskEntry, NULL, &sbx_attr);
     if (s_sbx_handle == NULL)
     {
+        s_last_error = "Cannot create app task";
         printf("[LOADER] Failed to create sandbox task\r\n");
         return false;
     }
     vTaskSetApplicationTaskTag((TaskHandle_t)s_sbx_handle, (TaskHookFunction_t)1);
     s_app_running = true;
 
-    printf("[LOADER] Loaded '%s' (%lu bytes) at 0x%08lX. Launching in Sandbox!\r\n",
-           name, (unsigned long)size, (unsigned long)APP_SANDBOX_BASE_ADDR);
+    printf("[LOADER] Loaded '%.16s' API %u (%lu bytes) at 0x%08lX. Launching in Sandbox!\r\n",
+           hdr->name, (unsigned int)hdr->api_version, (unsigned long)size,
+           (unsigned long)APP_SANDBOX_BASE_ADDR);
 
     return true;
 }
 
-bool AppLoader_LoadAndRunImage(const uint8_t *image, uint32_t size, const char *name)
+bool AppLoader_LoadAndRunImage(const uint8_t *image, uint32_t size)
 {
-    if (s_app_running || image == NULL || size == 0U || size > APP_SANDBOX_MAX_SIZE)
+    if (s_app_running || image == NULL)
     {
+        return false;
+    }
+    if (size < sizeof(SDK_AppHeader_t) || size > APP_SANDBOX_MAX_SIZE)
+    {
+        s_last_error = "Bad image size";
         return false;
     }
 
     AppLoader_ClearSandboxes();
     memcpy((void *)APP_SANDBOX_BASE_ADDR, image, size);
-    return AppLoader_StartLoadedImage(size, (name != NULL) ? name : "ROM app");
+    return AppLoader_StartLoadedImage(size);
 }
 
 bool AppLoader_LoadAndRun(const char *fatfs_path)
@@ -192,14 +265,16 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
 
     if (f_open(&bin_file, clean_path, FA_READ) != FR_OK)
     {
+        s_last_error = "Cannot open file";
         printf("[LOADER] Failed to open: %s\r\n", clean_path);
         StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
         return false;
     }
 
     FSIZE_t fsize = f_size(&bin_file);
-    if (fsize == 0 || fsize > APP_SANDBOX_MAX_SIZE)
+    if (fsize < sizeof(SDK_AppHeader_t) || fsize > APP_SANDBOX_MAX_SIZE)
     {
+        s_last_error = "Bad image size";
         printf("[LOADER] Invalid binary size: %lu bytes (max %u)\r\n",
                (unsigned long)fsize, (unsigned int)APP_SANDBOX_MAX_SIZE);
         f_close(&bin_file);
@@ -216,11 +291,17 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
 
     if (res != FR_OK || br != fsize)
     {
+        s_last_error = "SD read error";
         printf("[LOADER] Read error (%d), read %u / %lu\r\n", res, br, (unsigned long)fsize);
         return false;
     }
 
-    return AppLoader_StartLoadedImage((uint32_t)fsize, clean_path);
+    return AppLoader_StartLoadedImage((uint32_t)fsize);
+}
+
+const char *AppLoader_GetLastError(void)
+{
+    return s_last_error;
 }
 
 bool AppLoader_IsRunning(void)
@@ -326,8 +407,7 @@ static void Sandbox_TaskEntry(void *argument)
 {
     (void)argument;
 
-    /* ARM Cortex-M Thumb-2 requires bit 0 of function pointer to be 1 */
-    App_Entry_t app_entry = (App_Entry_t)(APP_SANDBOX_BASE_ADDR | 1UL);
+    App_Entry_t app_entry = (App_Entry_t)s_app_entry;
     app_entry();
 
     __asm volatile ("svc 8" : : : "memory"); /* sys_exit() if the app returned without it */

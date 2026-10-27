@@ -1,4 +1,4 @@
-ENTRY(_start)
+ENTRY(_sdk_entry)
 
 MEMORY
 {
@@ -12,7 +12,7 @@ SECTIONS
 {
     .text : ALIGN(4)
     {
-        KEEP(*(.text.entry))
+        KEEP(*(.app_header))
         *(.text*)
         . = ALIGN(4);
         *(.rodata*)
@@ -24,6 +24,13 @@ SECTIONS
         *(.data*)
         . = ALIGN(4);
     } > APP_RAM
+
+    /* Last word of the image: CRC-32, patched after linking by sdk_app_crc.cmake */
+    .app_crc : ALIGN(4)
+    {
+        LONG(0)
+    } > APP_RAM
+    __sdk_image_size = . - ORIGIN(APP_RAM);
 
     /* Disallow C++ exception tables / unwinding that bloat raw binaries */
     /DISCARD/ :
@@ -39,6 +46,7 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
     } > APP_RAM
+    __sdk_bss_end = .;
 
     .ext_bss (NOLOAD) : ALIGN(4)
     {

@@ -18,9 +18,6 @@ A fully featured, standalone 8-bit Cyber-Tetris application for the STM32F407 co
 - **Button Home / Exit**: Return to Console Main Menu
 
 ## How to Build
-In VS Code Terminal:
-```bash
-arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -O2 -g3 -nostdlib -T app_sram.ld tetris_ext.c -o tetris.elf
-arm-none-eabi-objcopy -O binary tetris.elf tetris.bin
-```
+Built together with the firmware (CMake target `sdk_app_tetris`) into `build/<preset>/sdk_apps/tetris.bin`.
+
 Copy `tetris.bin` to `/games/` on your SD card!
