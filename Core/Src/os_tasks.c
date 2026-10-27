@@ -9,6 +9,7 @@
 #include "status_led.h"
 #include "sdcard_fatfs.h"
 #include "fatfs.h"
+#include "app_loader.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -144,6 +145,10 @@ static void InputAudioTask(void *argument)
                     if (btn_msg.id == BUTTON_KEY3)
                     {
                         Beeper_ErrorAlert();
+                        if (AppLoader_IsRunning())
+                        {
+                            AppLoader_RequestExit();
+                        }
                     }
                     else
                     {

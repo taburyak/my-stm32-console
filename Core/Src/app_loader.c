@@ -6,15 +6,27 @@
 #include "beeper.h"
 #include "status_led.h"
 #include "cmsis_os2.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include <stdio.h>
 #include <string.h>
 
 /* Entry point signature for external binary apps */
 typedef void (*App_Entry_t)(void);
 
+/* s_app_running stays true until the sandbox task is deleted by AppLoader_Service() */
 static volatile bool     s_app_running       = false;
 static volatile bool     s_app_exit_request  = false;
 static volatile uint32_t s_loaded_app_size   = 0;
+
+static StaticTask_t      s_sbx_tcb;
+static osThreadId_t      s_sbx_handle        = NULL;
+
+static volatile bool                  s_fault_pending = false;
+static volatile AppLoader_FaultInfo_t s_fault_info;
+
+static void Sandbox_TaskEntry(void *argument);
+static void AppLoader_ParkLoop(void);
 
 /* Built-in 5x7 ASCII Font Table (' ' 32 .. 'Z' 90) stored in MCU Flash */
 static const uint8_t s_kernel_font5x7[59][5] = {
@@ -157,9 +169,28 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
     __DSB();
     __ISB();
 
+    const osThreadAttr_t sbx_attr = {
+        .name       = "sandboxTask",
+        .cb_mem     = &s_sbx_tcb,
+        .cb_size    = sizeof(s_sbx_tcb),
+        .stack_mem  = (void *)MM_APP_STACK_BASE,
+        .stack_size = MM_APP_STACK_SIZE,
+        .priority   = (osPriority_t)osPriorityLow
+    };
+
     s_loaded_app_size  = (uint32_t)fsize;
     s_app_exit_request = false;
-    s_app_running      = true;
+    s_fault_pending    = false;
+
+    /* Lower priority than the caller (GUI), so the tag is set before the task first runs */
+    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, NULL, &sbx_attr);
+    if (s_sbx_handle == NULL)
+    {
+        printf("[LOADER] Failed to create sandbox task\r\n");
+        return false;
+    }
+    vTaskSetApplicationTaskTag((TaskHandle_t)s_sbx_handle, (TaskHookFunction_t)1);
+    s_app_running = true;
 
     printf("[LOADER] Loaded '%s' (%lu bytes) at 0x%08lX. Launching in Sandbox!\r\n",
            clean_path, (unsigned long)fsize, (unsigned long)APP_SANDBOX_BASE_ADDR);
@@ -172,14 +203,110 @@ bool AppLoader_IsRunning(void)
     return s_app_running;
 }
 
+bool AppLoader_IsAppActive(void)
+{
+    return s_app_running && !s_app_exit_request;
+}
+
+/* Safe from SVC handler and any task; the GUI task deletes the sandbox in AppLoader_Service() */
 void AppLoader_RequestExit(void)
 {
     s_app_exit_request = true;
-    s_app_running      = false;
+}
 
-    /* Flush any residual key/button events so LVGL does not auto-scroll on return! */
+void AppLoader_Service(void)
+{
+    if (!s_app_running || !s_app_exit_request || (g_sandbox_in_gate != 0U))
+    {
+        return;
+    }
+
+    if (s_sbx_handle != NULL)
+    {
+        vTaskDelete((TaskHandle_t)s_sbx_handle);
+        s_sbx_handle = NULL;
+    }
+
+    /* Flush any residual key/button events so LVGL does not auto-scroll on return */
     USBHostManager_FlushInputQueues();
     Buttons_Init();
+
+    s_app_running = false;
+    printf("[LOADER] App terminated%s\r\n", s_fault_pending ? " (FAULT)" : "");
+}
+
+bool AppLoader_HandleFault(uint32_t exc_return)
+{
+    /* Only faults of the unprivileged app itself (PSP, sandbox task, not inside the kernel gate) */
+    if (((exc_return & 0x4U) == 0U) || (s_sbx_handle == NULL) ||
+        (xTaskGetCurrentTaskHandle() != (TaskHandle_t)s_sbx_handle) ||
+        (g_sandbox_in_gate != 0U))
+    {
+        return false;
+    }
+
+    uint32_t cfsr = SCB->CFSR;
+    uint32_t hfsr = SCB->HFSR;
+    bool stacking_error = (cfsr & (SCB_CFSR_MSTKERR_Msk | SCB_CFSR_STKERR_Msk)) != 0U;
+
+    s_fault_info.cfsr       = cfsr;
+    s_fault_info.hfsr       = hfsr;
+    s_fault_info.fault_addr = ((cfsr & SCB_CFSR_MMARVALID_Msk) != 0U) ? SCB->MMFAR :
+                              (((cfsr & SCB_CFSR_BFARVALID_Msk) != 0U) ? SCB->BFAR : 0U);
+    s_fault_info.pc         = stacking_error ? 0U : ((uint32_t *)__get_PSP())[6];
+
+    SCB->CFSR = cfsr;
+    SCB->HFSR = hfsr;
+
+    /* Fresh exception frame near the top of the app stack (room for an FPU frame) */
+    uint32_t *frame = (uint32_t *)(MM_APP_RAM_BASE + MM_APP_RAM_SIZE - 128U);
+    for (uint32_t i = 0U; i < 32U; i++)
+    {
+        frame[i] = 0U;
+    }
+    frame[6] = ((uint32_t)AppLoader_ParkLoop) & ~1U;
+    frame[7] = 0x01000000U; /* xPSR: Thumb */
+    __set_PSP((uint32_t)frame);
+
+    s_fault_pending    = true;
+    s_app_exit_request = true;
+    return true;
+}
+
+bool AppLoader_TakeFaultInfo(AppLoader_FaultInfo_t *out)
+{
+    if (!s_fault_pending || (out == NULL))
+    {
+        return false;
+    }
+    out->cfsr       = s_fault_info.cfsr;
+    out->hfsr       = s_fault_info.hfsr;
+    out->fault_addr = s_fault_info.fault_addr;
+    out->pc         = s_fault_info.pc;
+    s_fault_pending = false;
+    return true;
+}
+
+/* Runs unprivileged: waits for the GUI task to delete the sandbox */
+static void AppLoader_ParkLoop(void)
+{
+    for (;;)
+    {
+        __WFI();
+    }
+}
+
+/* Sandbox task body (unprivileged via task tag 1) */
+static void Sandbox_TaskEntry(void *argument)
+{
+    (void)argument;
+
+    /* ARM Cortex-M Thumb-2 requires bit 0 of function pointer to be 1 */
+    App_Entry_t app_entry = (App_Entry_t)(APP_SANDBOX_BASE_ADDR | 1UL);
+    app_entry();
+
+    __asm volatile ("svc 8" : : : "memory"); /* sys_exit() if the app returned without it */
+    AppLoader_ParkLoop();
 }
 
 uint32_t AppLoader_ReadInputMask_Privileged(void)
@@ -387,24 +514,4 @@ uint32_t AppLoader_LoadState_Privileged(const char *filename, void *dst, uint32_
     StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
 
     return (res == FR_OK) ? (uint32_t)br : 0U;
-}
-
-void AppLoader_SandboxTaskLoop(void)
-{
-    if (s_app_running && !s_app_exit_request)
-    {
-        /* ARM Cortex-M Thumb-2 requires bit 0 of function pointer to be 1! */
-        App_Entry_t app_entry = (App_Entry_t)(APP_SANDBOX_BASE_ADDR | 1UL);
-
-        /* Execute external application in Unprivileged Mode! */
-        app_entry();
-
-        /* When app_entry() returns, mark app as finished and flush queues */
-        AppLoader_RequestExit();
-    }
-    else
-    {
-        /* Sleep until next interrupt when no external app is active */
-        __WFI();
-    }
 }

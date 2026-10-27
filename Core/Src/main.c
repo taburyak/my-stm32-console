@@ -90,19 +90,6 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
-osThreadId_t sandboxTaskHandle;
-static StaticTask_t sandboxTaskTCB;
-
-/* Stack lives at the top of the app sandbox so syscall buffers on the app stack pass validation */
-const osThreadAttr_t sandboxTask_attributes = {
-  .name = "sandboxTask",
-  .cb_mem = &sandboxTaskTCB,
-  .cb_size = sizeof(sandboxTaskTCB),
-  .stack_mem = (void *)MM_APP_STACK_BASE,
-  .stack_size = MM_APP_STACK_SIZE,
-  .priority = (osPriority_t) osPriorityLow,
-};
-
 /* Define an array for the internal part of the heap */
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
 /* Region Configuration for Heap_5 (regions sorted by address) */
@@ -135,7 +122,6 @@ static void MX_RTC_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-void SandboxTask(void *argument);
 void MPU_Config_UserSandbox(void);
 /* USER CODE END PFP */
 
@@ -243,11 +229,7 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  // Let's create our test sandbox task
-  sandboxTaskHandle = osThreadNew(SandboxTask, NULL, &sandboxTask_attributes);
-
-  // Set tag 1 so that the FreeRTOS hook switches this task to Unprivileged mode!
-  vTaskSetApplicationTaskTag((TaskHandle_t)sandboxTaskHandle, (void*) 1);
+  /* The unprivileged sandbox task is created per app launch by AppLoader_LoadAndRun() */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -879,16 +861,9 @@ void MPU_Config_UserSandbox(void)
   // Enable the MPU. The background region will allow the kernel to access the peripherals (0x40000000)
   // But our task (via tag 1) won't have access there!
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
-}
 
-void SandboxTask(void *argument)
-{
-  (void)argument;
-  /* Runs in Unprivileged Mode (tag == 1) */
-  for(;;)
-  {
-    AppLoader_SandboxTaskLoop();
-  }
+  // Dedicated BusFault / UsageFault handlers (MemManage is enabled by HAL_MPU_Enable)
+  SCB->SHCSR |= SCB_SHCSR_BUSFAULTENA_Msk | SCB_SHCSR_USGFAULTENA_Msk;
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -993,6 +968,7 @@ void StartDefaultTask(void *argument)
     if (AppLoader_IsRunning())
     {
       was_app_running = true;
+      AppLoader_Service();
       osDelay(20);
       continue;
     }
@@ -1000,9 +976,25 @@ void StartDefaultTask(void *argument)
     {
       /* External app just exited! Restore LVGL screen redraw */
       was_app_running = false;
-      Beeper_Click();
       UIManager_ShowScreen(UI_SCREEN_GAMES);
       lv_obj_invalidate(lv_scr_act());
+
+      AppLoader_FaultInfo_t fault;
+      if (AppLoader_TakeFaultInfo(&fault))
+      {
+        static char crash_text[96];
+        snprintf(crash_text, sizeof(crash_text), "CFSR 0x%08lX\nPC   0x%08lX\nADDR 0x%08lX",
+                 (unsigned long)fault.cfsr, (unsigned long)fault.pc, (unsigned long)fault.fault_addr);
+        printf("[LOADER] App crashed: %s\r\n", crash_text);
+        lv_obj_t *mbox = lv_msgbox_create(NULL, "App crashed", crash_text, NULL, false);
+        lv_obj_center(mbox);
+        lv_obj_del_delayed(mbox, 4000);
+        Beeper_ErrorAlert();
+      }
+      else
+      {
+        Beeper_Click();
+      }
     }
 
     /* 1. Check for completed async events from StorageIoTask */

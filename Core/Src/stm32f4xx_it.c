@@ -108,6 +108,10 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+  if (AppLoader_HandleFault((uint32_t)__builtin_return_address(0)))
+  {
+    return;
+  }
   volatile uint32_t cfsr  = SCB->CFSR;
   volatile uint32_t hfsr  = SCB->HFSR;
   volatile uint32_t mmfar = SCB->MMFAR;
@@ -129,6 +133,10 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+  if (AppLoader_HandleFault((uint32_t)__builtin_return_address(0)))
+  {
+    return;
+  }
   volatile uint32_t cfsr  = SCB->CFSR;
   volatile uint32_t mmfar = SCB->MMFAR;
   (void)cfsr; (void)mmfar;
@@ -148,7 +156,10 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  if (AppLoader_HandleFault((uint32_t)__builtin_return_address(0)))
+  {
+    return;
+  }
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -165,11 +176,16 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  if (AppLoader_HandleFault((uint32_t)__builtin_return_address(0)))
+  {
+    return;
+  }
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    for (volatile uint32_t i = 0; i < 1500000U; i++) { __NOP(); }
     /* USER CODE END W1_UsageFault_IRQn 0 */
   }
 }
@@ -405,6 +421,13 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
 {
   /* Stack frame contains: r0, r1, r2, r3, r12, lr, pc (svc_args[6]), xPSR */
   uint8_t svc_number = ((uint8_t *)svc_args[6])[-2];
+
+  /* After exit/kill/fault the app may still run until the GUI task deletes it: ignore its syscalls */
+  if (!AppLoader_IsAppActive())
+  {
+    svc_args[0] = 0U;
+    return;
+  }
 
   switch (svc_number)
   {

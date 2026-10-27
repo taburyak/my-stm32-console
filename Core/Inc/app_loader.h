@@ -40,10 +40,21 @@ typedef struct {
     uint8_t     scale;
 } App_DrawTextParams_t;
 
+/* Fault captured from a crashed app (fault status registers and faulting PC) */
+typedef struct {
+    uint32_t cfsr;
+    uint32_t hfsr;
+    uint32_t fault_addr;
+    uint32_t pc;
+} AppLoader_FaultInfo_t;
+
 bool AppLoader_LoadAndRun(const char *fatfs_path);
 bool AppLoader_IsRunning(void);
+bool AppLoader_IsAppActive(void);
 void AppLoader_RequestExit(void);
-void AppLoader_SandboxTaskLoop(void);
+void AppLoader_Service(void);
+bool AppLoader_HandleFault(uint32_t exc_return);
+bool AppLoader_TakeFaultInfo(AppLoader_FaultInfo_t *out);
 
 /* Privileged Kernel Syscall Helpers */
 bool     AppLoader_IsUserBufferValid(const void *ptr, uint32_t len);
