@@ -1,4 +1,5 @@
 #include "app_loader.h"
+#include "app_files.h"
 #include "fatfs.h"
 #include "ili9341_simple.h"
 #include "usb_host_manager.h"
@@ -24,6 +25,7 @@ static volatile uint32_t s_loaded_app_size   = 0;
 static StaticTask_t      s_sbx_tcb;
 static osThreadId_t      s_sbx_handle        = NULL;
 static const char       *s_last_error        = "";
+static char              s_app_name[SDK_APP_NAME_LEN + 1U];
 
 static volatile bool                  s_fault_pending = false;
 static volatile AppLoader_FaultInfo_t s_fault_info;
@@ -192,6 +194,21 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
         return false;
     }
 
+    /* The app name is its SD namespace: keep only safe file name characters */
+    uint32_t n = 0U;
+    for (uint32_t i = 0U; (i < SDK_APP_NAME_LEN) && (hdr->name[i] != '\0'); i++)
+    {
+        char c = hdr->name[i];
+        bool ok = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) ||
+                  ((c >= '0') && (c <= '9')) || (c == '_') || (c == '-');
+        s_app_name[n++] = ok ? c : '_';
+    }
+    s_app_name[n] = '\0';
+    if (n == 0U)
+    {
+        strcpy(s_app_name, "app");
+    }
+
     /* Flush all pending key/button events before starting the game */
     USBHostManager_FlushInputQueues();
     Buttons_Init();
@@ -302,6 +319,11 @@ const char *AppLoader_GetLastError(void)
     return s_last_error;
 }
 
+const char *AppLoader_GetAppName(void)
+{
+    return s_app_name;
+}
+
 bool AppLoader_IsRunning(void)
 {
     return s_app_running;
@@ -330,6 +352,8 @@ void AppLoader_Service(void)
         vTaskDelete((TaskHandle_t)s_sbx_handle);
         s_sbx_handle = NULL;
     }
+
+    AppFiles_CloseAll();
 
     /* Flush any residual key/button events so LVGL does not auto-scroll on return */
     USBHostManager_FlushInputQueues();

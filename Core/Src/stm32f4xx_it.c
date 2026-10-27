@@ -30,6 +30,7 @@
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
 #include "app_loader.h"
+#include "app_files.h"
 #include "cmsis_os2.h"
 /* USER CODE END Includes */
 
@@ -361,7 +362,7 @@ static void Svc_EnterGate(uint32_t *frame, uint8_t number)
       ((uint32_t)frame < MM_APP_STACK_BASE) ||
       (free_stack < SVC_GATE_MIN_STACK_BYTES))
   {
-    frame[0] = 0U;
+    frame[0] = (number >= SDK_SVC_FILE_OPEN) ? (uint32_t)SDK_ERR_IO : 0U;
     return;
   }
 
@@ -415,6 +416,30 @@ uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2)
     case 18U: /* void sys_sleep_ms(uint32_t ms) */
       (void)osDelay((a0 > SDK_SLEEP_MAX_MS) ? SDK_SLEEP_MAX_MS : a0);
       return 0U;
+
+    case SDK_SVC_FILE_OPEN:
+      return (uint32_t)AppFiles_Open((const char *)a0, a1);
+
+    case SDK_SVC_FILE_READ:
+      return (uint32_t)AppFiles_Read(a0, (void *)a1, a2);
+
+    case SDK_SVC_FILE_WRITE:
+      return (uint32_t)AppFiles_Write(a0, (const void *)a1, a2);
+
+    case SDK_SVC_FILE_SEEK:
+      return (uint32_t)AppFiles_Seek(a0, a1);
+
+    case SDK_SVC_FILE_CLOSE:
+      return (uint32_t)AppFiles_Close(a0);
+
+    case SDK_SVC_FILE_SIZE:
+      return (uint32_t)AppFiles_Size(a0);
+
+    case SDK_SVC_DIR_READ:
+      return (uint32_t)AppFiles_DirRead((const char *)a0, a1, (SDK_DirEntry_t *)a2);
+
+    case SDK_SVC_FILE_REMOVE:
+      return (uint32_t)AppFiles_Remove((const char *)a0);
 
     default:
       return 0U;
@@ -561,6 +586,14 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
     case 15U: /* SVC 15: bool sys_save_state(const char *filename, const void *data, uint32_t len) */
     case 16U: /* SVC 16: uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
     case 18U: /* SVC 18: void sys_sleep_ms(uint32_t ms) */
+    case SDK_SVC_FILE_OPEN:
+    case SDK_SVC_FILE_READ:
+    case SDK_SVC_FILE_WRITE:
+    case SDK_SVC_FILE_SEEK:
+    case SDK_SVC_FILE_CLOSE:
+    case SDK_SVC_FILE_SIZE:
+    case SDK_SVC_DIR_READ:
+    case SDK_SVC_FILE_REMOVE:
       Svc_EnterGate(svc_args, svc_number);
       break;
 

@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-#define SDK_API_VERSION         1U
+#define SDK_API_VERSION         2U
 
 #define SDK_SCREEN_W            320U
 #define SDK_SCREEN_H            240U
@@ -47,8 +47,53 @@ typedef struct {
 #define SDK_SVC_LOAD_STATE      16U /* blocking (kernel gate) */
 #define SDK_SVC_GET_INFO        17U
 #define SDK_SVC_SLEEP_MS        18U /* blocking (kernel gate) */
+/* 19..30 reserved */
+#define SDK_SVC_FILE_OPEN       31U /* blocking (kernel gate) */
+#define SDK_SVC_FILE_READ       32U /* blocking (kernel gate) */
+#define SDK_SVC_FILE_WRITE      33U /* blocking (kernel gate) */
+#define SDK_SVC_FILE_SEEK       34U /* blocking (kernel gate) */
+#define SDK_SVC_FILE_CLOSE      35U /* blocking (kernel gate) */
+#define SDK_SVC_FILE_SIZE       36U /* blocking (kernel gate) */
+#define SDK_SVC_DIR_READ        37U /* blocking (kernel gate) */
+#define SDK_SVC_FILE_REMOVE     38U /* blocking (kernel gate) */
 
 #define SDK_SLEEP_MAX_MS        1000U
+
+/* ---- Result codes of int32_t syscalls (negative = error) ---- */
+#define SDK_OK                  0
+#define SDK_ERR_INVALID         (-1)
+#define SDK_ERR_NOT_FOUND       (-2)
+#define SDK_ERR_IO              (-3)
+#define SDK_ERR_NO_HANDLES      (-4)
+#define SDK_ERR_DENIED          (-5)
+#define SDK_ERR_NO_SD           (-6)
+#define SDK_ERR_EXISTS          (-7)
+
+/*
+ * ---- Files (SDK_SVC_FILE_*, SDK_SVC_DIR_READ) ----
+ * Paths are relative, '/'-separated, components of [A-Za-z0-9_-.] and spaces, no "..".
+ *   "name"      -> SD:/appdata/<app name>/name   (read/write, created on demand)
+ *   "res:name"  -> SD:/games/<app name>/name     (read-only resources next to the .bin)
+ * Handles are closed by the OS when the app exits.
+ */
+#define SDK_FILE_PATH_MAX       63U
+#define SDK_FILE_MAX_OPEN       4U
+#define SDK_RES_PREFIX          "res:"
+
+#define SDK_FILE_READ           (1UL << 0)
+#define SDK_FILE_WRITE          (1UL << 1)
+#define SDK_FILE_CREATE         (1UL << 2) /* create if missing */
+#define SDK_FILE_TRUNC          (1UL << 3) /* create or truncate to 0 */
+#define SDK_FILE_APPEND         (1UL << 4) /* start at the end of the file */
+
+#define SDK_DIR_NAME_MAX        31U
+
+typedef struct {
+    uint32_t size;
+    uint8_t  is_dir;
+    uint8_t  reserved[3];
+    char     name[SDK_DIR_NAME_MAX + 1U];
+} SDK_DirEntry_t;
 
 /* ---- Unified key mask (SDK_SVC_GET_KEYS) ---- */
 #define SDK_KEY_LEFT            (1UL << 0) /* Gamepad Left  / Keyboard Left Arrow or 'A' / Board KEY_0 */

@@ -47,6 +47,7 @@ console_sdk_app(arkanoid  "${CMAKE_SOURCE_DIR}/sdk_apps/arkanoid.c")
 console_sdk_app(tetris    "${CMAKE_SOURCE_DIR}/sdk_apps/tetris_ext.c")
 console_sdk_app(sdk_test  "${CMAKE_SOURCE_DIR}/sdk_apps/sdk_test.c")
 console_sdk_app(crash_test "${CMAKE_SOURCE_DIR}/sdk_apps/crash_test.c")
+console_sdk_app(file_test "${CMAKE_SOURCE_DIR}/sdk_apps/file_test.c")
 
 # Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
 set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")
@@ -109,6 +110,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
     Core/Src/ui_manager.c
     Core/Src/app_loader.c
+    Core/Src/app_files.c
 )
 
 # Add include paths

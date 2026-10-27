@@ -251,4 +251,53 @@ static inline void sys_delay_ms(uint32_t ms)
     sys_sleep_ms(ms);
 }
 
+/* ---- Files: see console_abi.h for paths, flags and SDK_ERR_* codes ---- */
+
+/* Returns a handle (>= 0) or SDK_ERR_* */
+SDK_SYSCALL int32_t sys_file_open(const char *path, uint32_t flags)
+{
+    return (int32_t)SDK_SVC_CALL2(SDK_SVC_FILE_OPEN, path, flags);
+}
+
+/* Returns bytes read (0 at end of file) or SDK_ERR_* */
+SDK_SYSCALL int32_t sys_file_read(int32_t fd, void *buf, uint32_t len)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_FILE_READ, fd, buf, len);
+}
+
+/* Returns bytes written or SDK_ERR_* */
+SDK_SYSCALL int32_t sys_file_write(int32_t fd, const void *buf, uint32_t len)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_FILE_WRITE, fd, buf, len);
+}
+
+/* Moves to an absolute offset */
+SDK_SYSCALL int32_t sys_file_seek(int32_t fd, uint32_t offset)
+{
+    return (int32_t)SDK_SVC_CALL2(SDK_SVC_FILE_SEEK, fd, offset);
+}
+
+SDK_SYSCALL int32_t sys_file_close(int32_t fd)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_FILE_CLOSE, fd);
+}
+
+/* Returns the file size or SDK_ERR_* */
+SDK_SYSCALL int32_t sys_file_size(int32_t fd)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_FILE_SIZE, fd);
+}
+
+/* Returns 1 and the index-th entry of dir ("" = data root, "res:" = resource root), 0 at the end, or SDK_ERR_* */
+SDK_SYSCALL int32_t sys_dir_read(const char *dir, uint32_t index, SDK_DirEntry_t *out)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_DIR_READ, dir, index, out);
+}
+
+/* Removes a file or an empty directory in the data root */
+SDK_SYSCALL int32_t sys_file_remove(const char *path)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_FILE_REMOVE, path);
+}
+
 #endif /* CONSOLE_SDK_H */
