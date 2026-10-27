@@ -49,55 +49,12 @@
  * ========================================================================== */
 
 /* ==========================================================================
- * 5. Freestanding Memory Helpers (-nostdlib & GCC 14 -O2 safe)
+ * 5. Freestanding Memory Helpers (defined in sdk_runtime.c)
  * ========================================================================== */
 
-__attribute__((used, optimize("no-tree-loop-distribute-patterns")))
-void *memset(void *dst, int val, size_t len)
-{
-    uint8_t *p = (uint8_t *)dst;
-    while (len--)
-    {
-        *p++ = (uint8_t)val;
-    }
-    return dst;
-}
-
-__attribute__((used, optimize("no-tree-loop-distribute-patterns")))
-void *memcpy(void *dst, const void *src, size_t len)
-{
-    uint8_t *d = (uint8_t *)dst;
-    const uint8_t *s = (const uint8_t *)src;
-    while (len--)
-    {
-        *d++ = *s++;
-    }
-    return dst;
-}
-
-__attribute__((used, optimize("no-tree-loop-distribute-patterns")))
-void *memmove(void *dst, const void *src, size_t len)
-{
-    uint8_t *d = (uint8_t *)dst;
-    const uint8_t *s = (const uint8_t *)src;
-    if (d < s)
-    {
-        while (len--)
-        {
-            *d++ = *s++;
-        }
-    }
-    else if (d > s)
-    {
-        d += len;
-        s += len;
-        while (len--)
-        {
-            *--d = *--s;
-        }
-    }
-    return dst;
-}
+void *memset(void *dst, int val, size_t len);
+void *memcpy(void *dst, const void *src, size_t len);
+void *memmove(void *dst, const void *src, size_t len);
 
 #define sdk_memset  memset
 #define sdk_memcpy  memcpy

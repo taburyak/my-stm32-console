@@ -32,3 +32,51 @@ void _sdk_entry(void)
     {
     }
 }
+
+/* -nostdlib: GCC emits calls to these for struct copies and loops */
+__attribute__((used, optimize("no-tree-loop-distribute-patterns")))
+void *memset(void *dst, int val, size_t len)
+{
+    uint8_t *p = (uint8_t *)dst;
+    while (len--)
+    {
+        *p++ = (uint8_t)val;
+    }
+    return dst;
+}
+
+__attribute__((used, optimize("no-tree-loop-distribute-patterns")))
+void *memcpy(void *dst, const void *src, size_t len)
+{
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    while (len--)
+    {
+        *d++ = *s++;
+    }
+    return dst;
+}
+
+__attribute__((used, optimize("no-tree-loop-distribute-patterns")))
+void *memmove(void *dst, const void *src, size_t len)
+{
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    if (d < s)
+    {
+        while (len--)
+        {
+            *d++ = *s++;
+        }
+    }
+    else if (d > s)
+    {
+        d += len;
+        s += len;
+        while (len--)
+        {
+            *--d = *--s;
+        }
+    }
+    return dst;
+}

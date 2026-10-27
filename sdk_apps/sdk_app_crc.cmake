@@ -8,6 +8,16 @@ function(run_checked)
     endif()
 endfunction()
 
+# Prefer objcopy from the compiler's directory when OBJCOPY is a bare name
+if(NOT IS_ABSOLUTE "${OBJCOPY}")
+    get_filename_component(cc_dir "${CC}" DIRECTORY)
+    if(EXISTS "${cc_dir}/arm-none-eabi-objcopy.exe")
+        set(OBJCOPY "${cc_dir}/arm-none-eabi-objcopy.exe")
+    elseif(EXISTS "${cc_dir}/arm-none-eabi-objcopy")
+        set(OBJCOPY "${cc_dir}/arm-none-eabi-objcopy")
+    endif()
+endif()
+
 set(raw_bin "${BIN}.raw")
 run_checked(${OBJCOPY} -O binary "${ELF}" "${raw_bin}")
 
