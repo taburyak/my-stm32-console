@@ -300,4 +300,32 @@ SDK_SYSCALL int32_t sys_file_remove(const char *path)
     return (int32_t)SDK_SVC_CALL1(SDK_SVC_FILE_REMOVE, path);
 }
 
+/* ---- EEPROM window and flash partition: see console_abi.h; results are byte counts, SDK_OK or SDK_ERR_* ---- */
+
+SDK_SYSCALL int32_t sys_eeprom_read(uint32_t offset, void *buf, uint32_t len)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_EEPROM_READ, offset, buf, len);
+}
+
+SDK_SYSCALL int32_t sys_eeprom_write(uint32_t offset, const void *buf, uint32_t len)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_EEPROM_WRITE, offset, buf, len);
+}
+
+SDK_SYSCALL int32_t sys_flash_read(uint32_t offset, void *buf, uint32_t len)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_FLASH_READ, offset, buf, len);
+}
+
+/* offset must be a multiple of SDK_FLASH_SECTOR */
+SDK_SYSCALL int32_t sys_flash_erase(uint32_t offset)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_FLASH_ERASE, offset);
+}
+
+SDK_SYSCALL int32_t sys_flash_write(uint32_t offset, const void *buf, uint32_t len)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_FLASH_WRITE, offset, buf, len);
+}
+
 #endif /* CONSOLE_SDK_H */

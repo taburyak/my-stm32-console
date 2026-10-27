@@ -56,6 +56,12 @@ typedef struct {
 #define SDK_SVC_FILE_SIZE       36U /* blocking (kernel gate) */
 #define SDK_SVC_DIR_READ        37U /* blocking (kernel gate) */
 #define SDK_SVC_FILE_REMOVE     38U /* blocking (kernel gate) */
+/* 39 reserved */
+#define SDK_SVC_EEPROM_READ     40U /* blocking (kernel gate) */
+#define SDK_SVC_EEPROM_WRITE    41U /* blocking (kernel gate) */
+#define SDK_SVC_FLASH_READ      42U /* blocking (kernel gate) */
+#define SDK_SVC_FLASH_ERASE     43U /* blocking (kernel gate) */
+#define SDK_SVC_FLASH_WRITE     44U /* blocking (kernel gate) */
 
 #define SDK_SLEEP_MAX_MS        1000U
 
@@ -68,6 +74,17 @@ typedef struct {
 #define SDK_ERR_DENIED          (-5)
 #define SDK_ERR_NO_SD           (-6)
 #define SDK_ERR_EXISTS          (-7)
+#define SDK_ERR_NOT_SUPPORTED   (-8)
+
+/*
+ * ---- Non-volatile storage shared by all apps (offsets are relative) ----
+ * EEPROM: SDK_EEPROM_SIZE bytes; unchanged bytes are not rewritten.
+ * Flash:  SDK_FLASH_SIZE bytes on the W25Q128; erase sets a SDK_FLASH_SECTOR-aligned
+ *         sector to 0xFF, write can only clear bits (erase first).
+ */
+#define SDK_EEPROM_SIZE         128U
+#define SDK_FLASH_SIZE          (1024UL * 1024UL)
+#define SDK_FLASH_SECTOR        4096U
 
 /*
  * ---- Files (SDK_SVC_FILE_*, SDK_SVC_DIR_READ) ----

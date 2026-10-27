@@ -31,6 +31,7 @@
 #include "XPT2046_touch.h"
 #include "app_loader.h"
 #include "app_files.h"
+#include "app_storage.h"
 #include "cmsis_os2.h"
 /* USER CODE END Includes */
 
@@ -441,6 +442,21 @@ uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2)
     case SDK_SVC_FILE_REMOVE:
       return (uint32_t)AppFiles_Remove((const char *)a0);
 
+    case SDK_SVC_EEPROM_READ:
+      return (uint32_t)AppStorage_EepromRead(a0, (void *)a1, a2);
+
+    case SDK_SVC_EEPROM_WRITE:
+      return (uint32_t)AppStorage_EepromWrite(a0, (const void *)a1, a2);
+
+    case SDK_SVC_FLASH_READ:
+      return (uint32_t)AppStorage_FlashRead(a0, (void *)a1, a2);
+
+    case SDK_SVC_FLASH_ERASE:
+      return (uint32_t)AppStorage_FlashErase(a0);
+
+    case SDK_SVC_FLASH_WRITE:
+      return (uint32_t)AppStorage_FlashWrite(a0, (const void *)a1, a2);
+
     default:
       return 0U;
   }
@@ -594,6 +610,11 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
     case SDK_SVC_FILE_SIZE:
     case SDK_SVC_DIR_READ:
     case SDK_SVC_FILE_REMOVE:
+    case SDK_SVC_EEPROM_READ:
+    case SDK_SVC_EEPROM_WRITE:
+    case SDK_SVC_FLASH_READ:
+    case SDK_SVC_FLASH_ERASE:
+    case SDK_SVC_FLASH_WRITE:
       Svc_EnterGate(svc_args, svc_number);
       break;
 
