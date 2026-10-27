@@ -1,97 +1,101 @@
 #include "console_sdk.h"
 
-/* =========================================================================
- * Cyber-Tetris (SRAM Application for STM32 Console)
- *
- * Uses Kernel SVC API (console_sdk.h):
- *  - SVC 10 (sys_draw_sprite): Single-pass 3D beveled block rendering
- *  - SVC 11 (sys_draw_text): Kernel 5x7 font rendering
- *  - SVC 12 (sys_clear_screen): Fast screen clear
- *  - SVC 15/16 (sys_save_state / sys_load_state): High score persistence
- * ========================================================================= */
+/* Grid Dimensions: 10 columns x 20 rows, 10x10 px per cell */
+#define GRID_COLS       10
+#define GRID_ROWS       20
+#define CELL_SIZE       10
+#define BOARD_X         60
+#define BOARD_Y         28
 
-#define BOARD_COLS      10
-#define BOARD_ROWS      20
-#define BLOCK_SIZE      10  /* 10x10 px per block -> 100x200 px playfield */
+/* Store game state in External 512 KB SRAM Sandbox (0x68080000) */
+typedef struct {
+    uint8_t  board[GRID_ROWS][GRID_COLS];
+    uint32_t score;
+    uint32_t lines;
+    uint32_t best_score;
+    uint32_t rng_state;
+} Tetris_State_t;
 
-/* Playfield position on 320x240 screen */
-#define BOARD_X_OFF     110
-#define BOARD_Y_OFF     20
+#define g_tetris ((Tetris_State_t *)SDK_EXT_RAM_BASE_ADDR)
 
-#define SAVE_FILE_NAME  "tetris.sav"
-
-/* =========================================================================
- * Tetromino Definitions (7 Shapes x 4 Rotations x 4x4 Bitmask)
- * ========================================================================= */
-static const uint16_t PIECES[7][4] = {
-    /* 0: I (Cyan) */
-    {0x0F00, 0x2222, 0x00F0, 0x4444},
-    /* 1: J (Blue) */
-    {0x8E00, 0x6440, 0x0E20, 0x44C0},
-    /* 2: L (Orange) */
-    {0x2E00, 0x4460, 0x0E80, 0xC440},
-    /* 3: O (Yellow) */
-    {0x6600, 0x6600, 0x6600, 0x6600},
-    /* 4: S (Green) */
-    {0x6C00, 0x4620, 0x06C0, 0x4620},
-    /* 5: T (Purple) */
-    {0x4E00, 0x4C40, 0x0E40, 0x4640},
-    /* 6: Z (Red) */
-    {0xC600, 0x2640, 0x0C60, 0x2640}
+/* 7 Tetrominoes x 4 Rotations (16-bit 4x4 bitmasks) */
+static const uint16_t s_shapes[7][4] = {
+    /* I */ { 0x0F00, 0x2222, 0x00F0, 0x4444 },
+    /* O */ { 0x6600, 0x6600, 0x6600, 0x6600 },
+    /* T */ { 0x0E40, 0x4C40, 0x4E00, 0x4640 },
+    /* S */ { 0x06C0, 0x8C40, 0x6C00, 0x4620 },
+    /* Z */ { 0x0C60, 0x4C80, 0xC600, 0x2640 },
+    /* J */ { 0x0E20, 0x44C0, 0x8E00, 0x6440 },
+    /* L */ { 0x0E80, 0xC440, 0x2E00, 0x4460 }
 };
 
-/* Board state placed in External SRAM (.bss): 0 = empty, 1..7 = piece color */
-static uint8_t board[BOARD_ROWS][BOARD_COLS];
-
-/* 10x10 Sprite buffer for fast single-syscall block rendering */
-static uint16_t s_cell_sprite[BLOCK_SIZE * BLOCK_SIZE];
-
-static const uint16_t PIECE_COLORS[7] = {
-    RGB565(0, 240, 240),   /* 0: Cyan */
-    RGB565(40, 110, 255),  /* 1: Blue */
-    RGB565(255, 140, 0),   /* 2: Orange */
-    RGB565(255, 220, 0),   /* 3: Yellow */
-    RGB565(0, 235, 90),    /* 4: Green */
-    RGB565(190, 40, 255),  /* 5: Purple */
-    RGB565(255, 45, 70)    /* 6: Red */
+static const uint16_t s_colors[8] = {
+    COLOR_DARK_BG,    /* 0: Empty */
+    COLOR_CYAN,       /* 1: I */
+    COLOR_YELLOW,     /* 2: O */
+    COLOR_MAGENTA,    /* 3: T */
+    COLOR_NEON_GREEN, /* 4: S */
+    COLOR_RED,        /* 5: Z */
+    COLOR_BLUE,       /* 6: J */
+    COLOR_AMBER       /* 7: L */
 };
 
-static inline uint16_t get_piece_color(uint8_t type)
+/* Fast pseudo-random number 0..6 without hardware/software division */
+static uint8_t next_random_piece(void)
 {
-    return (type < 7U) ? PIECE_COLORS[type] : RGB565(200, 200, 200);
+    uint32_t x = g_tetris->rng_state;
+    if (x == 0U) x = sys_get_tick() ^ 0xA5A55A5AU;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    g_tetris->rng_state = x;
+
+    uint8_t v = (uint8_t)(x & 7U);
+    if (v >= 7U) v -= 7U;
+    return v;
 }
 
-/* Pseudo-random generator */
-static uint32_t rng_state = 0xCAFEBABEUL;
-static uint8_t get_random_piece(void)
+static void draw_cell(int16_t gx, int16_t gy, uint8_t color_idx)
 {
-    rng_state = rng_state * 1664525UL + 1013904223UL;
-    return (uint8_t)((rng_state >> 24) % 7U);
+    if (gx < 0 || gx >= GRID_COLS || gy < 0 || gy >= GRID_ROWS) return;
+    uint16_t px = (uint16_t)(BOARD_X + gx * CELL_SIZE);
+    uint16_t py = (uint16_t)(BOARD_Y + gy * CELL_SIZE);
+    uint16_t col = s_colors[color_idx & 7U];
+
+    sys_lcd_fill_rect(px, py, CELL_SIZE - 1U, CELL_SIZE - 1U, col);
 }
 
-static bool test_piece_block(uint8_t type, uint8_t rot, int row, int col)
+static void draw_piece(int16_t px, int16_t py, uint8_t type, uint8_t rot, uint8_t color_idx)
 {
-    uint16_t mask = PIECES[type][rot];
-    int bit_idx = 15 - (row * 4 + col);
-    return ((mask & (1U << bit_idx)) != 0U);
-}
-
-static bool check_collision(uint8_t type, uint8_t rot, int px, int py)
-{
-    for (int r = 0; r < 4; r++)
+    uint16_t mask = s_shapes[type][rot & 3U];
+    for (int16_t r = 0; r < 4; r++)
     {
-        for (int c = 0; c < 4; c++)
+        for (int16_t c = 0; c < 4; c++)
         {
-            if (test_piece_block(type, rot, r, c))
+            if (mask & (0x8000U >> (r * 4 + c)))
             {
-                int bx = px + c;
-                int by = py + r;
+                draw_cell(px + c, py + r, color_idx);
+            }
+        }
+    }
+}
 
-                if (bx < 0 || bx >= BOARD_COLS || by >= BOARD_ROWS)
+static bool check_collision(int16_t px, int16_t py, uint8_t type, uint8_t rot)
+{
+    uint16_t mask = s_shapes[type][rot & 3U];
+    for (int16_t r = 0; r < 4; r++)
+    {
+        for (int16_t c = 0; c < 4; c++)
+        {
+            if (mask & (0x8000U >> (r * 4 + c)))
+            {
+                int16_t gx = px + c;
+                int16_t gy = py + r;
+                if (gx < 0 || gx >= GRID_COLS || gy >= GRID_ROWS)
                 {
                     return true;
                 }
-                if (by >= 0 && board[by][bx] != 0)
+                if (gy >= 0 && g_tetris->board[gy][gx] != 0U)
                 {
                     return true;
                 }
@@ -101,431 +105,306 @@ static bool check_collision(uint8_t type, uint8_t rot, int px, int py)
     return false;
 }
 
-/**
- * @brief Draw a single 10x10 board cell in one SVC 10 sprite transfer
- */
-static void draw_cell(int r, int c, uint8_t val, uint16_t bg_col)
+static void redraw_board(void)
 {
-    uint16_t scr_x = (uint16_t)(BOARD_X_OFF + c * BLOCK_SIZE);
-    uint16_t scr_y = (uint16_t)(BOARD_Y_OFF + r * BLOCK_SIZE);
-
-    if (val == 0)
+    for (int16_t r = 0; r < GRID_ROWS; r++)
     {
-        for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
+        for (int16_t c = 0; c < GRID_COLS; c++)
         {
-            s_cell_sprite[i] = bg_col;
-        }
-        /* Subtle cyber grid dot at center (4,4) */
-        s_cell_sprite[4 * BLOCK_SIZE + 4] = RGB565(35, 25, 65);
-    }
-    else
-    {
-        uint16_t col  = get_piece_color((uint8_t)(val - 1U));
-        uint16_t hi   = COLOR_WHITE;
-        uint16_t dark = RGB565(10, 10, 20);
-
-        for (int y = 0; y < BLOCK_SIZE; y++)
-        {
-            for (int x = 0; x < BLOCK_SIZE; x++)
-            {
-                uint16_t px = col;
-                if (y == 0 || x == 0)
-                {
-                    px = hi; /* Top/Left 3D bevel highlight */
-                }
-                else if (y == BLOCK_SIZE - 1 || x == BLOCK_SIZE - 1)
-                {
-                    px = dark; /* Bottom/Right shadow */
-                }
-                s_cell_sprite[y * BLOCK_SIZE + x] = px;
-            }
+            draw_cell(c, r, g_tetris->board[r][c]);
         }
     }
-
-    sys_draw_sprite(scr_x, scr_y, BLOCK_SIZE, BLOCK_SIZE, s_cell_sprite);
 }
 
-static void render_active_piece(uint8_t type, uint8_t rot, int px, int py, bool erase, uint16_t bg_col)
+static void draw_next_preview(uint8_t next_type)
 {
-    for (int r = 0; r < 4; r++)
+    sys_lcd_fill_rect(190, 50, 48, 48, COLOR_PANEL_BG);
+    uint16_t mask = s_shapes[next_type][0];
+    uint16_t col  = s_colors[next_type + 1U];
+    for (uint8_t r = 0; r < 4U; r++)
     {
-        for (int c = 0; c < 4; c++)
+        for (uint8_t c = 0; c < 4U; c++)
         {
-            if (test_piece_block(type, rot, r, c))
+            if (mask & (0x8000U >> (r * 4U + c)))
             {
-                int bx = px + c;
-                int by = py + r;
-                if (bx >= 0 && bx < BOARD_COLS && by >= 0 && by < BOARD_ROWS)
-                {
-                    draw_cell(by, bx, erase ? board[by][bx] : (uint8_t)(type + 1U), bg_col);
-                }
+                sys_lcd_fill_rect((uint16_t)(194U + c * 10U),
+                                  (uint16_t)(54U + r * 10U),
+                                  9U, 9U, col);
             }
         }
     }
 }
 
-static void draw_next_preview(uint8_t next_type, uint16_t bg_col)
+static void update_sidebar_stats(void)
 {
-    const uint16_t px_x = 230;
-    const uint16_t px_y = 40;
+    char buf[16];
+    sdk_uint_to_str(g_tetris->score, buf, 5);
+    sys_draw_text(190, 126, buf, COLOR_NEON_GREEN, COLOR_PANEL_BG, 1);
 
-    sys_lcd_fill_rect(px_x, px_y, 50, 42, bg_col);
+    sdk_uint_to_str(g_tetris->lines, buf, 3);
+    sys_draw_text(190, 162, buf, COLOR_CYAN, COLOR_PANEL_BG, 1);
 
-    uint16_t col = get_piece_color(next_type);
-    for (int r = 0; r < 4; r++)
-    {
-        for (int c = 0; c < 4; c++)
-        {
-            if (test_piece_block(next_type, 0, r, c))
-            {
-                uint16_t bx = (uint16_t)(px_x + 7 + c * 9);
-                uint16_t by = (uint16_t)(px_y + 4 + r * 9);
-                sys_lcd_fill_rect(bx, by, 8, 8, col);
-            }
-        }
-    }
+    sdk_uint_to_str(g_tetris->best_score, buf, 5);
+    sys_draw_text(190, 198, buf, COLOR_AMBER, COLOR_PANEL_BG, 1);
 }
 
-static void redraw_board(uint16_t bg_col)
+static void draw_static_ui(void)
 {
-    for (int r = 0; r < BOARD_ROWS; r++)
-    {
-        for (int c = 0; c < BOARD_COLS; c++)
-        {
-            draw_cell(r, c, board[r][c], bg_col);
-        }
-    }
-}
+    sys_clear_screen(COLOR_DARK_BG);
 
-/* =========================================================================
- * Main Game Entry Point
- * ========================================================================= */
+    /* Top header */
+    sys_lcd_fill_rect(0, 0, 320, 20, COLOR_PANEL_BG);
+    sys_lcd_fill_rect(0, 20, 320, 2, COLOR_CYAN);
+    sys_draw_text(10, 6, "CYBER TETRIS EXT", COLOR_CYAN, COLOR_PANEL_BG, 1);
+    sys_draw_text(196, 6, "ESC/B: EXIT", COLOR_WHITE, COLOR_PANEL_BG, 1);
+
+    /* Playfield border (100x200 px inside) */
+    sys_lcd_fill_rect(BOARD_X - 2, BOARD_Y - 2, GRID_COLS * CELL_SIZE + 4, 2, COLOR_CYAN);
+    sys_lcd_fill_rect(BOARD_X - 2, BOARD_Y + GRID_ROWS * CELL_SIZE, GRID_COLS * CELL_SIZE + 4, 2, COLOR_CYAN);
+    sys_lcd_fill_rect(BOARD_X - 2, BOARD_Y, 2, GRID_ROWS * CELL_SIZE, COLOR_CYAN);
+    sys_lcd_fill_rect(BOARD_X + GRID_COLS * CELL_SIZE, BOARD_Y, 2, GRID_ROWS * CELL_SIZE, COLOR_CYAN);
+
+    /* Right Sidebar Panel */
+    sys_lcd_fill_rect(180, 28, 124, 200, COLOR_PANEL_BG);
+    sys_draw_text(190, 36, "NEXT:", COLOR_WHITE, COLOR_PANEL_BG, 1);
+    sys_draw_text(190, 112, "SCORE:", COLOR_WHITE, COLOR_PANEL_BG, 1);
+    sys_draw_text(190, 148, "LINES:", COLOR_WHITE, COLOR_PANEL_BG, 1);
+    sys_draw_text(190, 184, "BEST:", COLOR_WHITE, COLOR_PANEL_BG, 1);
+}
 
 __attribute__((section(".text.entry"))) void _start(void)
 {
-    const uint16_t COL_BG       = COLOR_CYBER_BG;
-    const uint16_t COL_BORDER   = COLOR_MAGENTA;
-    const uint16_t COL_TEXT_FG  = COLOR_MINT;
-    const uint16_t COL_BEST_FG  = COLOR_GOLD;
-    const uint16_t COL_HINT_FG  = RGB565(140, 150, 190);
-    const uint16_t COL_GAMEOVER = COLOR_RED;
+    sdk_memset(g_tetris, 0, sizeof(Tetris_State_t));
+    g_tetris->rng_state = sys_get_tick() ^ 0xCAFEBABEUL;
 
-    uint32_t best_score = 0;
-    bool new_record_dirty = false;
+    /* Load saved high score */
+    (void)sys_load_state("tetris.sav", &g_tetris->best_score, sizeof(uint32_t));
 
-    /* Load saved high score from /saves/tetris.sav on SD card */
-    (void)sys_load_state(SAVE_FILE_NAME, &best_score, sizeof(best_score));
+    draw_static_ui();
+    redraw_board();
+    update_sidebar_stats();
 
-    /* Clear screen and draw static layout */
-    sys_clear_screen(COL_BG);
+    /* Wait for release of menu launch button */
+    while (sys_get_keys() & (KEY_A | KEY_EXIT))
+    {
+        sys_delay_ms(10);
+    }
 
-    /* Playfield border frame */
-    sys_lcd_fill_rect(BOARD_X_OFF - 2, BOARD_Y_OFF - 2, BOARD_COLS * BLOCK_SIZE + 4, 2, COL_BORDER);
-    sys_lcd_fill_rect(BOARD_X_OFF - 2, BOARD_Y_OFF + BOARD_ROWS * BLOCK_SIZE, BOARD_COLS * BLOCK_SIZE + 4, 2, COL_BORDER);
-    sys_lcd_fill_rect(BOARD_X_OFF - 2, BOARD_Y_OFF - 2, 2, BOARD_ROWS * BLOCK_SIZE + 4, COL_BORDER);
-    sys_lcd_fill_rect(BOARD_X_OFF + BOARD_COLS * BLOCK_SIZE, BOARD_Y_OFF - 2, 2, BOARD_ROWS * BLOCK_SIZE + 4, COL_BORDER);
+    bool     game_started = false;
+    uint32_t prev_keys    = 0;
 
-    /* Left Panel: Labels */
-    sys_draw_text(10, 20,  "SCORE", COL_TEXT_FG, COL_BG, 1);
-    sys_draw_text(10, 70,  "BEST",  COL_BEST_FG, COL_BG, 1);
-    sys_draw_text(10, 120, "LINES", COL_TEXT_FG, COL_BG, 1);
-    sys_draw_text(10, 170, "LEVEL", COL_TEXT_FG, COL_BG, 1);
+    /* Show Start Prompt inside board */
+    sys_draw_text(BOARD_X + 14, 100, "PRESS A", COLOR_AMBER, COLOR_DARK_BG, 1);
+    sys_draw_text(BOARD_X + 11, 114, "OR SPACE", COLOR_AMBER, COLOR_DARK_BG, 1);
+    sys_draw_text(BOARD_X + 11, 128, "TO START", COLOR_WHITE, COLOR_DARK_BG, 1);
 
-    /* Right Panel: Next Piece Box & Controls */
-    sys_draw_text(230, 22, "NEXT", COL_TEXT_FG, COL_BG, 1);
-    sys_lcd_fill_rect(226, 36, 58, 50, COL_BORDER);
-    sys_lcd_fill_rect(228, 38, 54, 46, COL_BG);
+    uint8_t cur_type  = next_random_piece();
+    uint8_t next_type = next_random_piece();
+    uint8_t cur_rot   = 0;
+    int16_t cur_x     = 3;
+    int16_t cur_y     = 0;
 
-    sys_draw_text(224, 110, "A/UP:ROT",  COL_HINT_FG, COL_BG, 1);
-    sys_draw_text(224, 126, "DN:SOFT",   COL_HINT_FG, COL_BG, 1);
-    sys_draw_text(224, 142, "X:DROP",    COL_HINT_FG, COL_BG, 1);
-    sys_draw_text(224, 158, "B:EXIT",    COL_HINT_FG, COL_BG, 1);
+    draw_next_preview(next_type);
+
+    uint32_t last_fall_tick = sys_get_tick();
+    uint32_t last_move_tick = sys_get_tick();
 
     for (;;)
     {
-        /* Clear Board Data */
-        memset(board, 0, sizeof(board));
-        redraw_board(COL_BG);
+        uint32_t now          = sys_get_tick();
+        uint32_t keys         = sys_get_keys();
+        uint32_t just_pressed = keys & ~prev_keys;
+        prev_keys             = keys;
 
-        uint32_t score = 0;
-        uint32_t lines = 0;
-        uint32_t level = 1;
-
-        sys_draw_number_padded(10, 35,  score,      COL_TEXT_FG, COL_BG, 2, 6);
-        sys_draw_number_padded(10, 85,  best_score, COL_BEST_FG, COL_BG, 2, 6);
-        sys_draw_number_padded(10, 135, lines,      COL_TEXT_FG, COL_BG, 2, 4);
-        sys_draw_number_padded(10, 185, level,      COL_TEXT_FG, COL_BG, 2, 2);
-
-        rng_state ^= sys_get_tick();
-        uint8_t cur_type  = get_random_piece();
-        uint8_t next_type = get_random_piece();
-        draw_next_preview(next_type, COL_BG);
-
-        int cur_x = 3;
-        int cur_y = 0;
-        uint8_t cur_rot = 0;
-
-        render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
-
-        uint32_t last_fall_tick = sys_get_tick();
-        uint32_t fall_delay     = 500;
-
-        SDK_InputTracker_t input_trk = {0};
-        bool game_over = false;
-
-        sys_beep(30);
-
-        while (!game_over)
+        /* Exit on ESC (Keyboard) or 'B' (Gamepad) */
+        if (just_pressed & KEY_EXIT)
         {
-            uint32_t now  = sys_get_tick();
-            uint32_t keys = sys_get_keys();
-
-            if (keys & KEY_EXIT)
+            if (g_tetris->score >= g_tetris->best_score && g_tetris->best_score > 0U)
             {
-                if (new_record_dirty)
-                {
-                    (void)sys_save_state(SAVE_FILE_NAME, &best_score, sizeof(best_score));
-                }
-                sys_exit();
-                return;
+                (void)sys_save_state("tetris.sav", &g_tetris->best_score, sizeof(uint32_t));
             }
+            sys_exit();
+            return;
+        }
 
-            uint32_t pressed_edge = sdk_input_poll_edges(&input_trk, keys);
-
-            bool move_left  = ((pressed_edge & KEY_LEFT) != 0U);
-            bool move_right = ((pressed_edge & KEY_RIGHT) != 0U);
-            bool rotate     = ((pressed_edge & (KEY_UP | KEY_A)) != 0U);
-            bool soft_drop  = ((keys & KEY_DOWN) != 0U);
-            bool hard_drop  = ((pressed_edge & KEY_B) != 0U);
-
-            /* Auto-repeat when holding Left/Right */
-            if (pressed_edge & (KEY_LEFT | KEY_RIGHT))
+        /* Waiting for user to press A or SPACE to start */
+        if (!game_started)
+        {
+            if (just_pressed & (KEY_A | KEY_UP))
             {
-                input_trk.last_repeat_tick = now + 180U; /* Initial delay before repeat */
-            }
-            else if ((keys & (KEY_LEFT | KEY_RIGHT)) && (now >= input_trk.last_repeat_tick))
-            {
-                if (keys & KEY_LEFT)  move_left  = true;
-                if (keys & KEY_RIGHT) move_right = true;
-                input_trk.last_repeat_tick = now + 85U;  /* Repeat rate */
-            }
+                sdk_memset(g_tetris->board, 0, sizeof(g_tetris->board));
+                g_tetris->score = 0;
+                g_tetris->lines = 0;
+                redraw_board();
+                update_sidebar_stats();
 
-            /* 1. Horizontal Movement */
-            if (move_left && !check_collision(cur_type, cur_rot, cur_x - 1, cur_y))
-            {
-                render_active_piece(cur_type, cur_rot, cur_x, cur_y, true, COL_BG);
-                cur_x--;
-                render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
-                sys_beep(4);
-            }
-            if (move_right && !check_collision(cur_type, cur_rot, cur_x + 1, cur_y))
-            {
-                render_active_piece(cur_type, cur_rot, cur_x, cur_y, true, COL_BG);
-                cur_x++;
-                render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
-                sys_beep(4);
-            }
+                cur_type  = next_random_piece();
+                next_type = next_random_piece();
+                cur_rot   = 0;
+                cur_x     = 3;
+                cur_y     = 0;
+                draw_next_preview(next_type);
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, cur_type + 1U);
 
-            /* 2. Rotation with Wall-Kick */
-            if (rotate)
-            {
-                uint8_t new_rot = (cur_rot + 1U) & 3U;
-                int kick_dx = 0;
-                bool can_rot = false;
-
-                if (!check_collision(cur_type, new_rot, cur_x, cur_y))
-                {
-                    can_rot = true;
-                }
-                else if (!check_collision(cur_type, new_rot, cur_x - 1, cur_y))
-                {
-                    kick_dx = -1;
-                    can_rot = true;
-                }
-                else if (!check_collision(cur_type, new_rot, cur_x + 1, cur_y))
-                {
-                    kick_dx = 1;
-                    can_rot = true;
-                }
-
-                if (can_rot)
-                {
-                    render_active_piece(cur_type, cur_rot, cur_x, cur_y, true, COL_BG);
-                    cur_x  += kick_dx;
-                    cur_rot = new_rot;
-                    render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
-                    sys_beep(8);
-                }
-            }
-
-            /* 3. Hard Drop (Button X on Gamepad) */
-            if (hard_drop)
-            {
-                render_active_piece(cur_type, cur_rot, cur_x, cur_y, true, COL_BG);
-                while (!check_collision(cur_type, cur_rot, cur_x, cur_y + 1))
-                {
-                    cur_y++;
-                    score += 2U;
-                }
-                render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
-                sys_beep(25);
-                last_fall_tick = 0U; /* Force immediate lock on this frame */
-            }
-
-            uint32_t current_delay = soft_drop ? 45U : fall_delay;
-
-            /* 4. Gravity Step */
-            if ((now - last_fall_tick) >= current_delay)
-            {
+                game_started   = true;
                 last_fall_tick = now;
+                sys_beep(20);
+            }
+            sys_delay_ms(16);
+            continue;
+        }
 
-                if (!check_collision(cur_type, cur_rot, cur_x, cur_y + 1))
+        /* 1. Handle Horizontal Movement (with 110ms auto-repeat) */
+        if ((just_pressed & (KEY_LEFT | KEY_RIGHT)) ||
+            ((keys & (KEY_LEFT | KEY_RIGHT)) && (now - last_move_tick) >= 110U))
+        {
+            int16_t dx = (keys & KEY_LEFT) ? -1 : 1;
+            if (!check_collision(cur_x + dx, cur_y, cur_type, cur_rot))
+            {
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, 0U);
+                cur_x += dx;
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, cur_type + 1U);
+            }
+            last_move_tick = now;
+        }
+
+        /* 2. Handle Rotation (Up Arrow, Spacebar, Enter, or Gamepad 'A') */
+        if (just_pressed & (KEY_A | KEY_UP))
+        {
+            uint8_t next_rot = (cur_rot + 1U) & 3U;
+            if (!check_collision(cur_x, cur_y, cur_type, next_rot))
+            {
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, 0U);
+                cur_rot = next_rot;
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, cur_type + 1U);
+                sys_beep(8);
+            }
+        }
+
+        /* 3. Handle Hard Drop (Gamepad 'X' or Keyboard 'X'/'Z') */
+        if (just_pressed & KEY_B)
+        {
+            draw_piece(cur_x, cur_y, cur_type, cur_rot, 0U);
+            while (!check_collision(cur_x, cur_y + 1, cur_type, cur_rot))
+            {
+                cur_y++;
+            }
+            draw_piece(cur_x, cur_y, cur_type, cur_rot, cur_type + 1U);
+            last_fall_tick = now - 1000U; /* Trigger immediate lock */
+        }
+
+        /* 4. Gravity & Soft Drop (Down Arrow / D-Pad Down) */
+        uint32_t fall_interval = (keys & KEY_DOWN) ? 55U : 450U;
+        if ((now - last_fall_tick) >= fall_interval)
+        {
+            last_fall_tick = now;
+
+            if (!check_collision(cur_x, cur_y + 1, cur_type, cur_rot))
+            {
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, 0U);
+                cur_y++;
+                draw_piece(cur_x, cur_y, cur_type, cur_rot, cur_type + 1U);
+            }
+            else
+            {
+                /* Lock piece into board */
+                uint16_t mask = s_shapes[cur_type][cur_rot & 3U];
+                for (int16_t r = 0; r < 4; r++)
                 {
-                    render_active_piece(cur_type, cur_rot, cur_x, cur_y, true, COL_BG);
-                    cur_y++;
-                    render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
-                    if (soft_drop)
+                    for (int16_t c = 0; c < 4; c++)
                     {
-                        score += 1U;
+                        if (mask & (0x8000U >> (r * 4 + c)))
+                        {
+                            int16_t gx = cur_x + c;
+                            int16_t gy = cur_y + r;
+                            if (gx >= 0 && gx < GRID_COLS && gy >= 0 && gy < GRID_ROWS)
+                            {
+                                g_tetris->board[gy][gx] = cur_type + 1U;
+                            }
+                        }
                     }
+                }
+                sys_beep(12);
+
+                /* Check for completed lines */
+                uint8_t cleared = 0;
+                for (int16_t r = GRID_ROWS - 1; r >= 0; r--)
+                {
+                    bool full = true;
+                    for (int16_t c = 0; c < GRID_COLS; c++)
+                    {
+                        if (g_tetris->board[r][c] == 0U)
+                        {
+                            full = false;
+                            break;
+                        }
+                    }
+                    if (full)
+                    {
+                        cleared++;
+                        for (int16_t rr = r; rr > 0; rr--)
+                        {
+                            for (int16_t c = 0; c < GRID_COLS; c++)
+                            {
+                                g_tetris->board[rr][c] = g_tetris->board[rr - 1][c];
+                            }
+                        }
+                        for (int16_t c = 0; c < GRID_COLS; c++)
+                        {
+                            g_tetris->board[0][c] = 0U;
+                        }
+                        r++; /* Re-check shifted row */
+                    }
+                }
+
+                if (cleared > 0U)
+                {
+                    g_tetris->lines += cleared;
+                    g_tetris->score += (uint32_t)cleared * (uint32_t)cleared * 100U;
+                    if (g_tetris->score > g_tetris->best_score)
+                    {
+                        g_tetris->best_score = g_tetris->score;
+                    }
+                    redraw_board();
+                    sys_beep(45);
                 }
                 else
                 {
-                    /* Lock Piece into board */
-                    for (int r = 0; r < 4; r++)
+                    g_tetris->score += 10U;
+                    if (g_tetris->score > g_tetris->best_score)
                     {
-                        for (int c = 0; c < 4; c++)
-                        {
-                            if (test_piece_block(cur_type, cur_rot, r, c))
-                            {
-                                int bx = cur_x + c;
-                                int by = cur_y + r;
-                                if (by >= 0 && by < BOARD_ROWS && bx >= 0 && bx < BOARD_COLS)
-                                {
-                                    board[by][bx] = (uint8_t)(cur_type + 1U);
-                                }
-                            }
-                        }
-                    }
-
-                    sys_beep(12);
-
-                    /* 5. Check Full Lines */
-                    uint32_t cleared_in_step = 0;
-                    for (int r = BOARD_ROWS - 1; r >= 0; r--)
-                    {
-                        bool full = true;
-                        for (int c = 0; c < BOARD_COLS; c++)
-                        {
-                            if (board[r][c] == 0)
-                            {
-                                full = false;
-                                break;
-                            }
-                        }
-
-                        if (full)
-                        {
-                            cleared_in_step++;
-                            /* White flash bar on cleared line */
-                            sys_lcd_fill_rect(BOARD_X_OFF,
-                                              (uint16_t)(BOARD_Y_OFF + r * BLOCK_SIZE),
-                                              BOARD_COLS * BLOCK_SIZE,
-                                              BLOCK_SIZE,
-                                              COLOR_WHITE);
-                        }
-                    }
-
-                    if (cleared_in_step > 0U)
-                    {
-                        sys_beep(65);
-                        sys_led_toggle(0);
-                        sys_delay_ms(90);
-
-                        /* Collapse cleared rows */
-                        for (int r = BOARD_ROWS - 1; r >= 0; r--)
-                        {
-                            bool full = true;
-                            for (int c = 0; c < BOARD_COLS; c++)
-                            {
-                                if (board[r][c] == 0) { full = false; break; }
-                            }
-
-                            if (full)
-                            {
-                                for (int move_r = r; move_r > 0; move_r--)
-                                {
-                                    for (int c = 0; c < BOARD_COLS; c++)
-                                    {
-                                        board[move_r][c] = board[move_r - 1][c];
-                                    }
-                                }
-                                for (int c = 0; c < BOARD_COLS; c++)
-                                {
-                                    board[0][c] = 0;
-                                }
-                                r++; /* Re-check shifted row */
-                            }
-                        }
-
-                        redraw_board(COL_BG);
-
-                        lines += cleared_in_step;
-                        if (cleared_in_step == 1U)      score += 100U * level;
-                        else if (cleared_in_step == 2U) score += 300U * level;
-                        else if (cleared_in_step == 3U) score += 500U * level;
-                        else                            score += 800U * level;
-
-                        level = (lines / 10U) + 1U;
-                        fall_delay = (level > 10U) ? 90U : (500U - (level - 1U) * 40U);
-                    }
-
-                    if (score > best_score)
-                    {
-                        best_score = score;
-                        new_record_dirty = true;
-                    }
-
-                    /* Update HUD numbers */
-                    sys_draw_number_padded(10, 35,  score,      COL_TEXT_FG, COL_BG, 2, 6);
-                    sys_draw_number_padded(10, 85,  best_score, COL_BEST_FG, COL_BG, 2, 6);
-                    sys_draw_number_padded(10, 135, lines,      COL_TEXT_FG, COL_BG, 2, 4);
-                    sys_draw_number_padded(10, 185, level,      COL_TEXT_FG, COL_BG, 2, 2);
-
-                    /* Spawn Next Piece */
-                    cur_type  = next_type;
-                    next_type = get_random_piece();
-                    draw_next_preview(next_type, COL_BG);
-
-                    cur_x   = 3;
-                    cur_y   = 0;
-                    cur_rot = 0;
-
-                    if (check_collision(cur_type, cur_rot, cur_x, cur_y))
-                    {
-                        game_over = true;
-                    }
-                    else
-                    {
-                        render_active_piece(cur_type, cur_rot, cur_x, cur_y, false, COL_BG);
+                        g_tetris->best_score = g_tetris->score;
                     }
                 }
+                update_sidebar_stats();
+
+                /* Spawn next piece */
+                cur_type  = next_type;
+                next_type = next_random_piece();
+                cur_rot   = 0;
+                cur_x     = 3;
+                cur_y     = 0;
+                draw_next_preview(next_type);
+
+                /* Check Game Over */
+                if (check_collision(cur_x, cur_y, cur_type, cur_rot))
+                {
+                    sys_beep(120);
+                    (void)sys_save_state("tetris.sav", &g_tetris->best_score, sizeof(uint32_t));
+
+                    sys_lcd_fill_rect(BOARD_X + 6, 90, 88, 54, COLOR_PANEL_BG);
+                    sys_draw_text(BOARD_X + 20, 98, "GAME OVER", COLOR_RED, COLOR_PANEL_BG, 1);
+                    sys_draw_text(BOARD_X + 14, 114, "PRESS A OR", COLOR_AMBER, COLOR_PANEL_BG, 1);
+                    sys_draw_text(BOARD_X + 11, 126, "SPACE AGAIN", COLOR_AMBER, COLOR_PANEL_BG, 1);
+                    game_started = false;
+                }
+                else
+                {
+                    draw_piece(cur_x, cur_y, cur_type, cur_rot, cur_type + 1U);
+                }
             }
-
-            sys_delay_ms(16);
         }
 
-        /* Game Over Sequence */
-        sys_beep(160);
-        if (new_record_dirty)
-        {
-            (void)sys_save_state(SAVE_FILE_NAME, &best_score, sizeof(best_score));
-            new_record_dirty = false;
-        }
-
-        sys_lcd_fill_rect(BOARD_X_OFF + 4, 102, 92, 28, COL_BG);
-        sys_draw_text(BOARD_X_OFF + 20, 106, "GAME", COL_GAMEOVER, COL_BG, 2);
-        sys_draw_text(BOARD_X_OFF + 20, 122, "OVER", COL_GAMEOVER, COL_BG, 2);
-        sys_delay_ms(1500);
+        sys_delay_ms(16);
     }
 }

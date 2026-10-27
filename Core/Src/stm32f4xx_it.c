@@ -120,7 +120,9 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  (void)cfsr; (void)mmfar;
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {

@@ -183,6 +183,30 @@ static bool is_key_in_report(hid_keyboard_report_t const *report, uint8_t keycod
     return false;
 }
 
+uint32_t USBHostManager_GetKeyboardGameMask(void)
+{
+    if (!is_kbd_ready)
+    {
+        return 0U;
+    }
+
+    uint32_t mask = 0U;
+    for (uint8_t i = 0; i < 6U; i++)
+    {
+        uint8_t kc = prev_kbd_report.keycode[i];
+        if (kc == 0U) continue;
+
+        if (kc == 0x50U || kc == 0x04U) mask |= APP_KEY_LEFT;  /* Left Arrow  or 'A' */
+        if (kc == 0x4FU || kc == 0x07U) mask |= APP_KEY_RIGHT; /* Right Arrow or 'D' */
+        if (kc == 0x52U || kc == 0x1AU) mask |= APP_KEY_UP;    /* Up Arrow    or 'W' */
+        if (kc == 0x51U || kc == 0x16U) mask |= APP_KEY_DOWN;  /* Down Arrow  or 'S' */
+        if (kc == 0x2CU || kc == 0x28U) mask |= APP_KEY_A;     /* Spacebar or Enter -> Start / Rotate */
+        if (kc == 0x1BU || kc == 0x1DU) mask |= APP_KEY_B;     /* 'X' or 'Z' -> Secondary / Hard Drop */
+        if (kc == 0x29U)                mask |= APP_KEY_EXIT;  /* ESC -> Exit game */
+    }
+    return mask;
+}
+
 static void Parse_Keyboard_Report(uint8_t const *buf, uint16_t len)
 {
     if (len < sizeof(hid_keyboard_report_t)) return;

@@ -1,204 +1,304 @@
 #include "console_sdk.h"
 
+/* =========================================================================
+ * Cyber-Pong & Arkanoid Extended (SRAM Application for STM32 Console)
+ * ========================================================================= */
+
+#define PADDLE_W        64
+#define PADDLE_H        8
+#define PADDLE_Y        218
+#define BALL_SIZE       8
+
+/* Brick Grid: 4 rows x 8 columns inside the arena (x: 6..313) */
 #define BRICK_ROWS      4
 #define BRICK_COLS      8
-#define BRICK_W         36
-#define BRICK_H         10
+#define BRICK_W         35
+#define BRICK_H         9
 #define BRICK_GAP_X     3
 #define BRICK_GAP_Y     3
-#define BRICK_START_X   5
-#define BRICK_START_Y   35
+#define BRICK_START_X   9
+#define BRICK_START_Y   32
 
-#define SAVE_FILE_NAME  "pong.sav"
+/* Store brick grid in External SRAM Sandbox (0x68080000) */
+typedef struct {
+    uint8_t  bricks[BRICK_ROWS][BRICK_COLS];
+    uint8_t  active_bricks;
+} Pong_State_t;
 
-static void update_score_display(uint32_t current_score, uint32_t best_score,
-                                 uint16_t fg_score, uint16_t fg_best, uint16_t bg)
+#define g_pong ((Pong_State_t *)SDK_EXT_RAM_BASE_ADDR)
+
+static const uint16_t s_brick_colors[BRICK_ROWS] = {
+    COLOR_MAGENTA,    /* Row 0 (Top):    4 pts */
+    COLOR_RED,        /* Row 1:          3 pts */
+    COLOR_AMBER,      /* Row 2:          2 pts */
+    COLOR_CYAN        /* Row 3 (Bottom): 1 pt  */
+};
+
+static void draw_hud(uint32_t score, uint32_t best)
 {
-    sys_draw_number_padded(80,  8, current_score, fg_score, bg, 2, 4);
-    sys_draw_number_padded(240, 8, best_score,    fg_best,  bg, 2, 4);
+    char buf[16];
+    sys_draw_text(10, 6, "ARKANOID", COLOR_CYAN, COLOR_PANEL_BG, 1);
+
+    sys_draw_text(104, 6, "SCORE:", COLOR_WHITE, COLOR_PANEL_BG, 1);
+    sdk_uint_to_str(score, buf, 4);
+    sys_draw_text(146, 6, buf, COLOR_NEON_GREEN, COLOR_PANEL_BG, 1);
+
+    sys_draw_text(204, 6, "BEST:", COLOR_WHITE, COLOR_PANEL_BG, 1);
+    sdk_uint_to_str(best, buf, 4);
+    sys_draw_text(240, 6, buf, COLOR_AMBER, COLOR_PANEL_BG, 1);
+}
+
+static void respawn_bricks(void)
+{
+    g_pong->active_bricks = 0;
+    for (uint8_t r = 0; r < BRICK_ROWS; r++)
+    {
+        uint16_t by  = (uint16_t)(BRICK_START_Y + r * (BRICK_H + BRICK_GAP_Y));
+        uint16_t col = s_brick_colors[r];
+
+        for (uint8_t c = 0; c < BRICK_COLS; c++)
+        {
+            g_pong->bricks[r][c] = 1U;
+            g_pong->active_bricks++;
+            uint16_t bx = (uint16_t)(BRICK_START_X + c * (BRICK_W + BRICK_GAP_X));
+            sys_lcd_fill_rect(bx, by, BRICK_W, BRICK_H, col);
+        }
+    }
 }
 
 __attribute__((section(".text.entry"))) void _start(void)
 {
-    const uint16_t COL_BG       = COLOR_CYBER_BG;
-    const uint16_t COL_BORDER   = COLOR_MAGENTA;
-    const uint16_t COL_PADDLE   = COLOR_MINT;
-    const uint16_t COL_BALL     = COLOR_GOLD;
-    const uint16_t COL_SCORE_FG = RGB565(0, 255, 128);
-    const uint16_t COL_BEST_FG  = COLOR_GOLD;
-    const uint16_t COL_GAMEOVER = COLOR_RED;
+    sdk_memset(g_pong, 0, sizeof(Pong_State_t));
 
-    const uint16_t brick_colors[BRICK_ROWS] = {
-        RGB565(255, 0, 100),
-        RGB565(255, 120, 0),
-        RGB565(255, 220, 0),
-        RGB565(0, 230, 255)
-    };
+    int16_t  paddle_x      = 128;
+    int16_t  prev_paddle_x = 128;
+    int16_t  ball_x        = 156;
+    int16_t  ball_y        = PADDLE_Y - BALL_SIZE - 2;
+    int16_t  prev_ball_x   = 156;
+    int16_t  prev_ball_y   = PADDLE_Y - BALL_SIZE - 2;
+    int16_t  vx            = 3;
+    int16_t  vy            = -3;
+    uint32_t score         = 0;
+    uint32_t best          = 0;
+    bool     ball_active   = false;
 
-    uint32_t best_score    = 0;
-    uint32_t current_score = 0;
+    /* Load saved high score from /saves/pong.sav if available */
+    (void)sys_load_state("pong.sav", &best, sizeof(best));
 
-    /* Load persisted high score from SD card (/saves/pong.sav) */
-    (void)sys_load_state(SAVE_FILE_NAME, &best_score, sizeof(best_score));
+    /* 1. Draw Static Arena */
+    sys_clear_screen(COLOR_DARK_BG);
+    sys_lcd_fill_rect(0, 0, 320, 20, COLOR_PANEL_BG);
+    sys_lcd_fill_rect(0, 20, 320, 2, COLOR_CYAN);
+    sys_lcd_fill_rect(0, 22, 4, 218, COLOR_CYAN);
+    sys_lcd_fill_rect(316, 22, 4, 218, COLOR_CYAN);
 
-    uint8_t bricks[BRICK_ROWS][BRICK_COLS];
-    uint8_t active_bricks_count = 0;
+    draw_hud(score, best);
+    respawn_bricks();
 
-    int16_t paddle_x = 125, prev_paddle_x = 125;
-    int16_t ball_x   = 154, ball_y   = 110;
-    int16_t prev_bx  = 154, prev_by  = 110;
-    int16_t vx       = 3,   vy       = 3;
+    /* Show launch prompt in center (below bricks) */
+    sys_draw_text(64, 130, "PRESS A OR SPACE TO START", COLOR_AMBER, COLOR_DARK_BG, 1);
+    sys_draw_text(76, 146, "ARROWS / PAD TO MOVE", COLOR_WHITE, COLOR_DARK_BG, 1);
 
-    #define RESPAWN_BRICKS() do { \
-        active_bricks_count = 0; \
-        for (uint8_t r = 0; r < BRICK_ROWS; r++) { \
-            for (uint8_t c = 0; c < BRICK_COLS; c++) { \
-                bricks[r][c] = 1; \
-                active_bricks_count++; \
-                uint16_t bx = BRICK_START_X + c * (BRICK_W + BRICK_GAP_X); \
-                uint16_t by = BRICK_START_Y + r * (BRICK_H + BRICK_GAP_Y); \
-                sys_lcd_fill_rect(bx, by, BRICK_W, BRICK_H, brick_colors[r]); \
-            } \
-        } \
-    } while(0)
+    /* Wait until user releases the 'A' / 'Enter' key that launched the app from menu */
+    while (sys_get_keys() & (KEY_A | KEY_EXIT))
+    {
+        sys_delay_ms(10);
+    }
 
-    sys_clear_screen(COL_BG);
-    sys_lcd_fill_rect(0, 0, 320, 4, COL_BORDER);
-    sys_lcd_fill_rect(0, 26, 320, 2, COL_BORDER);
-
-    sys_draw_text(8,   8, "SCORE:", COL_SCORE_FG, COL_BG, 2);
-    sys_draw_text(168, 8, "BEST:",  COL_BEST_FG,  COL_BG, 2);
-    update_score_display(current_score, best_score, COL_SCORE_FG, COL_BEST_FG, COL_BG);
-
-    RESPAWN_BRICKS();
-    sys_lcd_fill_rect((uint16_t)paddle_x, 220, 70, 10, COL_PADDLE);
-    sys_beep(30);
-
-    bool new_record_dirty = false;
+    uint32_t prev_keys = 0;
 
     for (;;)
     {
         uint32_t keys = sys_get_keys();
-        if (keys & KEY_EXIT)
+        uint32_t just_pressed = keys & ~prev_keys;
+        prev_keys = keys;
+
+        /* Exit on ESC (Keyboard), 'B' (Gamepad), or KEY_3 (Board) */
+        if (just_pressed & KEY_EXIT)
         {
-            if (new_record_dirty)
+            if (score >= best && best > 0U)
             {
-                (void)sys_save_state(SAVE_FILE_NAME, &best_score, sizeof(best_score));
+                (void)sys_save_state("pong.sav", &best, sizeof(best));
             }
             sys_exit();
             return;
         }
 
+        /* Move paddle left/right */
         if (keys & KEY_LEFT)  paddle_x -= 6;
         if (keys & KEY_RIGHT) paddle_x += 6;
-        if (paddle_x < 4)     paddle_x = 4;
-        if (paddle_x > 246)   paddle_x = 246;
 
-        if (paddle_x != prev_paddle_x)
+        if (paddle_x < 6)                paddle_x = 6;
+        if (paddle_x > 314 - PADDLE_W)   paddle_x = 314 - PADDLE_W;
+
+        /* Launch ball when waiting and player presses 'A' or SPACE */
+        if (!ball_active)
         {
-            sys_lcd_fill_rect((uint16_t)prev_paddle_x, 220, 70, 10, COL_BG);
-            sys_lcd_fill_rect((uint16_t)paddle_x,      220, 70, 10, COL_PADDLE);
-            prev_paddle_x = paddle_x;
-        }
+            ball_x = paddle_x + (PADDLE_W / 2) - (BALL_SIZE / 2);
+            ball_y = PADDLE_Y - BALL_SIZE - 2;
 
-        sys_lcd_fill_rect((uint16_t)prev_bx, (uint16_t)prev_by, 10, 10, COL_BG);
-
-        ball_x += vx;
-        ball_y += vy;
-
-        if (ball_x <= 4)        { ball_x = 4;   vx = -vx; sys_beep(10); }
-        else if (ball_x >= 306) { ball_x = 306; vx = -vx; sys_beep(10); }
-        if (ball_y <= 30)       { ball_y = 30;  vy = -vy; sys_beep(10); }
-
-        if (ball_y >= (BRICK_START_Y - 10) && ball_y <= (BRICK_START_Y + BRICK_ROWS * (BRICK_H + BRICK_GAP_Y)))
-        {
-            for (uint8_t r = 0; r < BRICK_ROWS; r++)
+            if (just_pressed & KEY_A)
             {
-                uint16_t by = BRICK_START_Y + r * (BRICK_H + BRICK_GAP_Y);
-                if (ball_y + 10 >= by && ball_y <= by + BRICK_H)
+                /* Erase start prompt */
+                sys_lcd_fill_rect(50, 126, 220, 32, COLOR_DARK_BG);
+                ball_active = true;
+                vy = (vy > 0) ? -vy : vy;
+                if (vy == 0) vy = -3;
+                sys_beep(20);
+            }
+        }
+        else
+        {
+            /* Erase old ball before moving so brick redraws stay clean */
+            sys_lcd_fill_rect((uint16_t)prev_ball_x, (uint16_t)prev_ball_y, BALL_SIZE, BALL_SIZE, COLOR_DARK_BG);
+
+            /* Update Ball Physics */
+            ball_x += vx;
+            ball_y += vy;
+
+            /* Bounce Left / Right walls */
+            if (ball_x <= 6)
+            {
+                ball_x = 6;
+                vx = -vx;
+                sys_beep(8);
+            }
+            else if (ball_x >= 314 - BALL_SIZE)
+            {
+                ball_x = 314 - BALL_SIZE;
+                vx = -vx;
+                sys_beep(8);
+            }
+
+            /* Bounce Top ceiling */
+            if (ball_y <= 24)
+            {
+                ball_y = 24;
+                vy = -vy;
+                sys_beep(8);
+            }
+
+            /* Brick Collision Check */
+            if (ball_y >= (BRICK_START_Y - BALL_SIZE) &&
+                ball_y <= (BRICK_START_Y + BRICK_ROWS * (BRICK_H + BRICK_GAP_Y)))
+            {
+                for (uint8_t r = 0; r < BRICK_ROWS; r++)
                 {
-                    for (uint8_t c = 0; c < BRICK_COLS; c++)
+                    int16_t by = (int16_t)(BRICK_START_Y + r * (BRICK_H + BRICK_GAP_Y));
+                    if ((ball_y + BALL_SIZE) >= by && ball_y <= (by + BRICK_H))
                     {
-                        if (bricks[r][c] == 1)
+                        for (uint8_t c = 0; c < BRICK_COLS; c++)
                         {
-                            uint16_t bx = BRICK_START_X + c * (BRICK_W + BRICK_GAP_X);
-                            if (ball_x + 10 >= bx && ball_x <= bx + BRICK_W)
+                            if (g_pong->bricks[r][c] != 0U)
                             {
-                                bricks[r][c] = 0;
-                                active_bricks_count--;
-                                sys_lcd_fill_rect(bx, by, BRICK_W, BRICK_H, COL_BG);
-                                vy = -vy;
-
-                                current_score += (uint32_t)(BRICK_ROWS - r);
-                                if (current_score > best_score)
+                                int16_t bx = (int16_t)(BRICK_START_X + c * (BRICK_W + BRICK_GAP_X));
+                                if ((ball_x + BALL_SIZE) >= bx && ball_x <= (bx + BRICK_W))
                                 {
-                                    best_score = current_score;
-                                    new_record_dirty = true;
-                                }
-                                update_score_display(current_score, best_score, COL_SCORE_FG, COL_BEST_FG, COL_BG);
+                                    /* Destroy brick */
+                                    g_pong->bricks[r][c] = 0U;
+                                    g_pong->active_bricks--;
+                                    sys_lcd_fill_rect((uint16_t)bx, (uint16_t)by, BRICK_W, BRICK_H, COLOR_DARK_BG);
 
-                                sys_beep(15);
-                                sys_led_toggle(0);
+                                    /* Reverse vertical velocity */
+                                    vy = -vy;
 
-                                if (active_bricks_count == 0)
-                                {
-                                    sys_beep(100);
-                                    sys_delay_ms(150);
-                                    RESPAWN_BRICKS();
+                                    /* Award points (top rows worth more!) */
+                                    score += (uint32_t)(BRICK_ROWS - r);
+                                    if (score > best)
+                                    {
+                                        best = score;
+                                    }
+                                    draw_hud(score, best);
+                                    sys_beep(15);
+                                    sys_led_toggle(0);
+
+                                    /* If all bricks cleared, respawn wave & speed up! */
+                                    if (g_pong->active_bricks == 0U)
+                                    {
+                                        sys_beep(90);
+                                        sys_delay_ms(120);
+                                        respawn_bricks();
+                                        /* Push ball below brick zone so it doesn't collide immediately */
+                                        ball_y = BRICK_START_Y + BRICK_ROWS * (BRICK_H + BRICK_GAP_Y) + 4;
+                                        vy = (vy < 0) ? -vy : vy;
+                                        if (vy < 5)
+                                        {
+                                            vy++;
+                                            vx = (vx > 0) ? (vx + 1) : (vx - 1);
+                                        }
+                                    }
+                                    goto brick_check_done;
                                 }
-                                goto brick_hit_done;
                             }
                         }
                     }
                 }
             }
-        }
-        brick_hit_done: ;
+            brick_check_done: ;
 
-        if (vy > 0 && ball_y >= 210 && ball_y <= 222)
-        {
-            if (ball_x + 10 >= paddle_x && ball_x <= paddle_x + 70)
+            /* Check Paddle Collision */
+            if (vy > 0 && (ball_y + BALL_SIZE) >= PADDLE_Y && ball_y <= (PADDLE_Y + PADDLE_H))
             {
-                ball_y = 209;
-                vy = -vy;
-                current_score++;
-                if (current_score > best_score)
+                if ((ball_x + BALL_SIZE) >= paddle_x && ball_x <= (paddle_x + PADDLE_W))
                 {
-                    best_score = current_score;
-                    new_record_dirty = true;
+                    ball_y = PADDLE_Y - BALL_SIZE - 1;
+                    vy = -vy;
+                    score++;
+                    if (score > best)
+                    {
+                        best = score;
+                    }
+                    sys_beep(15);
+                    sys_led_toggle(1);
+                    draw_hud(score, best);
                 }
-                update_score_display(current_score, best_score, COL_SCORE_FG, COL_BEST_FG, COL_BG);
-                sys_beep(20);
-                sys_led_toggle(1);
             }
-        }
 
-        if (ball_y > 228)
-        {
-            sys_beep(120);
-            if (new_record_dirty)
+            /* Ball missed paddle -> Game Over & Reset Bricks */
+            if (ball_y > 230)
             {
-                (void)sys_save_state(SAVE_FILE_NAME, &best_score, sizeof(best_score));
-                new_record_dirty = false;
+                sys_beep(100);
+                if (score >= best && best > 0U)
+                {
+                    (void)sys_save_state("pong.sav", &best, sizeof(best));
+                }
+
+                sys_draw_text(106, 130, "GAME OVER", COLOR_RED, COLOR_DARK_BG, 2);
+                sys_delay_ms(1000);
+                sys_lcd_fill_rect(90, 126, 140, 24, COLOR_DARK_BG);
+
+                score = 0;
+                vx    = 3;
+                vy    = -3;
+                draw_hud(score, best);
+                respawn_bricks();
+
+                ball_active = false;
+                ball_x = paddle_x + (PADDLE_W / 2) - (BALL_SIZE / 2);
+                ball_y = PADDLE_Y - BALL_SIZE - 2;
+                prev_ball_x = ball_x;
+                prev_ball_y = ball_y;
+
+                sys_draw_text(64, 130, "PRESS A OR SPACE TO START", COLOR_AMBER, COLOR_DARK_BG, 1);
             }
-
-            sys_draw_text(100, 120, "GAME OVER", COL_GAMEOVER, COL_BG, 2);
-            sys_delay_ms(1200);
-            sys_lcd_fill_rect(90, 115, 140, 30, COL_BG);
-
-            current_score = 0;
-            update_score_display(current_score, best_score, COL_SCORE_FG, COL_BEST_FG, COL_BG);
-            RESPAWN_BRICKS();
-
-            ball_x = 154;
-            ball_y = 110;
-            vx     = 3;
-            vy     = 3;
         }
 
-        sys_lcd_fill_rect((uint16_t)ball_x, (uint16_t)ball_y, 10, 10, COL_BALL);
-        prev_bx = ball_x;
-        prev_by = ball_y;
+        /* Erase old positions & draw new positions */
+        if (!ball_active && (prev_ball_x != ball_x || prev_ball_y != ball_y))
+        {
+            sys_lcd_fill_rect((uint16_t)prev_ball_x, (uint16_t)prev_ball_y, BALL_SIZE, BALL_SIZE, COLOR_DARK_BG);
+        }
+        if (prev_paddle_x != paddle_x)
+        {
+            sys_lcd_fill_rect((uint16_t)prev_paddle_x, PADDLE_Y, PADDLE_W, PADDLE_H, COLOR_DARK_BG);
+        }
+
+        sys_lcd_fill_rect((uint16_t)paddle_x, PADDLE_Y, PADDLE_W, PADDLE_H, COLOR_CYAN);
+        sys_lcd_fill_rect((uint16_t)ball_x, (uint16_t)ball_y, BALL_SIZE, BALL_SIZE, COLOR_AMBER);
+
+        prev_paddle_x = paddle_x;
+        prev_ball_x   = ball_x;
+        prev_ball_y   = ball_y;
 
         sys_delay_ms(16);
     }
