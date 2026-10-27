@@ -54,6 +54,7 @@ console_sdk_app(snake     "${CMAKE_SOURCE_DIR}/sdk_apps/snake.c")
 console_sdk_app(invaders  "${CMAKE_SOURCE_DIR}/sdk_apps/invaders.c")
 console_sdk_app(flappy    "${CMAKE_SOURCE_DIR}/sdk_apps/flappy.c")
 console_sdk_app(pacman    "${CMAKE_SOURCE_DIR}/sdk_apps/pacman.c")
+console_sdk_app(loderunner "${CMAKE_SOURCE_DIR}/sdk_apps/loderunner.c")
 
 # Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
 set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")
