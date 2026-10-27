@@ -1,3 +1,5 @@
+/* NOT USED BY THE BUILD: CMakeLists.txt links with linker/STM32F407ZG_console.ld.
+   This CubeMX-owned file may be regenerated freely. */
 /*
 ******************************************************************************
 **
