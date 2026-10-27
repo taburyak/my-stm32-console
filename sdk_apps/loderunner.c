@@ -526,19 +526,23 @@ static bool guard_standing_at(int8_t tx, int8_t ty)
 
 static bool has_support(int16_t px, int16_t py)
 {
-    int8_t cx = (int8_t)((px + TW / 2) / TW);
-    int8_t cy = (int8_t)(py / TH);
+    int8_t cx      = (int8_t)((px + TW / 2) / TW);
+    int8_t top_cy  = (int8_t)(py / TH);
+    int8_t foot_cy = (int8_t)((py + TH - 1) / TH);
 
-    /* On ladder anywhere */
-    if (tile_at(cx, cy) == T_LADDER) return true;
+    /* Supported if either top or bottom of the body is on a ladder */
+    if ((tile_at(cx, top_cy) == T_LADDER) || (tile_at(cx, foot_cy) == T_LADDER))
+    {
+        return true;
+    }
 
     /* Aligned vertically with floor / rope / ladder top */
     if ((py % TH) == 0)
     {
-        if (tile_at(cx, cy) == T_ROPE) return true;
-        uint8_t below = tile_at(cx, (int8_t)(cy + 1));
+        if (tile_at(cx, top_cy) == T_ROPE) return true;
+        uint8_t below = tile_at(cx, (int8_t)(top_cy + 1));
         if ((below == T_BRICK) || (below == T_SOLID) || (below == T_LADDER)) return true;
-        if ((below == T_HOLE) && guard_standing_at(cx, (int8_t)(cy + 1))) return true;
+        if ((below == T_HOLE) && guard_standing_at(cx, (int8_t)(top_cy + 1))) return true;
     }
     return false;
 }
@@ -552,9 +556,9 @@ static void try_dig(int8_t dir, uint32_t now)
 
     if ((tx < 0) || (tx >= MAP_W) || (ty >= MAP_H)) return;
 
-    /* Must have empty space above the brick to dig it, and brick must be T_BRICK */
+    /* Must not have solid brick/concrete/ladder blocking the laser above the target brick */
     uint8_t above = tile_at(tx, cy);
-    if ((above != T_EMPTY) && (above != T_HLAD)) return;
+    if ((above != T_EMPTY) && (above != T_HLAD) && (above != T_GOLD) && (above != T_HOLE)) return;
     if (tile_at(tx, ty) != T_BRICK) return;
 
     for (uint8_t i = 0; i < MAX_HOLES; i++)
@@ -577,6 +581,52 @@ static void try_dig(int8_t dir, uint32_t now)
                               5, TH, COLOR_AMBER);
             sound(s_snd_dig, 3);
             return;
+        }
+    }
+}
+
+static void reveal_escape_ladder(void)
+{
+    if (s_exit_open) return;
+    s_exit_open = true;
+    for (int8_t y = 0; y < MAP_H; y++)
+    {
+        for (int8_t x = 0; x < MAP_W; x++)
+        {
+            if (s_map[y][x] == T_HLAD)
+            {
+                s_map[y][x] = T_LADDER;
+                draw_tile(x, y);
+            }
+        }
+    }
+    sound(s_snd_open, 5);
+}
+
+static void check_gold_pickup(void)
+{
+    /* Check all tiles overlapped by player's bounding box (with 2px inner margin) */
+    int8_t x0 = (int8_t)((s_px + 2) / TW);
+    int8_t x1 = (int8_t)((s_px + TW - 3) / TW);
+    int8_t y0 = (int8_t)((s_py + 2) / TH);
+    int8_t y1 = (int8_t)((s_py + TH - 2) / TH);
+
+    for (int8_t ty = y0; ty <= y1; ty++)
+    {
+        for (int8_t tx = x0; tx <= x1; tx++)
+        {
+            if (tile_at(tx, ty) == T_GOLD)
+            {
+                s_map[ty][tx] = T_EMPTY;
+                draw_tile(tx, ty);
+                s_gold_left--;
+                add_score(250U);
+                sound(s_snd_gold, 3);
+                if (s_gold_left == 0U)
+                {
+                    reveal_escape_ladder();
+                }
+            }
         }
     }
 }
@@ -643,24 +693,6 @@ static void update_holes(uint32_t now)
     }
 }
 
-static void reveal_escape_ladder(void)
-{
-    if (s_exit_open) return;
-    s_exit_open = true;
-    for (int8_t y = 0; y < MAP_H; y++)
-    {
-        for (int8_t x = 0; x < MAP_W; x++)
-        {
-            if (s_map[y][x] == T_HLAD)
-            {
-                s_map[y][x] = T_LADDER;
-                draw_tile(x, y);
-            }
-        }
-    }
-    sound(s_snd_open, 5);
-}
-
 static void step_player(const SDK_Input_t *in, uint32_t now)
 {
     /* 1. Gravity when unsupported */
@@ -684,7 +716,7 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
             if ((s_py % TH) != 0)
             {
                 int8_t near_y = (int8_t)((s_py + TH / 2) / TH);
-                if (iabs16((int16_t)(s_py - near_y * TH)) <= 4)
+                if (iabs16((int16_t)(s_py - near_y * TH)) <= 5)
                 {
                     s_py = (int16_t)(near_y * TH);
                 }
@@ -704,12 +736,14 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
         }
 
         /* 3. Vertical movement (Ladders & Dropping from Rope) */
-        int8_t cx = (int8_t)((s_px + TW / 2) / TW);
-        int8_t cy = (int8_t)(s_py / TH);
+        int8_t cx      = (int8_t)((s_px + TW / 2) / TW);
+        int8_t top_cy  = (int8_t)(s_py / TH);
+        int8_t foot_cy = (int8_t)((s_py + TH - 1) / TH);
 
         if (in->held & KEY_UP)
         {
-            if ((tile_at(cx, cy) == T_LADDER) || (((s_py % TH) != 0) && (tile_at(cx, (int8_t)(cy + 1)) == T_LADDER)))
+            /* Can climb up as long as feet or body are on a ladder */
+            if ((tile_at(cx, top_cy) == T_LADDER) || (tile_at(cx, foot_cy) == T_LADDER))
             {
                 int16_t ny = (int16_t)(s_py - 1);
                 if ((ny >= 0) && !is_solid(cx, (int8_t)(ny / TH)))
@@ -738,21 +772,8 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
         if (in->pressed & KEY_A) try_dig(s_facing, now);
     }
 
-    /* 5. Collect Gold */
-    int8_t cx = (int8_t)((s_px + TW / 2) / TW);
-    int8_t cy = (int8_t)((s_py + TH / 2) / TH);
-    if (tile_at(cx, cy) == T_GOLD)
-    {
-        s_map[cy][cx] = T_EMPTY;
-        draw_tile(cx, cy);
-        s_gold_left--;
-        add_score(250U);
-        sound(s_snd_gold, 3);
-        if (s_gold_left == 0U)
-        {
-            reveal_escape_ladder();
-        }
-    }
+    /* 5. Collect Gold on touch (works while climbing ladders, falling, or running!) */
+    check_gold_pickup();
 }
 
 static void step_guards(uint32_t now, uint32_t frame)
