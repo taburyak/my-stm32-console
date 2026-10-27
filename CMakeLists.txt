@@ -41,6 +41,33 @@ string(REGEX REPLACE "-T *[^ \"]*\\.ld" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_L
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-T${CONSOLE_LINKER_SCRIPT}")
 set_property(TARGET ${CMAKE_PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS "${CONSOLE_LINKER_SCRIPT}")
 
+# Built-in (ROM) SDK app: sdk_apps/arkanoid.c is compiled as a sandbox .bin and embedded into Flash
+set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")
+set(ROM_ARKANOID_SRC  "${CMAKE_SOURCE_DIR}/sdk_apps/arkanoid.c")
+set(ROM_ARKANOID_ELF  "${ROM_APPS_DIR}/arkanoid.elf")
+set(ROM_ARKANOID_BIN  "${ROM_APPS_DIR}/arkanoid.bin")
+set(ROM_APPS_ASM      "${ROM_APPS_DIR}/rom_apps.S")
+file(MAKE_DIRECTORY "${ROM_APPS_DIR}")
+add_custom_command(
+    OUTPUT  "${ROM_ARKANOID_BIN}"
+    COMMAND ${CMAKE_C_COMPILER} -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -O2 -nostdlib
+            -Wl,--no-warn-rwx-segments -T "${CMAKE_SOURCE_DIR}/sdk_apps/app_sram.ld"
+            "${ROM_ARKANOID_SRC}" -o "${ROM_ARKANOID_ELF}"
+    COMMAND ${CMAKE_OBJCOPY} -O binary "${ROM_ARKANOID_ELF}" "${ROM_ARKANOID_BIN}"
+    DEPENDS "${ROM_ARKANOID_SRC}" "${CMAKE_SOURCE_DIR}/sdk_apps/console_sdk.h" "${CMAKE_SOURCE_DIR}/sdk_apps/app_sram.ld"
+    COMMENT "Building built-in SDK app arkanoid.bin"
+    VERBATIM)
+file(WRITE "${ROM_APPS_ASM}"
+    "    .section .rodata.rom_apps,\"a\"\n"
+    "    .balign 4\n"
+    "    .global g_rom_arkanoid_bin\n"
+    "g_rom_arkanoid_bin:\n"
+    "    .incbin \"${ROM_ARKANOID_BIN}\"\n"
+    "    .global g_rom_arkanoid_bin_end\n"
+    "g_rom_arkanoid_bin_end:\n")
+set_source_files_properties("${ROM_APPS_ASM}" PROPERTIES OBJECT_DEPENDS "${ROM_ARKANOID_BIN}")
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE "${ROM_APPS_ASM}")
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 

@@ -116,6 +116,65 @@ bool AppLoader_IsUserBufferValid(const void *ptr, uint32_t len)
     return (in_app_ram || in_app_ext);
 }
 
+static void AppLoader_ClearSandboxes(void)
+{
+    /* App image area only: the task stack at the top of the sandbox is managed by FreeRTOS */
+    memset((void *)APP_SANDBOX_BASE_ADDR, 0, APP_SANDBOX_MAX_SIZE);
+    memset((void *)APP_EXT_DATA_BASE_ADDR, 0, APP_EXT_DATA_MAX_SIZE);
+}
+
+/* Starts the image already placed at APP_SANDBOX_BASE_ADDR */
+static bool AppLoader_StartLoadedImage(uint32_t size, const char *name)
+{
+    /* Flush all pending key/button events before starting the game */
+    USBHostManager_FlushInputQueues();
+    Buttons_Init();
+
+    /* Flush CPU data/instruction pipelines before jumping to RAM code */
+    __DSB();
+    __ISB();
+
+    const osThreadAttr_t sbx_attr = {
+        .name       = "sandboxTask",
+        .cb_mem     = &s_sbx_tcb,
+        .cb_size    = sizeof(s_sbx_tcb),
+        .stack_mem  = (void *)MM_APP_STACK_BASE,
+        .stack_size = MM_APP_STACK_SIZE,
+        .priority   = (osPriority_t)osPriorityLow
+    };
+
+    s_loaded_app_size  = size;
+    s_app_exit_request = false;
+    s_fault_pending    = false;
+
+    /* Lower priority than the caller (GUI), so the tag is set before the task first runs */
+    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, NULL, &sbx_attr);
+    if (s_sbx_handle == NULL)
+    {
+        printf("[LOADER] Failed to create sandbox task\r\n");
+        return false;
+    }
+    vTaskSetApplicationTaskTag((TaskHandle_t)s_sbx_handle, (TaskHookFunction_t)1);
+    s_app_running = true;
+
+    printf("[LOADER] Loaded '%s' (%lu bytes) at 0x%08lX. Launching in Sandbox!\r\n",
+           name, (unsigned long)size, (unsigned long)APP_SANDBOX_BASE_ADDR);
+
+    return true;
+}
+
+bool AppLoader_LoadAndRunImage(const uint8_t *image, uint32_t size, const char *name)
+{
+    if (s_app_running || image == NULL || size == 0U || size > APP_SANDBOX_MAX_SIZE)
+    {
+        return false;
+    }
+
+    AppLoader_ClearSandboxes();
+    memcpy((void *)APP_SANDBOX_BASE_ADDR, image, size);
+    return AppLoader_StartLoadedImage(size, (name != NULL) ? name : "ROM app");
+}
+
 bool AppLoader_LoadAndRun(const char *fatfs_path)
 {
     if (s_app_running || fatfs_path == NULL)
@@ -146,9 +205,7 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
         return false;
     }
 
-    /* Clear app image area (task stack at the top of the sandbox is kept) and ext data sandbox */
-    memset((void *)APP_SANDBOX_BASE_ADDR, 0, APP_SANDBOX_MAX_SIZE);
-    memset((void *)APP_EXT_DATA_BASE_ADDR, 0, APP_EXT_DATA_MAX_SIZE);
+    AppLoader_ClearSandboxes();
 
     uint8_t *dst = (uint8_t *)APP_SANDBOX_BASE_ADDR;
     FRESULT res = f_read(&bin_file, dst, (UINT)fsize, &br);
@@ -161,41 +218,7 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
         return false;
     }
 
-    /* Flush all pending key/button events before starting the game */
-    USBHostManager_FlushInputQueues();
-    Buttons_Init();
-
-    /* Flush CPU data/instruction pipelines before jumping to RAM code */
-    __DSB();
-    __ISB();
-
-    const osThreadAttr_t sbx_attr = {
-        .name       = "sandboxTask",
-        .cb_mem     = &s_sbx_tcb,
-        .cb_size    = sizeof(s_sbx_tcb),
-        .stack_mem  = (void *)MM_APP_STACK_BASE,
-        .stack_size = MM_APP_STACK_SIZE,
-        .priority   = (osPriority_t)osPriorityLow
-    };
-
-    s_loaded_app_size  = (uint32_t)fsize;
-    s_app_exit_request = false;
-    s_fault_pending    = false;
-
-    /* Lower priority than the caller (GUI), so the tag is set before the task first runs */
-    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, NULL, &sbx_attr);
-    if (s_sbx_handle == NULL)
-    {
-        printf("[LOADER] Failed to create sandbox task\r\n");
-        return false;
-    }
-    vTaskSetApplicationTaskTag((TaskHandle_t)s_sbx_handle, (TaskHookFunction_t)1);
-    s_app_running = true;
-
-    printf("[LOADER] Loaded '%s' (%lu bytes) at 0x%08lX. Launching in Sandbox!\r\n",
-           clean_path, (unsigned long)fsize, (unsigned long)APP_SANDBOX_BASE_ADDR);
-
-    return true;
+    return AppLoader_StartLoadedImage((uint32_t)fsize, clean_path);
 }
 
 bool AppLoader_IsRunning(void)

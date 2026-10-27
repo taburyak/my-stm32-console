@@ -1,7 +1,7 @@
 #include "console_sdk.h"
 
 /* =========================================================================
- * Cyber-Pong & Arkanoid Extended (SRAM Application for STM32 Console)
+ * Cyber Arkanoid (SDK application for STM32 Console, also built into the firmware ROM)
  * ========================================================================= */
 
 #define PADDLE_W        64
@@ -82,8 +82,8 @@ __attribute__((section(".text.entry"))) void _start(void)
     uint32_t best          = 0;
     bool     ball_active   = false;
 
-    /* Load saved high score from /saves/pong.sav if available */
-    (void)sys_load_state("pong.sav", &best, sizeof(best));
+    /* Load saved high score from /saves/arkanoid.sav if available */
+    (void)sys_load_state("arkanoid.sav", &best, sizeof(best));
 
     /* 1. Draw Static Arena */
     sys_clear_screen(COLOR_DARK_BG);
@@ -118,7 +118,7 @@ __attribute__((section(".text.entry"))) void _start(void)
         {
             if (score >= best && best > 0U)
             {
-                (void)sys_save_state("pong.sav", &best, sizeof(best));
+                (void)sys_save_state("arkanoid.sav", &best, sizeof(best));
             }
             sys_exit();
             return;
@@ -260,7 +260,7 @@ __attribute__((section(".text.entry"))) void _start(void)
                 sys_beep(100);
                 if (score >= best && best > 0U)
                 {
-                    (void)sys_save_state("pong.sav", &best, sizeof(best));
+                    (void)sys_save_state("arkanoid.sav", &best, sizeof(best));
                 }
 
                 sys_draw_text(106, 130, "GAME OVER", COLOR_RED, COLOR_DARK_BG, 2);
