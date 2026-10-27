@@ -54,7 +54,7 @@ add_custom_command(
             -Wl,--no-warn-rwx-segments -T "${CMAKE_SOURCE_DIR}/sdk_apps/app_sram.ld"
             "${ROM_ARKANOID_SRC}" -o "${ROM_ARKANOID_ELF}"
     COMMAND ${CMAKE_OBJCOPY} -O binary "${ROM_ARKANOID_ELF}" "${ROM_ARKANOID_BIN}"
-    DEPENDS "${ROM_ARKANOID_SRC}" "${CMAKE_SOURCE_DIR}/sdk_apps/console_sdk.h" "${CMAKE_SOURCE_DIR}/sdk_apps/app_sram.ld"
+    DEPENDS "${ROM_ARKANOID_SRC}" "${CMAKE_SOURCE_DIR}/sdk_apps/console_sdk.h" "${CMAKE_SOURCE_DIR}/sdk_apps/console_abi.h" "${CMAKE_SOURCE_DIR}/sdk_apps/app_sram.ld"
     COMMENT "Building built-in SDK app arkanoid.bin"
     VERBATIM)
 file(WRITE "${ROM_APPS_ASM}"
@@ -130,6 +130,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/tinyusb/src/host
     Libs/tinyusb/src/class/hid
     Libs/tinyusb/src/portable/synopsys/dwc2
+    sdk_apps
 )
 
 # Add project symbols (macros)

@@ -5,6 +5,8 @@
 #include "buttons_manager.h"
 #include "beeper.h"
 #include "status_led.h"
+#include "sdcard_fatfs.h"
+#include "XPT2046_touch.h"
 #include "cmsis_os2.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -537,4 +539,88 @@ uint32_t AppLoader_LoadState_Privileged(const char *filename, void *dst, uint32_
     StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
 
     return (res == FR_OK) ? (uint32_t)br : 0U;
+}
+
+bool AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst)
+{
+    USB_GamepadState_t pad;
+
+    memset(dst, 0, sizeof(*dst));
+    dst->hat = 0x0FU;
+    if (!USBHostManager_GetGamepadState(&pad))
+    {
+        return false;
+    }
+
+    dst->connected = 1U;
+    dst->left_x    = pad.left_x;
+    dst->left_y    = pad.left_y;
+    dst->hat       = pad.hat;
+
+    uint32_t b = 0U;
+    if (pad.dpad_up)    b |= SDK_PAD_UP;
+    if (pad.dpad_down)  b |= SDK_PAD_DOWN;
+    if (pad.dpad_left)  b |= SDK_PAD_LEFT;
+    if (pad.dpad_right) b |= SDK_PAD_RIGHT;
+    if (pad.btn_a)      b |= SDK_PAD_A;
+    if (pad.btn_b)      b |= SDK_PAD_B;
+    if (pad.btn_x)      b |= SDK_PAD_X;
+    if (pad.btn_y)      b |= SDK_PAD_Y;
+    if (pad.btn_l1)     b |= SDK_PAD_L1;
+    if (pad.btn_r1)     b |= SDK_PAD_R1;
+    if (pad.btn_l2)     b |= SDK_PAD_L2;
+    if (pad.btn_r2)     b |= SDK_PAD_R2;
+    if (pad.btn_start)  b |= SDK_PAD_START;
+    if (pad.btn_select) b |= SDK_PAD_SELECT;
+    dst->buttons = b;
+    return true;
+}
+
+bool AppLoader_GetMouse_Privileged(SDK_MouseState_t *dst)
+{
+    USB_MouseEvent_t mse;
+
+    memset(dst, 0, sizeof(*dst));
+    if (USBHostManager_GetMouseState(&mse))
+    {
+        dst->x       = mse.x;
+        dst->y       = mse.y;
+        dst->dx      = mse.delta_x;
+        dst->dy      = mse.delta_y;
+        dst->buttons = (uint8_t)((mse.btn_left   ? SDK_MOUSE_BTN_LEFT   : 0U) |
+                                 (mse.btn_right  ? SDK_MOUSE_BTN_RIGHT  : 0U) |
+                                 (mse.btn_middle ? SDK_MOUSE_BTN_MIDDLE : 0U));
+        dst->source  = SDK_MOUSE_SRC_USB;
+        return true;
+    }
+
+    uint16_t tx = 0U, ty = 0U;
+    if (XPT2046_TouchPressed() && XPT2046_TouchGetCoordinates(&tx, &ty))
+    {
+        dst->x       = (int16_t)tx;
+        dst->y       = (int16_t)ty;
+        dst->buttons = SDK_MOUSE_BTN_LEFT;
+        dst->source  = SDK_MOUSE_SRC_TOUCH;
+        return true;
+    }
+    return false;
+}
+
+void AppLoader_GetSysInfo_Privileged(SDK_SysInfo_t *dst)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->api_version    = (uint16_t)SDK_API_VERSION;
+    dst->screen_w       = (uint16_t)SDK_SCREEN_W;
+    dst->screen_h       = (uint16_t)SDK_SCREEN_H;
+    dst->app_ram_size   = APP_SANDBOX_MAX_SIZE;
+    dst->app_stack_size = MM_APP_STACK_SIZE;
+    dst->app_ext_size   = APP_EXT_DATA_MAX_SIZE;
+
+    dst->devices = SDK_DEV_TOUCH;
+    if (USBHostManager_IsKeyboardReady()) dst->devices |= SDK_DEV_KEYBOARD;
+    if (USBHostManager_IsMouseReady())    dst->devices |= SDK_DEV_MOUSE;
+    if (USBHostManager_IsGamepadReady())  dst->devices |= SDK_DEV_GAMEPAD;
+
+    if (Beeper_IsMuted())     dst->flags |= SDK_INFO_SOUND_MUTED;
+    if (SDCard_IsMounted())   dst->flags |= SDK_INFO_SD_MOUNTED;
 }

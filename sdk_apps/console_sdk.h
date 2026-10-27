@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "console_abi.h"
 
 /* ==========================================================================
  * 1. Memory Sandbox Definitions
@@ -14,16 +15,16 @@
 #define SDK_EXT_RAM_BASE_ADDR   0x68080000UL /* 512 KB External FSMC SRAM for App Data */
 
 /* ==========================================================================
- * 2. Unified Input Bitmask (Returned by sys_get_keys / SVC 6)
+ * 2. Unified Input Bitmask (Returned by sys_get_keys), see console_abi.h
  * ========================================================================== */
-#define KEY_LEFT                (1UL << 0) /* Gamepad Left  / Keyboard Left Arrow or 'A' / Board KEY_0 */
-#define KEY_RIGHT               (1UL << 1) /* Gamepad Right / Keyboard Right Arrow or 'D'/ Board KEY_2 */
-#define KEY_UP                  (1UL << 2) /* Gamepad Up    / Keyboard Up Arrow or 'W'   / Board KEY_1 */
-#define KEY_DOWN                (1UL << 3) /* Gamepad Down  / Keyboard Down Arrow or 'S' */
-#define KEY_A                   (1UL << 4) /* Gamepad 'A'   / Keyboard Space or Enter    */
-#define KEY_B                   (1UL << 5) /* Gamepad 'X'   / Keyboard 'X' or 'Z'        */
-#define KEY_X                   (1UL << 6)
-#define KEY_EXIT                (1UL << 7) /* Gamepad 'B' or Select / Keyboard ESC / Board KEY_3 */
+#define KEY_LEFT                SDK_KEY_LEFT
+#define KEY_RIGHT               SDK_KEY_RIGHT
+#define KEY_UP                  SDK_KEY_UP
+#define KEY_DOWN                SDK_KEY_DOWN
+#define KEY_A                   SDK_KEY_A
+#define KEY_B                   SDK_KEY_B
+#define KEY_X                   SDK_KEY_X
+#define KEY_EXIT                SDK_KEY_EXIT
 
 /* ==========================================================================
  * 3. RGB565 Color Macros & Palette
@@ -44,16 +45,8 @@
 #define COLOR_GRID_LINE         0x1926U
 
 /* ==========================================================================
- * 4. Shared Structures with OS Kernel
+ * 4. Shared Structures with OS Kernel: see console_abi.h
  * ========================================================================== */
-typedef struct {
-    uint16_t    x;
-    uint16_t    y;
-    const char *str;
-    uint16_t    fg_color;
-    uint16_t    bg_color;
-    uint8_t     scale;
-} SDK_DrawTextParams_t;
 
 /* ==========================================================================
  * 5. Freestanding Memory Helpers (-nostdlib & GCC 14 -O2 safe)
@@ -141,34 +134,65 @@ static inline void sdk_uint_to_str(uint32_t val, char *buf, uint8_t min_digits)
 }
 
 /* ==========================================================================
- * 6. OS System Calls (SVC Wrappers - Strictly Non-Inlined for Register Safety)
+ * 6. OS System Calls
+ *    Arguments are evaluated into temporaries before being bound to r0..r2
+ *    (GCC may otherwise reuse r0 while computing r1). Wrappers stay noinline.
+ *    Blocking syscalls run through the kernel gate and clobber r1-r3, r12, flags.
  * ========================================================================== */
 
-__attribute__((noinline)) static void sys_led_toggle(uint32_t led_id)
+#define SDK_SVC_CLOBBERS "r3", "r12", "cc", "memory"
+
+#define SDK_SVC_CALL0(num) __extension__ ({                                                     \
+    register uint32_t _r0 __asm("r0");                                                         \
+    __asm volatile ("svc %[n]" : "=r"(_r0) : [n] "I"(num) : "r1", "r2", SDK_SVC_CLOBBERS);     \
+    _r0; })
+
+#define SDK_SVC_CALL1(num, a0) __extension__ ({                                                 \
+    uint32_t _a0 = (uint32_t)(a0);                                                             \
+    register uint32_t _r0 __asm("r0") = _a0;                                                   \
+    __asm volatile ("svc %[n]" : "+r"(_r0) : [n] "I"(num) : "r1", "r2", SDK_SVC_CLOBBERS);     \
+    _r0; })
+
+#define SDK_SVC_CALL2(num, a0, a1) __extension__ ({                                             \
+    uint32_t _a0 = (uint32_t)(a0), _a1 = (uint32_t)(a1);                                       \
+    register uint32_t _r0 __asm("r0") = _a0;                                                   \
+    register uint32_t _r1 __asm("r1") = _a1;                                                   \
+    __asm volatile ("svc %[n]" : "+r"(_r0), "+r"(_r1) : [n] "I"(num) : "r2", SDK_SVC_CLOBBERS); \
+    _r0; })
+
+#define SDK_SVC_CALL3(num, a0, a1, a2) __extension__ ({                                         \
+    uint32_t _a0 = (uint32_t)(a0), _a1 = (uint32_t)(a1), _a2 = (uint32_t)(a2);                 \
+    register uint32_t _r0 __asm("r0") = _a0;                                                   \
+    register uint32_t _r1 __asm("r1") = _a1;                                                   \
+    register uint32_t _r2 __asm("r2") = _a2;                                                   \
+    __asm volatile ("svc %[n]" : "+r"(_r0), "+r"(_r1), "+r"(_r2) : [n] "I"(num) : SDK_SVC_CLOBBERS); \
+    _r0; })
+
+#define SDK_SYSCALL __attribute__((noinline, unused)) static
+
+SDK_SYSCALL void sys_led_toggle(uint32_t led_id)
 {
-    register uint32_t r0 __asm("r0") = led_id;
-    __asm volatile ("svc 1" : : "r"(r0) : "memory");
+    (void)SDK_SVC_CALL1(SDK_SVC_LED_TOGGLE, led_id);
 }
 
-__attribute__((noinline)) static void sys_beep(uint16_t duration_ms)
+SDK_SYSCALL void sys_beep(uint16_t duration_ms)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)duration_ms;
-    __asm volatile ("svc 2" : : "r"(r0) : "memory");
+    (void)SDK_SVC_CALL1(SDK_SVC_BEEP, duration_ms);
 }
 
-__attribute__((noinline)) static uint32_t sys_get_tick(void)
+SDK_SYSCALL uint32_t sys_get_tick(void)
 {
-    register uint32_t r0 __asm("r0");
-    __asm volatile ("svc 3" : "=r"(r0) : : "memory");
-    return r0;
+    return SDK_SVC_CALL0(SDK_SVC_GET_TICK);
 }
 
-__attribute__((noinline)) static void sys_lcd_fill_raw(uint32_t packed_xy, uint32_t packed_wh, uint32_t color)
+SDK_SYSCALL bool sys_get_gamepad(SDK_GamepadState_t *dst)
 {
-    register uint32_t r0 __asm("r0") = packed_xy;
-    register uint32_t r1 __asm("r1") = packed_wh;
-    register uint32_t r2 __asm("r2") = color;
-    __asm volatile ("svc 5" : "+r"(r0) : "r"(r1), "r"(r2) : "memory");
+    return SDK_SVC_CALL1(SDK_SVC_GET_GAMEPAD, dst) != 0U;
+}
+
+SDK_SYSCALL void sys_lcd_fill_raw(uint32_t packed_xy, uint32_t packed_wh, uint32_t color)
+{
+    (void)SDK_SVC_CALL3(SDK_SVC_LCD_FILL_RECT, packed_xy, packed_wh, color);
 }
 
 static inline void sys_lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
@@ -178,32 +202,24 @@ static inline void sys_lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_
     sys_lcd_fill_raw(xy, wh, (uint32_t)color);
 }
 
-__attribute__((noinline)) static uint32_t sys_get_keys(void)
+SDK_SYSCALL uint32_t sys_get_keys(void)
 {
-    register uint32_t r0 __asm("r0");
-    __asm volatile ("svc 6" : "=r"(r0) : : "memory");
-    return r0;
+    return SDK_SVC_CALL0(SDK_SVC_GET_KEYS);
 }
 
-__attribute__((noinline)) static void sys_exit(void)
+SDK_SYSCALL void sys_exit(void)
 {
-    __asm volatile ("svc 8" : : : "memory");
+    (void)SDK_SVC_CALL0(SDK_SVC_EXIT);
 }
 
-__attribute__((noinline)) static void sys_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
+SDK_SYSCALL void sys_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)x;
-    register uint32_t r1 __asm("r1") = (uint32_t)y;
-    register uint32_t r2 __asm("r2") = (uint32_t)color;
-    __asm volatile ("svc 9" : "+r"(r0) : "r"(r1), "r"(r2) : "memory");
+    (void)SDK_SVC_CALL3(SDK_SVC_DRAW_PIXEL, x, y, color);
 }
 
-__attribute__((noinline)) static void sys_draw_sprite_raw(uint32_t packed_xy, uint32_t packed_wh, const uint16_t *bmp)
+SDK_SYSCALL void sys_draw_sprite_raw(uint32_t packed_xy, uint32_t packed_wh, const uint16_t *bmp)
 {
-    register uint32_t r0 __asm("r0") = packed_xy;
-    register uint32_t r1 __asm("r1") = packed_wh;
-    register uint32_t r2 __asm("r2") = (uint32_t)bmp;
-    __asm volatile ("svc 10" : "+r"(r0) : "r"(r1), "r"(r2) : "memory");
+    (void)SDK_SVC_CALL3(SDK_SVC_DRAW_SPRITE, packed_xy, packed_wh, bmp);
 }
 
 static inline void sys_draw_sprite(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_t *bmp)
@@ -213,11 +229,9 @@ static inline void sys_draw_sprite(uint16_t x, uint16_t y, uint16_t w, uint16_t 
     sys_draw_sprite_raw(xy, wh, bmp);
 }
 
-__attribute__((noinline)) static void sys_draw_text_ptr(const SDK_DrawTextParams_t *params)
+SDK_SYSCALL void sys_draw_text_ptr(const SDK_DrawTextParams_t *params)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)params;
-    /* Note: "m"(*params) forces GCC at -O2 to flush struct fields to stack before SVC 11! */
-    __asm volatile ("svc 11" : "+r"(r0) : "m"(*params) : "memory");
+    (void)SDK_SVC_CALL1(SDK_SVC_DRAW_TEXT, params);
 }
 
 static inline void sys_draw_text(uint16_t x, uint16_t y, const char *str,
@@ -233,45 +247,51 @@ static inline void sys_draw_text(uint16_t x, uint16_t y, const char *str,
     sys_draw_text_ptr((const SDK_DrawTextParams_t *)&p);
 }
 
-__attribute__((noinline)) static void sys_clear_screen(uint16_t color)
+SDK_SYSCALL void sys_clear_screen(uint16_t color)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)color;
-    __asm volatile ("svc 12" : "+r"(r0) : : "memory");
+    (void)SDK_SVC_CALL1(SDK_SVC_CLEAR_SCREEN, color);
 }
 
-__attribute__((noinline)) static void sys_play_tone(uint16_t freq_hz, uint16_t duration_ms)
+/* USB mouse, or the touch screen when no mouse is connected */
+SDK_SYSCALL bool sys_get_mouse(SDK_MouseState_t *dst)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)freq_hz;
-    register uint32_t r1 __asm("r1") = (uint32_t)duration_ms;
-    __asm volatile ("svc 14" : "+r"(r0) : "r"(r1) : "memory");
+    return SDK_SVC_CALL1(SDK_SVC_GET_MOUSE, dst) != 0U;
 }
 
-/* Blocking syscalls (15, 16) run through the kernel gate: r1-r3, r12 and flags are clobbered */
-__attribute__((noinline)) static bool sys_save_state(const char *filename, const void *data, uint32_t len)
+SDK_SYSCALL void sys_play_tone(uint16_t freq_hz, uint16_t duration_ms)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)filename;
-    register uint32_t r1 __asm("r1") = (uint32_t)data;
-    register uint32_t r2 __asm("r2") = len;
-    __asm volatile ("svc 15" : "+r"(r0), "+r"(r1), "+r"(r2) : : "r3", "r12", "cc", "memory");
-    return (r0 != 0U);
+    (void)SDK_SVC_CALL2(SDK_SVC_PLAY_TONE, freq_hz, duration_ms);
 }
 
-__attribute__((noinline)) static uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len)
+SDK_SYSCALL bool sys_save_state(const char *filename, const void *data, uint32_t len)
 {
-    register uint32_t r0 __asm("r0") = (uint32_t)filename;
-    register uint32_t r1 __asm("r1") = (uint32_t)dst;
-    register uint32_t r2 __asm("r2") = max_len;
-    __asm volatile ("svc 16" : "+r"(r0), "+r"(r1), "+r"(r2) : : "r3", "r12", "cc", "memory");
-    return r0;
+    return SDK_SVC_CALL3(SDK_SVC_SAVE_STATE, filename, data, len) != 0U;
+}
+
+SDK_SYSCALL uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len)
+{
+    return SDK_SVC_CALL3(SDK_SVC_LOAD_STATE, filename, dst, max_len);
+}
+
+SDK_SYSCALL bool sys_get_info(SDK_SysInfo_t *dst)
+{
+    return SDK_SVC_CALL1(SDK_SVC_GET_INFO, dst) != 0U;
+}
+
+/* Blocks the app task (CPU goes to other tasks); at most SDK_SLEEP_MAX_MS per call */
+SDK_SYSCALL void sys_sleep_ms(uint32_t ms)
+{
+    (void)SDK_SVC_CALL1(SDK_SVC_SLEEP_MS, ms);
 }
 
 static inline void sys_delay_ms(uint32_t ms)
 {
-    uint32_t start = sys_get_tick();
-    while ((sys_get_tick() - start) < ms)
+    while (ms > SDK_SLEEP_MAX_MS)
     {
-        __asm volatile ("wfi" : : : "memory");
+        sys_sleep_ms(SDK_SLEEP_MAX_MS);
+        ms -= SDK_SLEEP_MAX_MS;
     }
+    sys_sleep_ms(ms);
 }
 
 #endif /* CONSOLE_SDK_H */

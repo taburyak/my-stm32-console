@@ -7,6 +7,7 @@ extern "C" {
 
 #include "main.h"
 #include "memory_map.h"
+#include "console_abi.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -18,27 +19,17 @@ extern "C" {
 #define APP_EXT_DATA_BASE_ADDR  MM_EXT_APP_BASE
 #define APP_EXT_DATA_MAX_SIZE   MM_EXT_APP_SIZE
 
-/* Unified Input Bitmask returned by SVC 6 (sys_get_keys) */
-#define APP_KEY_LEFT            (1UL << 0)
-#define APP_KEY_RIGHT           (1UL << 1)
-#define APP_KEY_UP              (1UL << 2)
-#define APP_KEY_DOWN            (1UL << 3)
-#define APP_KEY_A               (1UL << 4)
-#define APP_KEY_B               (1UL << 5)
-#define APP_KEY_X               (1UL << 6)
-#define APP_KEY_EXIT            (1UL << 7)
+/* Unified Input Bitmask returned by SVC 6 (sys_get_keys), defined by the shared ABI */
+#define APP_KEY_LEFT            SDK_KEY_LEFT
+#define APP_KEY_RIGHT           SDK_KEY_RIGHT
+#define APP_KEY_UP              SDK_KEY_UP
+#define APP_KEY_DOWN            SDK_KEY_DOWN
+#define APP_KEY_A               SDK_KEY_A
+#define APP_KEY_B               SDK_KEY_B
+#define APP_KEY_X               SDK_KEY_X
+#define APP_KEY_EXIT            SDK_KEY_EXIT
 
-/**
- * @brief Parameter block passed to SVC 11 (sys_draw_text)
- */
-typedef struct {
-    uint16_t    x;
-    uint16_t    y;
-    const char *str;
-    uint16_t    fg_color;
-    uint16_t    bg_color;
-    uint8_t     scale;
-} App_DrawTextParams_t;
+typedef SDK_DrawTextParams_t App_DrawTextParams_t;
 
 /* Fault captured from a crashed app (fault status registers and faulting PC) */
 typedef struct {
@@ -63,6 +54,9 @@ uint32_t AppLoader_ReadInputMask_Privileged(void);
 void     AppLoader_DrawText_Privileged(const App_DrawTextParams_t *p);
 bool     AppLoader_SaveState_Privileged(const char *filename, const void *data, uint32_t len);
 uint32_t AppLoader_LoadState_Privileged(const char *filename, void *dst, uint32_t max_len);
+bool     AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst);
+bool     AppLoader_GetMouse_Privileged(SDK_MouseState_t *dst);
+void     AppLoader_GetSysInfo_Privileged(SDK_SysInfo_t *dst);
 
 #ifdef __cplusplus
 }

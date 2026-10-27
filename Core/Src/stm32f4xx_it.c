@@ -30,6 +30,7 @@
 #include "ili9341_simple.h"
 #include "XPT2046_touch.h"
 #include "app_loader.h"
+#include "cmsis_os2.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -411,6 +412,10 @@ uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2)
     case 16U: /* uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
       return AppLoader_LoadState_Privileged((const char *)a0, (void *)a1, a2);
 
+    case 18U: /* void sys_sleep_ms(uint32_t ms) */
+      (void)osDelay((a0 > SDK_SLEEP_MAX_MS) ? SDK_SLEEP_MAX_MS : a0);
+      return 0U;
+
     default:
       return 0U;
   }
@@ -443,17 +448,11 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
       svc_args[0] = HAL_GetTick();
       break;
 
-    case 4U: /* SVC 4: bool sys_get_gamepad(USB_GamepadState_t *dst) -> returns in r0 */
+    case 4U: /* SVC 4: bool sys_get_gamepad(SDK_GamepadState_t *dst) -> returns in r0 */
       {
-        USB_GamepadState_t *dst = (USB_GamepadState_t *)svc_args[0];
-        if (AppLoader_IsUserBufferValid(dst, sizeof(USB_GamepadState_t)))
-        {
-          svc_args[0] = USBHostManager_GetGamepadState(dst) ? 1U : 0U;
-        }
-        else
-        {
-          svc_args[0] = 0U;
-        }
+        SDK_GamepadState_t *dst = (SDK_GamepadState_t *)svc_args[0];
+        svc_args[0] = (AppLoader_IsUserBufferValid(dst, sizeof(*dst)) &&
+                       AppLoader_GetGamepad_Privileged(dst)) ? 1U : 0U;
       }
       break;
 
@@ -547,41 +546,11 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
       }
       break;
 
-    case 13U: /* SVC 13: bool sys_get_mouse(USB_MouseEvent_t *dst) -> USB Mouse or XPT2046 Touch */
+    case 13U: /* SVC 13: bool sys_get_mouse(SDK_MouseState_t *dst) -> USB Mouse or XPT2046 Touch */
       {
-        USB_MouseEvent_t *dst = (USB_MouseEvent_t *)svc_args[0];
-        if (!AppLoader_IsUserBufferValid(dst, sizeof(USB_MouseEvent_t)))
-        {
-          svc_args[0] = 0U;
-          break;
-        }
-
-        if (USBHostManager_GetMouseState(dst))
-        {
-          svc_args[0] = 1U;
-        }
-        else
-        {
-          uint16_t tx = 0, ty = 0;
-          if (XPT2046_TouchPressed() && XPT2046_TouchGetCoordinates(&tx, &ty))
-          {
-            dst->x          = (int16_t)tx;
-            dst->y          = (int16_t)ty;
-            dst->delta_x    = 0;
-            dst->delta_y    = 0;
-            dst->btn_left   = true;
-            dst->btn_right  = false;
-            dst->btn_middle = false;
-            svc_args[0]     = 1U;
-          }
-          else
-          {
-            dst->btn_left   = false;
-            dst->btn_right  = false;
-            dst->btn_middle = false;
-            svc_args[0]     = 0U;
-          }
-        }
+        SDK_MouseState_t *dst = (SDK_MouseState_t *)svc_args[0];
+        svc_args[0] = (AppLoader_IsUserBufferValid(dst, sizeof(*dst)) &&
+                       AppLoader_GetMouse_Privileged(dst)) ? 1U : 0U;
       }
       break;
 
@@ -591,7 +560,23 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
 
     case 15U: /* SVC 15: bool sys_save_state(const char *filename, const void *data, uint32_t len) */
     case 16U: /* SVC 16: uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
+    case 18U: /* SVC 18: void sys_sleep_ms(uint32_t ms) */
       Svc_EnterGate(svc_args, svc_number);
+      break;
+
+    case 17U: /* SVC 17: bool sys_get_info(SDK_SysInfo_t *dst) */
+      {
+        SDK_SysInfo_t *dst = (SDK_SysInfo_t *)svc_args[0];
+        if (AppLoader_IsUserBufferValid(dst, sizeof(*dst)))
+        {
+          AppLoader_GetSysInfo_Privileged(dst);
+          svc_args[0] = 1U;
+        }
+        else
+        {
+          svc_args[0] = 0U;
+        }
+      }
       break;
 
     default:
