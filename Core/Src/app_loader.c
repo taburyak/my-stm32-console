@@ -81,7 +81,7 @@ static const uint8_t s_kernel_font5x7[59][5] = {
 
 bool AppLoader_IsUserBufferValid(const void *ptr, uint32_t len)
 {
-    if (ptr == NULL || len == 0U || len > 0x00080000UL)
+    if (ptr == NULL || len == 0U)
     {
         return false;
     }
@@ -93,13 +93,15 @@ bool AppLoader_IsUserBufferValid(const void *ptr, uint32_t len)
         return false; /* Overflow check */
     }
 
-    /* Allowed Region A: Internal SRAM (Stacks & Code Sandbox 0x20000000 .. 0x2001FFFF) */
-    bool in_int_sram = (start >= 0x20000000UL && end <= 0x2001FFFFUL);
+    /* App code/data/stack sandbox in internal SRAM */
+    bool in_app_ram = (start >= MM_APP_RAM_BASE) &&
+                      (end <= (MM_APP_RAM_BASE + MM_APP_RAM_SIZE - 1UL));
 
-    /* Allowed Region B: External FSMC SRAM (0x68000000 .. 0x680FFFFF) */
-    bool in_ext_sram = (start >= 0x68000000UL && end <= 0x680FFFFFUL);
+    /* App data sandbox in external FSMC SRAM */
+    bool in_app_ext = (start >= MM_EXT_APP_BASE) &&
+                      (end <= (MM_EXT_APP_BASE + MM_EXT_APP_SIZE - 1UL));
 
-    return (in_int_sram || in_ext_sram);
+    return (in_app_ram || in_app_ext);
 }
 
 bool AppLoader_LoadAndRun(const char *fatfs_path)
@@ -132,11 +134,10 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
         return false;
     }
 
-    /* Clear both Internal Code Sandbox and External Data Sandbox (.bss) */
+    /* Clear app image area (task stack at the top of the sandbox is kept) and ext data sandbox */
     memset((void *)APP_SANDBOX_BASE_ADDR, 0, APP_SANDBOX_MAX_SIZE);
-    memset((void *)APP_EXT_DATA_BASE_ADDR, 0, 64U * 1024U);
+    memset((void *)APP_EXT_DATA_BASE_ADDR, 0, APP_EXT_DATA_MAX_SIZE);
 
-    /* Load binary into 0-Wait-State Internal SRAM2 at 0x20018000 */
     uint8_t *dst = (uint8_t *)APP_SANDBOX_BASE_ADDR;
     FRESULT res = f_read(&bin_file, dst, (UINT)fsize, &br);
     f_close(&bin_file);

@@ -2,8 +2,8 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* 16 KB 0-Wait-State Internal SRAM2 for Code, Constants, Data & Small BSS */
-    APP_RAM (xrw) : ORIGIN = 0x20018000, LENGTH = 16K
+    /* 28 KB 0-WS internal SRAM for code, constants, data & BSS (top 4 KB of the 32 KB sandbox is the task stack) */
+    APP_RAM (xrw) : ORIGIN = 0x20018000, LENGTH = 28K
     /* 512 KB External FSMC SRAM for Large Game Buffers & Assets */
     EXT_RAM (rw)  : ORIGIN = 0x68080000, LENGTH = 512K
 }

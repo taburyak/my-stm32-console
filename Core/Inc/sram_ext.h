@@ -14,15 +14,10 @@ extern "C" {
 #define SRAM_EXT_SIZE_BYTES    (1024U * 1024U) /* 1 MB */
 #define SRAM_EXT_END_ADDR      (SRAM_EXT_BASE_ADDR + SRAM_EXT_SIZE_BYTES - 1U)
 
-/* Display Framebuffer Dimensions & Allocations (320x240 RGB565) */
+/* Display Framebuffer Dimensions (320x240 RGB565); buffer placement is defined in memory_map.h */
 #define DISPLAY_WIDTH          320U
 #define DISPLAY_HEIGHT         240U
 #define FRAMEBUFFER_SIZE_BYTES (DISPLAY_WIDTH * DISPLAY_HEIGHT * 2U) /* 153,600 Bytes */
-
-/* Dedicated Framebuffer Offsets in External SRAM */
-#define SRAM_FB1_OFFSET        0x00000000U
-#define SRAM_FB2_OFFSET        0x00030000U /* 196,608 Bytes offset (aligned) */
-#define SRAM_HEAP_OFFSET       0x00060000U /* Remaining ~614 KB for dynamic memory */
 
 /**
  * @brief Macro attribute to place global variables into external SRAM section (.sram_data)
@@ -42,18 +37,6 @@ void SRAM_EXT_Init(void);
  * @return true if address is in external SRAM, false otherwise
  */
 bool SRAM_EXT_IsAddressInSRAM(const void *ptr);
-
-/**
- * @brief Get absolute pointer to Framebuffer 1 in external SRAM
- * @return Pointer to Framebuffer 1 (153.6 KB)
- */
-void* SRAM_EXT_GetFrameBuffer1(void);
-
-/**
- * @brief Get absolute pointer to Framebuffer 2 in external SRAM
- * @return Pointer to Framebuffer 2 (153.6 KB)
- */
-void* SRAM_EXT_GetFrameBuffer2(void);
 
 /**
  * @brief Fast 32-bit aligned memory copy for external SRAM

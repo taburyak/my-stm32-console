@@ -44,8 +44,8 @@ static lv_obj_t * file_list_obj    = NULL;
 static char s_clicked_item[STORAGE_MAX_NAME_LEN];
 static char s_next_path[STORAGE_MAX_PATH_LEN];
 static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
-#define EXT_TEXT_PREVIEW_BUF  ((char *)0x68008000UL)
-#define EXT_TEXT_PREVIEW_SIZE 2048U
+#define EXT_TEXT_PREVIEW_BUF  ((char *)MM_EXT_TEXT_PREVIEW)
+#define EXT_TEXT_PREVIEW_SIZE MM_EXT_TEXT_PREVIEW_SIZE
 
 /* Settings Screen RTC adjustment state */
 static uint8_t edit_hours   = 12;
@@ -102,11 +102,11 @@ static void Settings_SaveToEEPROM(void)
 }
 
 /* ==========================================================================
- * Universal 16/24/32-bit BMP Loader into External SRAM (0x68010000)
+ * Universal 16/24/32-bit BMP Loader into External SRAM (MM_EXT_IMAGE_BUF)
  * ========================================================================== */
 
 static lv_img_dsc_t s_custom_bmp_dsc;
-#define s_bmp_line_buf ((uint8_t *)0x68009000UL) /* 6 KB line buffer in External SRAM */
+#define s_bmp_line_buf ((uint8_t *)MM_EXT_BMP_LINE_BUF)
 
 static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
 {
@@ -148,7 +148,7 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
     int32_t dst_w = (src_w > 320) ? 320 : src_w;
     int32_t dst_h = (src_h > 216) ? 216 : src_h;
 
-    uint16_t *dst_fb = (uint16_t *)(0x68010000UL);
+    uint16_t *dst_fb = (uint16_t *)MM_EXT_IMAGE_BUF;
     uint32_t row_bytes = ((uint32_t)src_w * (bpp / 8U) + 3U) & ~3U;
 
     for (int32_t dy = 0; dy < dst_h; dy++)

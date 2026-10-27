@@ -4,6 +4,7 @@
 #include "XPT2046_touch.h"
 #include "usb_host_manager.h"
 #include "beeper.h"
+#include "memory_map.h"
 
 extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 
@@ -11,8 +12,10 @@ extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 #define MY_DISP_VER_RES    240
 #define DISP_BUF_SIZE      (MY_DISP_HOR_RES * 40)
 
+_Static_assert(DISP_BUF_SIZE * sizeof(lv_color_t) <= MM_EXT_LVGL_DRAW_BUF_SIZE, "LVGL draw buffer exceeds its ext SRAM slot");
+
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t *buf_1 = (lv_color_t *)0x68000000UL;
+static lv_color_t *buf_1 = (lv_color_t *)MM_EXT_LVGL_DRAW_BUF;
 
 /* Pointer to the mouse cursor object on lv_layer_sys() */
 static lv_obj_t * mouse_cursor_obj = NULL;

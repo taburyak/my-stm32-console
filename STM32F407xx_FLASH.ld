@@ -56,12 +56,19 @@ ENTRY(Reset_Handler)
 MEMORY
 {
   CCMRAM    (xrw)    : ORIGIN = 0x10000000,   LENGTH = 64K
-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
+  /* OS RAM; must match Core/Inc/memory_map.h (MM_APP_RAM_BASE) */
+  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 96K
+  /* App sandbox (code + data + 4 KB task stack), filled at runtime by app_loader.c */
+  APP_RAM  (xrw)    : ORIGIN = 0x20018000,   LENGTH = 32K
   FLASH    (rx)    : ORIGIN = 0x08000000,   LENGTH = 1024K
   EXTSRAM  (xrw)    : ORIGIN = 0x68000000,   LENGTH = 1024K
 }
 
-/* Highest address of the user mode stack */
+/* App sandbox bounds for diagnostics */
+_sapp_ram = ORIGIN(APP_RAM);
+_eapp_ram = ORIGIN(APP_RAM) + LENGTH(APP_RAM);
+
+/* Highest address of the user mode stack (MSP), top of OS RAM below the app sandbox */
 _estack = ORIGIN(RAM) + LENGTH(RAM);    /* end of RAM */
 _sstack = _estack - _Min_Stack_Size;
 /* Generate a link error if heap and stack don't fit into RAM */

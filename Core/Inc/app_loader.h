@@ -6,17 +6,17 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "memory_map.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 
-/* Dedicated 0-Wait-State Code Sandbox in Internal SRAM2 (0x20018000, 16 KB)
- * + 512 KB External SRAM Data Sandbox (0x68080000) */
-#define APP_SANDBOX_BASE_ADDR   0x20018000UL
-#define APP_SANDBOX_MAX_SIZE    (16U * 1024U) /* 16 KB 0-WS Code + .data */
+/* Code sandbox in internal SRAM (0-WS) + data sandbox in external FSMC SRAM, see memory_map.h */
+#define APP_SANDBOX_BASE_ADDR   MM_APP_RAM_BASE
+#define APP_SANDBOX_MAX_SIZE    MM_APP_IMAGE_MAX_SIZE /* code + .data + .bss, task stack excluded */
 
-#define APP_EXT_DATA_BASE_ADDR  0x68080000UL
-#define APP_EXT_DATA_MAX_SIZE   (512U * 1024U)
+#define APP_EXT_DATA_BASE_ADDR  MM_EXT_APP_BASE
+#define APP_EXT_DATA_MAX_SIZE   MM_EXT_APP_SIZE
 
 /* Unified Input Bitmask returned by SVC 6 (sys_get_keys) */
 #define APP_KEY_LEFT            (1UL << 0)

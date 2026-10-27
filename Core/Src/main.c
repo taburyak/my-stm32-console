@@ -91,21 +91,25 @@ const osThreadAttr_t defaultTask_attributes = {
 };
 /* USER CODE BEGIN PV */
 osThreadId_t sandboxTaskHandle;
+static StaticTask_t sandboxTaskTCB;
 
+/* Stack lives at the top of the app sandbox so syscall buffers on the app stack pass validation */
 const osThreadAttr_t sandboxTask_attributes = {
   .name = "sandboxTask",
-  .stack_size = 512 * 4,
+  .cb_mem = &sandboxTaskTCB,
+  .cb_size = sizeof(sandboxTaskTCB),
+  .stack_mem = (void *)MM_APP_STACK_BASE,
+  .stack_size = MM_APP_STACK_SIZE,
   .priority = (osPriority_t) osPriorityLow,
 };
 
 /* Define an array for the internal part of the heap */
 uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
-/* Region Configuration for Heap_5 */
-/* Region Configuration for Heap_5 */
+/* Region Configuration for Heap_5 (regions sorted by address) */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                                           // Region 1: Internal SRAM (~0x20000000)
-    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (SRAM_EXT_SIZE_BYTES - SRAM_HEAP_OFFSET) }, // Region 2: Full External SRAM (640 KB: 0x68060000..0x680FFFFF)
-    { NULL, 0 }                                                                                       // The Terminator
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                          // Region 1: Internal SRAM
+    { (uint8_t *)MM_EXT_OS_HEAP_BASE, MM_EXT_OS_HEAP_SIZE },         // Region 2: External SRAM 0x68040000..0x6807FFFF
+    { NULL, 0 }                                                      // The Terminator
 };
 
 /* Framebuffer in External SRAM (Bank 3) */
@@ -194,7 +198,14 @@ int main(void)
 
   // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
   vPortDefineHeapRegions(xHeapRegions);
-  printf("Heap_5 Initialized Manually.\r\n");
+  printf("Heap_5 Initialized Manually. Free: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
+  printf("[MEM] App RAM   0x%08lX..0x%08lX (image %lu KB, stack %lu KB)\r\n",
+         (unsigned long)MM_APP_RAM_BASE, (unsigned long)(MM_APP_RAM_BASE + MM_APP_RAM_SIZE - 1UL),
+         (unsigned long)(MM_APP_IMAGE_MAX_SIZE / 1024UL), (unsigned long)(MM_APP_STACK_SIZE / 1024UL));
+  printf("[MEM] OS heap   0x%08lX..0x%08lX\r\n",
+         (unsigned long)MM_EXT_OS_HEAP_BASE, (unsigned long)(MM_EXT_OS_HEAP_BASE + MM_EXT_OS_HEAP_SIZE - 1UL));
+  printf("[MEM] App ext   0x%08lX..0x%08lX\r\n",
+         (unsigned long)MM_EXT_APP_BASE, (unsigned long)(MM_EXT_APP_BASE + MM_EXT_APP_SIZE - 1UL));
   /* USER CODE END 2 */
 
   /* Init scheduler */
