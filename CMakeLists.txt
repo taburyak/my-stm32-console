@@ -34,6 +34,43 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+# Project-owned linker script: replaces the CubeMX one (-T ...STM32F407xx_FLASH.ld) set in the toolchain file
+set(CONSOLE_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/STM32F407ZG_console.ld")
+string(REGEX REPLACE "-T *\"[^\"]*\\.ld\"" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+string(REGEX REPLACE "-T *[^ \"]*\\.ld" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-T${CONSOLE_LINKER_SCRIPT}")
+set_property(TARGET ${CMAKE_PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS "${CONSOLE_LINKER_SCRIPT}")
+
+# SDK apps: built into ${CMAKE_BINARY_DIR}/sdk_apps/<name>.bin (copy to SD card games/)
+include(sdk_apps/console_sdk_app.cmake)
+console_sdk_app(arkanoid  "${CMAKE_SOURCE_DIR}/sdk_apps/arkanoid.c")
+console_sdk_app(tetris    "${CMAKE_SOURCE_DIR}/sdk_apps/tetris.c")
+console_sdk_app(sdk_test  "${CMAKE_SOURCE_DIR}/sdk_apps/sdk_test.c")
+console_sdk_app(crash_test "${CMAKE_SOURCE_DIR}/sdk_apps/crash_test.c")
+console_sdk_app(file_test "${CMAKE_SOURCE_DIR}/sdk_apps/file_test.c")
+console_sdk_app(storage_test "${CMAKE_SOURCE_DIR}/sdk_apps/storage_test.c")
+console_sdk_app(media_test "${CMAKE_SOURCE_DIR}/sdk_apps/media_test.c")
+console_sdk_app(snake     "${CMAKE_SOURCE_DIR}/sdk_apps/snake.c")
+console_sdk_app(invaders  "${CMAKE_SOURCE_DIR}/sdk_apps/invaders.c")
+console_sdk_app(flappy    "${CMAKE_SOURCE_DIR}/sdk_apps/flappy.c")
+
+# Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
+set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")
+set(ROM_ARKANOID_BIN  "${SDK_APPS_OUT_DIR}/arkanoid.bin")
+set(ROM_APPS_ASM      "${ROM_APPS_DIR}/rom_apps.S")
+file(MAKE_DIRECTORY "${ROM_APPS_DIR}")
+file(WRITE "${ROM_APPS_ASM}"
+    "    .section .rodata.rom_apps,\"a\"\n"
+    "    .balign 4\n"
+    "    .global g_rom_arkanoid_bin\n"
+    "g_rom_arkanoid_bin:\n"
+    "    .incbin \"${ROM_ARKANOID_BIN}\"\n"
+    "    .global g_rom_arkanoid_bin_end\n"
+    "g_rom_arkanoid_bin_end:\n")
+set_source_files_properties("${ROM_APPS_ASM}" PROPERTIES OBJECT_DEPENDS "${ROM_ARKANOID_BIN}")
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE "${ROM_APPS_ASM}")
+add_dependencies(${CMAKE_PROJECT_NAME} sdk_app_arkanoid)
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
@@ -77,6 +114,10 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/tinyusb/src/portable/synopsys/dwc2/hcd_dwc2.c
     Libs/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
     Core/Src/ui_manager.c
+    Core/Src/app_loader.c
+    Core/Src/app_files.c
+    Core/Src/app_storage.c
+    Core/Src/app_services.c
 )
 
 # Add include paths
@@ -95,6 +136,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/tinyusb/src/host
     Libs/tinyusb/src/class/hid
     Libs/tinyusb/src/portable/synopsys/dwc2
+    sdk_apps
 )
 
 # Add project symbols (macros)

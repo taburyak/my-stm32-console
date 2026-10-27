@@ -40,6 +40,8 @@
 #include "usb_host_manager.h"
 #include "os_tasks.h"
 #include "ui_manager.h"
+#include "app_loader.h"
+#include "ccmram.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -89,25 +91,25 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
-osThreadId_t sandboxTaskHandle;
-
-const osThreadAttr_t sandboxTask_attributes = {
-  .name = "sandboxTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
-};
-
-/* Define an array for the internal part of the heap */
-uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
-/* Region Configuration for Heap_5 */
+/* Internal part of the heap in CCM: task stacks and RTOS objects must never be DMA targets */
+CCMRAM_BUF uint8_t ucHeapInternal[INTERNAL_HEAP_SIZE];
+/* Region Configuration for Heap_5 (regions sorted by address) */
 const HeapRegion_t xHeapRegions[] = {
-    { ucHeapInternal, INTERNAL_HEAP_SIZE },                                         // Region 1: Internal SRAM (~0x20000000)
-    { (uint8_t *)(SRAM_EXT_BASE_ADDR + SRAM_HEAP_OFFSET), (128U * 1024U) },         // Region 2: External SRAM (0x68060000..0x6807FFFF)
-    { NULL, 0 }                                                                     // The Terminator
+    { ucHeapInternal, INTERNAL_HEAP_SIZE },                          // Region 1: CCM RAM
+    { (uint8_t *)MM_EXT_OS_HEAP_BASE, MM_EXT_OS_HEAP_SIZE },         // Region 2: External SRAM 0x68040000..0x6807FFFF
+    { NULL, 0 }                                                      // The Terminator
 };
 
 /* Framebuffer in External SRAM (Bank 3) */
 uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
+
+/* App sandbox bounds defined only in linker/STM32F407ZG_console.ld */
+extern uint8_t _sapp_ram[];
+extern uint8_t _eapp_ram[];
+
+/* .ccmram is NOLOAD and not touched by the startup code */
+extern uint8_t _sccmram[];
+extern uint8_t _eccmram[];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -125,7 +127,6 @@ static void MX_RTC_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-void SandboxTask(void *argument);
 void MPU_Config_UserSandbox(void);
 /* USER CODE END PFP */
 
@@ -153,7 +154,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  memset(_sccmram, 0, (size_t)(_eccmram - _sccmram));
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -186,13 +187,27 @@ int main(void)
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
+  if (((uint32_t)_sapp_ram != MM_APP_RAM_BASE) ||
+      ((uint32_t)_eapp_ram != (MM_APP_RAM_BASE + MM_APP_RAM_SIZE)))
+  {
+    printf("[MEM] FATAL: linker APP_RAM does not match memory_map.h\r\n");
+    Error_Handler();
+  }
+
   // IMPORTANT: Configure and enable the MPU before the OS starts
   MPU_Config_UserSandbox();
   printf("MPU Sandbox Initialized.\r\n");
 
   // IMPORTANT: Let's initialize Heap_5 manually with our regions (Internal + External memory)
   vPortDefineHeapRegions(xHeapRegions);
-  printf("Heap_5 Initialized Manually.\r\n");
+  printf("Heap_5 Initialized Manually. Free: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
+  printf("[MEM] App RAM   0x%08lX..0x%08lX (image %lu KB, stack %lu KB)\r\n",
+         (unsigned long)MM_APP_RAM_BASE, (unsigned long)(MM_APP_RAM_BASE + MM_APP_RAM_SIZE - 1UL),
+         (unsigned long)(MM_APP_IMAGE_MAX_SIZE / 1024UL), (unsigned long)(MM_APP_STACK_SIZE / 1024UL));
+  printf("[MEM] OS heap   0x%08lX..0x%08lX\r\n",
+         (unsigned long)MM_EXT_OS_HEAP_BASE, (unsigned long)(MM_EXT_OS_HEAP_BASE + MM_EXT_OS_HEAP_SIZE - 1UL));
+  printf("[MEM] App ext   0x%08lX..0x%08lX\r\n",
+         (unsigned long)MM_EXT_APP_BASE, (unsigned long)(MM_EXT_APP_BASE + MM_EXT_APP_SIZE - 1UL));
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -219,11 +234,7 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  // Let's create our test sandbox task
-  sandboxTaskHandle = osThreadNew(SandboxTask, NULL, &sandboxTask_attributes);
-
-  // Set tag 1 so that the FreeRTOS hook switches this task to Unprivileged mode!
-  vTaskSetApplicationTaskTag((TaskHandle_t)sandboxTaskHandle, (void*) 1);
+  /* The unprivileged sandbox task is created per app launch by AppLoader_LoadAndRun() */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -748,7 +759,7 @@ static void MX_FSMC_Init(void)
   Timing.AddressSetupTime = 2;
   Timing.AddressHoldTime = 15;
   Timing.DataSetupTime = 5;
-  Timing.BusTurnAroundDuration = 0;
+  Timing.BusTurnAroundDuration = 2;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -782,7 +793,7 @@ static void MX_FSMC_Init(void)
   Timing.AddressSetupTime = 2;
   Timing.AddressHoldTime = 15;
   Timing.DataSetupTime = 8;
-  Timing.BusTurnAroundDuration = 0;
+  Timing.BusTurnAroundDuration = 2;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -794,11 +805,18 @@ static void MX_FSMC_Init(void)
   }
 
   /* USER CODE BEGIN FSMC_Init 2 */
-
+  /* Add 2 HCLK cycles of Bus Turnaround (BUSTURN) on Bank 3 (SRAM) and Bank 4 (LCD)
+   * to prevent FSMC data bus contention when switching between LCD writes and SRAM instruction fetches! */
+  FSMC_Bank1->BTCR[5] |= (2UL << 16); /* Bank 3 BUSTURN = 2 */
+  FSMC_Bank1->BTCR[7] |= (2UL << 16); /* Bank 4 BUSTURN = 2 */
+  __DSB();
   /* USER CODE END FSMC_Init 2 */
 }
 
 /* USER CODE BEGIN 4 */
+_Static_assert(MM_APP_RAM_SIZE == (32UL * 1024UL), "MPU Region 2 size must match MM_APP_RAM_SIZE");
+_Static_assert(MM_EXT_APP_SIZE == (512UL * 1024UL), "MPU Region 4 size must match MM_EXT_APP_SIZE");
+
 void MPU_Config_UserSandbox(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
@@ -820,49 +838,60 @@ void MPU_Config_UserSandbox(void)
   MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 1: Internal SRAM (Stacks and Variables) - Read and Write
-  MPU_InitStruct.Number = MPU_REGION_NUMBER1;
-  MPU_InitStruct.BaseAddress = 0x20000000;
-  MPU_InitStruct.Size = MPU_REGION_SIZE_128KB;
-  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
-  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // Execution from RAM disabled (security)
+  // Region 1: Internal SRAM (kernel) - privileged only, never executable
+  MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER1;
+  MPU_InitStruct.BaseAddress      = 0x20000000;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_128KB;
+  MPU_InitStruct.SubRegionDisable = 0x0;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+  MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
+  MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+  MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
+  MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 2: External SRAM (Sandbox & Framebuffers) — Normal Non-Cacheable Memory (TEX=1, C=0, B=0)
-  MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+  // Region 2: App sandbox in internal SRAM (code + data + stack); overrides Region 1
   MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
-  MPU_InitStruct.BaseAddress      = 0x68000000;
-  MPU_InitStruct.Size             = MPU_REGION_SIZE_1MB;
-  MPU_InitStruct.SubRegionDisable = 0x0;
-  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1; // CRITICAL: Normal Memory (allows unaligned access!)
+  MPU_InitStruct.BaseAddress      = MM_APP_RAM_BASE;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_32KB;
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_ENABLE;
-  MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  // Region 3: External SRAM (kernel buffers & heap) - Normal Non-Cacheable (TEX=1, C=0, B=0), privileged only
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER3;
+  MPU_InitStruct.BaseAddress      = MM_EXT_BASE;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_1MB;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1; // CRITICAL: Normal Memory (allows unaligned access!)
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+  MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
   MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
   MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Enable the MPU. The background region will allow the kernel to access the peripherals (0x40000000)
-  // But our task (via tag 1) won't have access there!
+  // Region 4: App data sandbox in external SRAM; overrides Region 3, no code fetch from FSMC
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER4;
+  MPU_InitStruct.BaseAddress      = MM_EXT_APP_BASE;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_512KB;
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  // Region 5: CCM RAM (kernel stacks) - privileged only, never executable
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER5;
+  MPU_InitStruct.BaseAddress      = 0x10000000;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+  MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  // Enable the MPU. The background region keeps peripherals accessible to privileged code only
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
-}
 
-void SandboxTask(void *argument)
-{
-  // This task will run in Unprivileged Mode!
-  for(;;)
-  {
-    // 1. SAFE CALL: We don't access the registers directly; instead, we make a request to the kernel via SVC
-
-    // Since the task is unprivileged, the standard osDelay/vTaskDelay may cause an error,
-    // if it attempts to access kernel variables that the MPU has restricted access to.
-    // Therefore, we create an artificial delay using a loop:
-    for(volatile uint32_t i = 0; i < 2000000; i++) {}
-
-    // 2. PROTECTION DEMONSTRATION:
-    // Uncomment the line below. This is direct access to the GPIO peripherals.
-    // Since we are in the Sandbox, this call SHOULD trigger a MemManage Fault (HardFault)!
-  }
+  // Dedicated BusFault / UsageFault handlers (MemManage is enabled by HAL_MPU_Enable)
+  SCB->SHCSR |= SCB_SHCSR_BUSFAULTENA_Msk | SCB_SHCSR_USGFAULTENA_Msk;
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -885,6 +914,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  /* SVCall must stay unmasked (priority 0) until FreeRTOS issues 'svc 0' with BASEPRI set;
+   * afterwards app syscalls run below all peripheral IRQs and above PendSV. */
+  HAL_NVIC_SetPriority(SVCall_IRQn, 14U, 0U);
+
   printf("[OS] GuiRenderTask (DefaultTask) Started.\r\n");
 
   printf("\r\n----------------------------------------\r\n");
@@ -954,9 +987,45 @@ void StartDefaultTask(void *argument)
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;
 
+  bool was_app_running = false;
+
   /* Infinite GUI & Render Loop (~66 FPS / 15ms period) */
   for(;;)
   {
+    /* If an external .bin app is running in SandboxTask, yield display to it */
+    if (AppLoader_IsRunning())
+    {
+      was_app_running = true;
+      AppLoader_Service();
+      osDelay(20);
+      continue;
+    }
+    else if (was_app_running)
+    {
+      /* External app just exited! Restore LVGL screen redraw */
+      was_app_running = false;
+      UIManager_ShowScreen(UI_SCREEN_GAMES);
+      lv_obj_invalidate(lv_scr_act());
+
+      AppLoader_FaultInfo_t fault;
+      if (AppLoader_TakeFaultInfo(&fault))
+      {
+        static char crash_text[96];
+        snprintf(crash_text, sizeof(crash_text), "CFSR 0x%08lX\nPC   0x%08lX\nADDR 0x%08lX",
+                 (unsigned long)fault.cfsr, (unsigned long)fault.pc, (unsigned long)fault.fault_addr);
+        printf("[LOADER] App crashed: %s\r\n", crash_text);
+        lv_obj_t *mbox = lv_msgbox_create(NULL, "App crashed", crash_text, NULL, false);
+        lv_obj_center(mbox);
+        /* With a NULL parent LVGL wraps the box in a dimmed modal backdrop: delete the backdrop */
+        lv_obj_del_delayed(lv_obj_get_parent(mbox), 4000);
+        Beeper_ErrorAlert();
+      }
+      else
+      {
+        Beeper_Click();
+      }
+    }
+
     /* 1. Check for completed async events from StorageIoTask */
     while (OSTasks_GetGuiEvent(&gui_evt))
     {

@@ -11,16 +11,6 @@ bool SRAM_EXT_IsAddressInSRAM(const void *ptr)
     return (addr >= SRAM_EXT_BASE_ADDR && addr <= SRAM_EXT_END_ADDR);
 }
 
-void* SRAM_EXT_GetFrameBuffer1(void)
-{
-    return (void *)(SRAM_EXT_BASE_ADDR + SRAM_FB1_OFFSET);
-}
-
-void* SRAM_EXT_GetFrameBuffer2(void)
-{
-    return (void *)(SRAM_EXT_BASE_ADDR + SRAM_FB2_OFFSET);
-}
-
 void SRAM_EXT_CopyFast32(uint32_t *dst, const uint32_t *src, uint32_t words_count)
 {
     while (words_count--)

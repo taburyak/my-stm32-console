@@ -59,6 +59,23 @@ void Beeper_ErrorAlert(void);
  */
 void Beeper_Process(void);
 
+void Beeper_SetMuted(bool muted);
+bool Beeper_IsMuted(void);
+void Beeper_PlayTone(uint16_t freq_hz, uint16_t duration_ms);
+
+#define BEEPER_SEQ_MAX_NOTES 64U
+
+/* freq_hz > 0 sounds (fixed-pitch buzzer), 0 is a rest */
+typedef struct {
+    uint16_t freq_hz;
+    uint16_t duration_ms;
+} Beeper_Note_t;
+
+/* Copies up to BEEPER_SEQ_MAX_NOTES notes and plays them from Beeper_Process() */
+void Beeper_PlaySequence(const Beeper_Note_t *notes, uint32_t count, bool loop);
+void Beeper_StopSequence(void);
+bool Beeper_IsSequencePlaying(void);
+
 #ifdef __cplusplus
 }
 #endif

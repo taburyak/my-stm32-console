@@ -86,6 +86,7 @@ extern volatile USB_DebugInfo_t g_usb_dbg;
 /* --- Public Function Prototypes --- */
 void USBHostManager_Init(void);
 void USBHostManager_TaskPoll(void);
+void USBHostManager_FlushInputQueues(void);
 
 bool USBHostManager_IsKeyboardReady(void);
 bool USBHostManager_IsMouseReady(void);
@@ -95,6 +96,7 @@ bool USBHostManager_GetKey(char *ch);
 bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event);
 bool USBHostManager_GetMouseState(USB_MouseEvent_t *state);
 bool USBHostManager_GetGamepadState(USB_GamepadState_t *state);
+uint32_t USBHostManager_GetKeyboardGameMask(void);
 
 #ifdef __cplusplus
 }

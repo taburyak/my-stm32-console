@@ -3,15 +3,17 @@
 #include "fatfs.h"
 #include "AT24Cxx.h"
 #include "w25qxx.h"
+#include "ccmram.h"
 #include <stdio.h>
 #include <string.h>
 
 #define SRAM_BASE_ADDR    0x68000000U
 #define SRAM_SIZE_BYTES   (1024 * 1024) /* 1 MB */
-#define CCMRAM_BASE_ADDR  0x10000000U
-#define CCMRAM_SIZE_BYTES (64 * 1024)   /* 64 KB */
 
 static POST_Report_t post_report = {0};
+
+/* Dedicated CCM test word: the rest of CCM holds live task stacks and the RTOS heap */
+CCMRAM_BUF static volatile uint32_t s_ccm_test_word;
 
 /* External function prototype from display driver */
 extern uint16_t lcdReadID(void);
@@ -22,7 +24,7 @@ extern char SDPath[4];
  */
 static bool Test_CCMRAM(void)
 {
-    volatile uint32_t *ptr = (volatile uint32_t *)CCMRAM_BASE_ADDR;
+    volatile uint32_t *ptr = &s_ccm_test_word;
 
     /* Save original data */
     uint32_t orig_value = *ptr;
@@ -43,37 +45,47 @@ static bool Test_CCMRAM(void)
 }
 
 /**
- * @brief Non-destructive boundary memory test for FSMC External SRAM
+ * @brief Non-destructive full address-line (A0..A18) & anti-aliasing test for 1 MB FSMC SRAM
  */
 static bool Test_SRAM(void)
 {
-    volatile uint16_t *ptr = (volatile uint16_t *)SRAM_BASE_ADDR;
-    uint32_t last_word_offset = (SRAM_SIZE_BYTES / 2) - 1;
+    volatile uint16_t *base   = (volatile uint16_t *)SRAM_BASE_ADDR;         /* 0x68000000 (A18 = 0) */
+    volatile uint16_t *upper  = (volatile uint16_t *)(SRAM_BASE_ADDR + 0x80000U); /* 0x68080000 (A18 = 1) */
+    volatile uint16_t *end    = (volatile uint16_t *)(SRAM_BASE_ADDR + SRAM_SIZE_BYTES - 2U);
 
-    /* Save original values at boundaries */
-    uint16_t orig_start = ptr[0];
-    uint16_t orig_end   = ptr[last_word_offset];
+    /* Save original values */
+    uint16_t orig_base  = *base;
+    uint16_t orig_upper = *upper;
+    uint16_t orig_end   = *end;
     bool pass = true;
 
-    /* Test start boundary */
-    ptr[0] = 0xAA55;
-    if (ptr[0] != 0xAA55) pass = false;
+    /* Simultaneous write to verify A18 (512 KB boundary) does not alias! */
+    *base  = 0xCAFEU;
+    *upper = 0xBEEFU;
+    *end   = 0x1234U;
+    __DSB();
 
-    ptr[0] = 0x55AA;
-    if (ptr[0] != 0x55AA) pass = false;
+    if (*base != 0xCAFEU || *upper != 0xBEEFU || *end != 0x1234U)
+    {
+        pass = false;
+    }
 
-    /* Restore start boundary */
-    ptr[0] = orig_start;
+    /* Invert patterns */
+    *base  = 0x55AAU;
+    *upper = 0xAA55U;
+    *end   = 0x4321U;
+    __DSB();
 
-    /* Test end boundary */
-    ptr[last_word_offset] = 0x1234;
-    if (ptr[last_word_offset] != 0x1234) pass = false;
+    if (*base != 0x55AAU || *upper != 0xAA55U || *end != 0x4321U)
+    {
+        pass = false;
+    }
 
-    ptr[last_word_offset] = 0x4321;
-    if (ptr[last_word_offset] != 0x4321) pass = false;
-
-    /* Restore end boundary */
-    ptr[last_word_offset] = orig_end;
+    /* Restore original values */
+    *base  = orig_base;
+    *upper = orig_upper;
+    *end   = orig_end;
+    __DSB();
 
     return pass;
 }
@@ -147,8 +159,8 @@ POST_Status_t POST_RunSelfTest(void)
         }
     }
 
-    /* 4. Test FatFs SD Card Mount */
-    FATFS fatfs_obj;
+    /* 4. Test FatFs SD Card Mount (FATFS window is a DMA target: must not be on a CCM task stack) */
+    static FATFS fatfs_obj;
     FRESULT fres = f_mount(&fatfs_obj, SDPath, 1);
     post_report.sd_ok = (fres == FR_OK);
     if (post_report.sd_ok)

@@ -15,8 +15,9 @@ extern "C" {
  */
 typedef enum {
     UI_SCREEN_HOME = 0,      /* Main Dashboard / Launcher with icons & wallpaper */
-    UI_SCREEN_FILES,         /* SD Card File & Directory Explorer */
-    UI_SCREEN_SETTINGS,      /* RTC Clock & System Settings */
+    UI_SCREEN_FILES,         /* SD Card File & Directory Explorer (+ BMP & TXT viewer) */
+    UI_SCREEN_GAMES,         /* Games launcher: built-in ROM game + games/<name>.bin icon tiles */
+    UI_SCREEN_SETTINGS,      /* RTC Clock, Audio Mute & EEPROM Settings */
     UI_SCREEN_SYSINFO        /* Hardware POST & Memory Diagnostics */
 } UI_Screen_t;
 

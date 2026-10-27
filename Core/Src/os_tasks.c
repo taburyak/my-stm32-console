@@ -9,6 +9,7 @@
 #include "status_led.h"
 #include "sdcard_fatfs.h"
 #include "fatfs.h"
+#include "app_loader.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -23,7 +24,7 @@ CCMRAM_BUF static StackType_t  inputTaskStack[INPUT_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t inputTaskTCB;
 static osThreadId_t            inputAudioTaskHandle = NULL;
 
-static StackType_t  storageTaskStack[STORAGE_TASK_STACK_WORDS];
+CCMRAM_BUF static StackType_t  storageTaskStack[STORAGE_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t storageTaskTCB;
 static osThreadId_t            storageIoTaskHandle = NULL;
 
@@ -32,7 +33,8 @@ static osThreadId_t            storageIoTaskHandle = NULL;
  * ========================================================================== */
 
 /* Place directory cache in aligned Internal SRAM for fast & safe string operations */
-Storage_DirCache_t g_dir_cache __attribute__((aligned(4)));
+/* CPU-only data (filled by memcpy from FatFs FILINFO), so it can live in CCM RAM */
+CCMRAM_BUF Storage_DirCache_t g_dir_cache __attribute__((aligned(4)));
 
 /* FatFs working structures MUST reside in DMA-capable Internal SRAM (NOT CCM RAM!) */
 static DIR     s_fatfs_dir;
@@ -144,6 +146,10 @@ static void InputAudioTask(void *argument)
                     if (btn_msg.id == BUTTON_KEY3)
                     {
                         Beeper_ErrorAlert();
+                        if (AppLoader_IsRunning())
+                        {
+                            AppLoader_RequestExit();
+                        }
                     }
                     else
                     {

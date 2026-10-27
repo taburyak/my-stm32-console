@@ -177,8 +177,12 @@ standard names. */
 // Цей макрос викликається ядром щоразу, коли воно перемикається на нову таску.
 // Якщо тег таски == 1, ми знижуємо привілеї процесора (встановлюємо біт 0 в регістрі CONTROL).
 // Інакше — повертаємо привілеї ядра.
+// While the sandbox runs a blocking syscall in the kernel gate it must stay privileged.
+#if defined(__GNUC__) && !defined(__ASSEMBLER__)
+extern volatile uint32_t g_sandbox_in_gate;
+#endif
 #define traceTASK_SWITCHED_IN() \
-    if ( (int)pxCurrentTCB->pxTaskTag == 1 ) { \
+    if ( ((int)pxCurrentTCB->pxTaskTag == 1) && (g_sandbox_in_gate == 0U) ) { \
         __set_CONTROL( __get_CONTROL() | 1 ); \
     } else { \
         __set_CONTROL( __get_CONTROL() & ~1 ); \
