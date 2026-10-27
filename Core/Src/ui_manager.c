@@ -52,18 +52,29 @@ static uint8_t edit_hours   = 12;
 static uint8_t edit_minutes = 0;
 static lv_obj_t * lbl_time_set = NULL;
 
-/* Cyber-Pong Mini-Game State */
-static lv_timer_t * game_timer     = NULL;
-static lv_obj_t   * game_paddle    = NULL;
-static lv_obj_t   * game_ball      = NULL;
-static lv_obj_t   * game_score_lbl = NULL;
-static int16_t      paddle_x       = 120;
-static int16_t      ball_x         = 160;
-static int16_t      ball_y         = 80;
-static int16_t      ball_vx        = 3;
-static int16_t      ball_vy        = 3;
-static uint32_t     game_score     = 0;
-static uint32_t     game_best      = 0;
+/* Wallpaper selected from the image viewer, persisted on the SD card */
+#define WALLPAPER_CFG_PATH  "system/wallpaper.cfg"
+static char s_wallpaper_path[STORAGE_MAX_PATH_LEN];
+static char s_preview_path[STORAGE_MAX_PATH_LEN];
+
+/* Games launcher: built-in ROM game + games/<name>.bin tiles with optional games/<name>.bmp icons */
+#define GAMES_MAX_TILES       16U
+#define GAME_ICON_SIZE        64
+#define GAME_ICON_SLOT_BYTES  ((uint32_t)GAME_ICON_SIZE * (uint32_t)GAME_ICON_SIZE * 2UL)
+_Static_assert(GAMES_MAX_TILES * GAME_ICON_SLOT_BYTES <= MM_EXT_IMAGE_BUF_SIZE, "Game icons exceed the ext SRAM image buffer");
+
+typedef struct {
+    char file[STORAGE_MAX_NAME_LEN];
+    bool builtin;
+} Game_Entry_t;
+
+static lv_obj_t *    games_grid_obj = NULL;
+static Game_Entry_t  s_games[GAMES_MAX_TILES];
+static uint32_t      s_games_count  = 0;
+static lv_img_dsc_t  s_icon_dsc[GAMES_MAX_TILES];
+
+extern const uint8_t g_rom_arkanoid_bin[];
+extern const uint8_t g_rom_arkanoid_bin_end[];
 
 /* Forward declarations */
 static void Build_Home_Screen(void);
@@ -72,8 +83,7 @@ static void Build_Games_Screen(void);
 static void Build_Settings_Screen(void);
 static void Build_SysInfo_Screen(void);
 static void Populate_File_List_From_Cache(void);
-static void Build_CyberPong_Screen(void);
-static void Populate_Games_List_From_Cache(void);
+static void Populate_Games_Grid(void);
 
 /* ==========================================================================
  * EEPROM Settings Load / Save
@@ -102,13 +112,15 @@ static void Settings_SaveToEEPROM(void)
 }
 
 /* ==========================================================================
- * Universal 16/24/32-bit BMP Loader into External SRAM (MM_EXT_IMAGE_BUF)
+ * Universal 16/24/32-bit BMP Loader into External SRAM (nearest-neighbour downscale)
  * ========================================================================== */
 
 static lv_img_dsc_t s_custom_bmp_dsc;
 #define s_bmp_line_buf ((uint8_t *)MM_EXT_BMP_LINE_BUF)
 
-static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
+/* dst_fb must hold max_w * max_h RGB565 pixels */
+static bool Load_BMP_To_Buffer(const char *fatfs_path, uint16_t *dst_fb, int32_t max_w, int32_t max_h,
+                               lv_img_dsc_t *out_dsc)
 {
     static FIL bmp_file;
     UINT br = 0;
@@ -145,10 +157,9 @@ static bool Load_BMP_To_ExtSRAM(const char *fatfs_path, lv_img_dsc_t *out_dsc)
         return false;
     }
 
-    int32_t dst_w = (src_w > 320) ? 320 : src_w;
-    int32_t dst_h = (src_h > 216) ? 216 : src_h;
+    int32_t dst_w = (src_w > max_w) ? max_w : src_w;
+    int32_t dst_h = (src_h > max_h) ? max_h : src_h;
 
-    uint16_t *dst_fb = (uint16_t *)MM_EXT_IMAGE_BUF;
     uint32_t row_bytes = ((uint32_t)src_w * (bpp / 8U) + 3U) & ~3U;
 
     for (int32_t dy = 0; dy < dst_h; dy++)
@@ -224,7 +235,7 @@ static bool Set_Image_From_SD(lv_obj_t *img_obj, const char *fatfs_path)
 
     if (Ends_With_IgnoreCase(clean_path, ".bmp"))
     {
-        if (Load_BMP_To_ExtSRAM(clean_path, &s_custom_bmp_dsc))
+        if (Load_BMP_To_Buffer(clean_path, (uint16_t *)MM_EXT_IMAGE_BUF, 320, 216, &s_custom_bmp_dsc))
         {
             lv_img_set_src(img_obj, &s_custom_bmp_dsc);
             return true;
@@ -243,6 +254,45 @@ static bool Set_Image_From_SD(lv_obj_t *img_obj, const char *fatfs_path)
 
     lv_img_set_src(img_obj, lv_path);
     return true;
+}
+
+static void Wallpaper_LoadConfig(void)
+{
+    static FIL cfg_file;
+    UINT br = 0;
+
+    s_wallpaper_path[0] = '\0';
+    if (f_open(&cfg_file, WALLPAPER_CFG_PATH, FA_READ) != FR_OK)
+    {
+        return;
+    }
+    if (f_read(&cfg_file, s_wallpaper_path, sizeof(s_wallpaper_path) - 1U, &br) != FR_OK)
+    {
+        br = 0;
+    }
+    f_close(&cfg_file);
+
+    s_wallpaper_path[br] = '\0';
+    while (br > 0U && (s_wallpaper_path[br - 1U] == '\r' || s_wallpaper_path[br - 1U] == '\n' ||
+                       s_wallpaper_path[br - 1U] == ' '))
+    {
+        s_wallpaper_path[--br] = '\0';
+    }
+}
+
+static bool Wallpaper_SaveConfig(const char *path)
+{
+    static FIL cfg_file;
+    UINT bw = 0;
+    UINT len = (UINT)strlen(path);
+
+    if (f_open(&cfg_file, WALLPAPER_CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+    {
+        return false;
+    }
+    FRESULT res = f_write(&cfg_file, path, len, &bw);
+    f_close(&cfg_file);
+    return (res == FR_OK && bw == len);
 }
 
 /* ==========================================================================
@@ -311,6 +361,7 @@ void UIManager_Init(void)
 {
     /* Load persisted audio/system settings from AT24C02 EEPROM */
     Settings_LoadFromEEPROM();
+    Wallpaper_LoadConfig();
 
     lv_obj_t * scr = lv_scr_act();
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -388,19 +439,10 @@ void UIManager_ShowScreen(UI_Screen_t screen)
 {
     if (workspace_cont == NULL) return;
 
-    /* Stop active internal game timer if leaving Cyber-Pong screen */
-    if (game_timer != NULL)
-    {
-        lv_timer_del(game_timer);
-        game_timer = NULL;
-    }
-
     current_screen = screen;
     file_list_obj  = NULL;
+    games_grid_obj = NULL;
     lbl_time_set   = NULL;
-    game_paddle    = NULL;
-    game_ball      = NULL;
-    game_score_lbl = NULL;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -423,13 +465,8 @@ void UIManager_ShowScreen(UI_Screen_t screen)
             break;
 
         case UI_SCREEN_GAMES:
-            lv_label_set_text(lbl_screen_title, "Games Hub");
+            lv_label_set_text(lbl_screen_title, "Games");
             Build_Games_Screen();
-            break;
-
-        case UI_SCREEN_CYBER_PONG:
-            lv_label_set_text(lbl_screen_title, "ROM: Cyber-Pong");
-            Build_CyberPong_Screen();
             break;
 
         case UI_SCREEN_SETTINGS:
@@ -493,6 +530,25 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
     }
 }
 
+static bool Home_TryWallpaper(const char *path)
+{
+    static FILINFO fno;
+
+    if (path == NULL || path[0] == '\0' || f_stat(path, &fno) != FR_OK)
+    {
+        return false;
+    }
+
+    lv_obj_t * bg_img = lv_img_create(workspace_cont);
+    if (Set_Image_From_SD(bg_img, path))
+    {
+        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+        return true;
+    }
+    lv_obj_del(bg_img);
+    return false;
+}
+
 static void Build_Home_Screen(void)
 {
     static const char * const wall_candidates[] = {
@@ -502,23 +558,13 @@ static void Build_Home_Screen(void)
         "assets/wall.jpg"
     };
 
-    static FILINFO fno;
-    if (SDCard_IsMounted())
+    if (SDCard_IsMounted() && !Home_TryWallpaper(s_wallpaper_path))
     {
         for (size_t i = 0; i < sizeof(wall_candidates) / sizeof(wall_candidates[0]); i++)
         {
-            if (f_stat(wall_candidates[i], &fno) == FR_OK)
+            if (Home_TryWallpaper(wall_candidates[i]))
             {
-                lv_obj_t * bg_img = lv_img_create(workspace_cont);
-                if (Set_Image_From_SD(bg_img, wall_candidates[i]))
-                {
-                    lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
-                    break;
-                }
-                else
-                {
-                    lv_obj_del(bg_img);
-                }
+                break;
             }
         }
     }
@@ -543,6 +589,36 @@ static void close_preview_cb(lv_event_t * e)
     }
 }
 
+static void set_wallpaper_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_pending_screen = (int8_t)UI_SCREEN_FILES;
+        return;
+    }
+    if (code != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+
+    lv_obj_t * lbl = lv_obj_get_child(lv_event_get_target(e), 0);
+    if (Wallpaper_SaveConfig(s_preview_path))
+    {
+        strncpy(s_wallpaper_path, s_preview_path, sizeof(s_wallpaper_path) - 1U);
+        s_wallpaper_path[sizeof(s_wallpaper_path) - 1U] = '\0';
+        Beeper_Click();
+        if (lbl != NULL) lv_label_set_text(lbl, LV_SYMBOL_OK " Wallpaper");
+    }
+    else
+    {
+        Beeper_ErrorAlert();
+        if (lbl != NULL) lv_label_set_text(lbl, LV_SYMBOL_WARNING " Failed");
+    }
+}
+
 static void Open_Image_Preview(const char *fatfs_path)
 {
     lv_group_t * grp = lv_group_get_default();
@@ -551,10 +627,12 @@ static void Open_Image_Preview(const char *fatfs_path)
     file_list_obj = NULL;
     lv_obj_clean(workspace_cont);
 
+    bool decoded = false;
     lv_obj_t * img = lv_img_create(workspace_cont);
     if (Set_Image_From_SD(img, fatfs_path))
     {
         lv_obj_center(img);
+        decoded = true;
     }
     else
     {
@@ -576,6 +654,24 @@ static void Open_Image_Preview(const char *fatfs_path)
     lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(btn_close, close_preview_cb, LV_EVENT_KEY, NULL);
     if (grp != NULL) lv_group_add_obj(grp, btn_close);
+
+    /* BMP is the only format the home screen can decode at 320x216 */
+    if (decoded && Ends_With_IgnoreCase(fatfs_path, ".bmp"))
+    {
+        strncpy(s_preview_path, (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path, sizeof(s_preview_path) - 1U);
+        s_preview_path[sizeof(s_preview_path) - 1U] = '\0';
+
+        lv_obj_t * btn_wall = lv_btn_create(workspace_cont);
+        lv_obj_set_size(btn_wall, 110, 26);
+        lv_obj_align(btn_wall, LV_ALIGN_TOP_RIGHT, -6, 6);
+        lv_obj_t * lbl_wall = lv_label_create(btn_wall);
+        lv_label_set_text(lbl_wall, LV_SYMBOL_IMAGE " Set Wall");
+        lv_obj_center(lbl_wall);
+
+        lv_obj_add_event_cb(btn_wall, set_wallpaper_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(btn_wall, set_wallpaper_cb, LV_EVENT_KEY, NULL);
+        if (grp != NULL) lv_group_add_obj(grp, btn_wall);
+    }
 }
 
 static void Open_Text_Preview(const char *fatfs_path)
@@ -738,9 +834,9 @@ void UIManager_OnDirReady(void)
     {
         Populate_File_List_From_Cache();
     }
-    else if (current_screen == UI_SCREEN_GAMES && file_list_obj != NULL)
+    else if (current_screen == UI_SCREEN_GAMES && games_grid_obj != NULL)
     {
-        Populate_Games_List_From_Cache();
+        Populate_Games_Grid();
     }
 }
 
@@ -786,13 +882,12 @@ static void Populate_File_List_From_Cache(void)
 }
 
 /* ==========================================================================
- * 4A. Games Hub Menu (Internal ROM + External .bin + Script .c)
+ * 4. Games Launcher (built-in ROM game + games/<name>.bin as icon tiles)
  * ========================================================================== */
 
-static void games_hub_btn_event_cb(lv_event_t * e)
+static void games_tile_event_cb(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
-    lv_obj_t * obj = lv_event_get_target(e);
 
     if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
     {
@@ -800,290 +895,203 @@ static void games_hub_btn_event_cb(lv_event_t * e)
         s_pending_screen = (int8_t)UI_SCREEN_HOME;
         return;
     }
-
-    if (code == LV_EVENT_CLICKED && file_list_obj != NULL && obj != NULL)
+    if (code != LV_EVENT_CLICKED)
     {
-        const char * txt = lv_list_get_btn_text(file_list_obj, obj);
-        if (txt == NULL) return;
+        return;
+    }
 
-        Beeper_Click();
+    uint32_t idx = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= s_games_count)
+    {
+        return;
+    }
 
-        if (strcmp(txt, "[ Home Screen ]") == 0)
-        {
-            UIManager_ShowScreen(UI_SCREEN_HOME);
-            return;
-        }
-
-        if (strcmp(txt, "Internal: Cyber-Pong") == 0)
-        {
-            UIManager_ShowScreen(UI_SCREEN_CYBER_PONG);
-            return;
-        }
-
-        /* External: <filename.bin> */
-        if (strncmp(txt, "External: ", 10) == 0)
-        {
-            const char *fname = txt + 10;
-            snprintf(s_next_path, sizeof(s_next_path), "games/%.60s", fname);
-            (void)AppLoader_LoadAndRun(s_next_path);
-            return;
-        }
+    Beeper_Click();
+    if (s_games[idx].builtin)
+    {
+        (void)AppLoader_LoadAndRunImage(g_rom_arkanoid_bin,
+                                        (uint32_t)(g_rom_arkanoid_bin_end - g_rom_arkanoid_bin),
+                                        s_games[idx].file);
+    }
+    else
+    {
+        snprintf(s_next_path, sizeof(s_next_path), "games/%.60s", s_games[idx].file);
+        (void)AppLoader_LoadAndRun(s_next_path);
     }
 }
 
-static void Populate_Games_List_From_Cache(void)
+/* Looks for "<base>.bmp" next to the game in the cached /games listing */
+static bool Games_FindIcon(const char *bin_name, char *out_path, size_t out_size)
 {
-    if (file_list_obj == NULL) return;
+    size_t base_len = strlen(bin_name);
+    if (base_len <= 4U)
+    {
+        return false;
+    }
+    base_len -= 4U; /* strip ".bin" */
+
+    for (uint32_t i = 0; i < g_dir_cache.count; i++)
+    {
+        const char *name = g_dir_cache.items[i].name;
+        if (!g_dir_cache.items[i].is_dir && strlen(name) == base_len + 4U &&
+            strncmp(name, bin_name, base_len) == 0 && Ends_With_IgnoreCase(name, ".bmp"))
+        {
+            snprintf(out_path, out_size, "games/%.60s", name);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void Games_AddTile(const char *title, const char *icon_path, uint32_t accent_hex)
+{
+    uint32_t idx = s_games_count - 1U;
+
+    lv_obj_t * btn = lv_btn_create(games_grid_obj);
+    lv_obj_set_size(btn, 92, 92);
+    lv_obj_set_style_pad_all(btn, 2, 0);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x252F48), 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(accent_hex), 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(btn, 3, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+
+    uint16_t *slot = (uint16_t *)(MM_EXT_IMAGE_BUF + idx * GAME_ICON_SLOT_BYTES);
+    if (icon_path != NULL &&
+        Load_BMP_To_Buffer(icon_path, slot, GAME_ICON_SIZE, GAME_ICON_SIZE, &s_icon_dsc[idx]))
+    {
+        lv_obj_t * img = lv_img_create(btn);
+        lv_img_set_src(img, &s_icon_dsc[idx]);
+        lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 2);
+    }
+    else
+    {
+        /* Default icon: accent tile with the first letter of the game */
+        lv_obj_t * box = lv_obj_create(btn);
+        lv_obj_set_size(box, GAME_ICON_SIZE, GAME_ICON_SIZE);
+        lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 2);
+        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(box, 8, 0);
+        lv_obj_set_style_border_width(box, 0, 0);
+        lv_obj_set_style_bg_color(box, lv_color_hex(accent_hex), 0);
+        lv_obj_set_style_bg_opa(box, LV_OPA_70, 0);
+
+        lv_obj_t * sym = lv_label_create(box);
+        char letter = (title[0] >= 'a' && title[0] <= 'z') ? (char)(title[0] - 32) : title[0];
+        lv_label_set_text_fmt(sym, LV_SYMBOL_PLAY "\n%c", letter);
+        lv_obj_set_style_text_align(sym, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(sym, lv_color_hex(0x10141C), 0);
+        lv_obj_center(sym);
+    }
+
+    lv_obj_t * lbl = lv_label_create(btn);
+    lv_obj_set_width(lbl, 86);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(lbl, title);
+    lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    lv_obj_add_event_cb(btn, games_tile_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)idx);
+    lv_obj_add_event_cb(btn, games_tile_event_cb, LV_EVENT_KEY, (void *)(uintptr_t)idx);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, btn);
+}
+
+static void Populate_Games_Grid(void)
+{
+    if (games_grid_obj == NULL) return;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL) lv_group_remove_all_objs(grp);
 
-    lv_obj_clean(file_list_obj);
+    lv_obj_clean(games_grid_obj);
+    s_games_count = 0;
 
-    /* 1. Back to Home Screen */
-    lv_obj_t * home_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_HOME, "[ Home Screen ]");
-    lv_obj_add_event_cb(home_btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(home_btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
-    if (grp != NULL) lv_group_add_obj(grp, home_btn);
+    /* 1. Built-in game (works without an SD card) */
+    strncpy(s_games[0].file, "Arkanoid", sizeof(s_games[0].file) - 1U);
+    s_games[0].file[sizeof(s_games[0].file) - 1U] = '\0';
+    s_games[0].builtin = true;
+    s_games_count = 1;
+    Games_AddTile("Arkanoid", NULL, 0x00FF66);
 
-    /* 2. Built-in Firmware Games */
-    lv_list_add_text(file_list_obj, "Built-in Firmware Games:");
-    lv_obj_t * rom_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_PLAY, "Internal: Cyber-Pong");
-    lv_obj_set_style_text_color(rom_btn, lv_color_hex(0x00FF66), 0);
-    lv_obj_add_event_cb(rom_btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(rom_btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
-    if (grp != NULL) lv_group_add_obj(grp, rom_btn);
+    /* 2. SD card games */
+    static char title[STORAGE_MAX_NAME_LEN];
+    static char icon_path[STORAGE_MAX_PATH_LEN];
+    bool games_listed = g_dir_cache.io_success && (strcmp(g_dir_cache.path, "/games") == 0);
 
-    /* 3. SD Card Games (/games folder) */
-    lv_list_add_text(file_list_obj, "SD Card (/games):");
-
-    uint32_t ext_count = 0;
-    if (g_dir_cache.io_success)
+    for (uint32_t i = 0; games_listed && i < g_dir_cache.count && s_games_count < GAMES_MAX_TILES; i++)
     {
-        for (uint32_t i = 0; i < g_dir_cache.count; i++)
+        const char *fname = g_dir_cache.items[i].name;
+        if (g_dir_cache.items[i].is_dir || !Ends_With_IgnoreCase(fname, ".bin"))
         {
-            if (g_dir_cache.items[i].is_dir) continue;
-
-            const char *fname = g_dir_cache.items[i].name;
-            if (Ends_With_IgnoreCase(fname, ".bin"))
-            {
-                snprintf(s_title_buf, sizeof(s_title_buf), "External: %.50s", fname);
-                lv_obj_t * btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_CHARGE, s_title_buf);
-                lv_obj_set_style_text_color(btn, lv_color_hex(0xFFAE00), 0);
-                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
-                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
-                if (grp != NULL) lv_group_add_obj(grp, btn);
-                ext_count++;
-            }
-            else if (Ends_With_IgnoreCase(fname, ".c"))
-            {
-                snprintf(s_title_buf, sizeof(s_title_buf), "Script: %.50s", fname);
-                lv_obj_t * btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_EDIT, s_title_buf);
-                lv_obj_set_style_text_color(btn, lv_color_hex(0x00E5FF), 0);
-                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_CLICKED, NULL);
-                lv_obj_add_event_cb(btn, games_hub_btn_event_cb, LV_EVENT_KEY, NULL);
-                if (grp != NULL) lv_group_add_obj(grp, btn);
-                ext_count++;
-            }
+            continue;
         }
+
+        Game_Entry_t *g = &s_games[s_games_count];
+        strncpy(g->file, fname, sizeof(g->file) - 1U);
+        g->file[sizeof(g->file) - 1U] = '\0';
+        g->builtin = false;
+        s_games_count++;
+
+        strncpy(title, fname, sizeof(title) - 1U);
+        title[sizeof(title) - 1U] = '\0';
+        size_t len = strlen(title);
+        if (len > 4U) title[len - 4U] = '\0';
+
+        bool has_icon = Games_FindIcon(fname, icon_path, sizeof(icon_path));
+        Games_AddTile(title, has_icon ? icon_path : NULL, 0xFFAE00);
     }
 
-    if (ext_count == 0)
+    if (!SDCard_IsMounted())
     {
-        lv_list_add_text(file_list_obj, "No .bin or .c files in /games");
+        lv_obj_t * lbl = lv_label_create(games_grid_obj);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x888888), 0);
+        lv_label_set_text(lbl, "No SD card: built-in games only");
+    }
+
+    /* Home tile for touch / mouse users (keys: ESC / gamepad B) */
+    lv_obj_t * home = lv_btn_create(games_grid_obj);
+    lv_obj_set_size(home, 92, 92);
+    lv_obj_set_style_radius(home, 10, 0);
+    lv_obj_set_style_bg_color(home, lv_color_hex(0x1B2234), 0);
+    lv_obj_set_style_border_width(home, 2, 0);
+    lv_obj_set_style_border_color(home, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_color(home, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_t * home_lbl = lv_label_create(home);
+    lv_label_set_text(home_lbl, LV_SYMBOL_HOME "\nHome");
+    lv_obj_set_style_text_align(home_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(home_lbl);
+    lv_obj_add_event_cb(home, btn_back_home_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(home, global_key_event_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, home);
+
+    if (grp != NULL)
+    {
+        lv_obj_t * first = lv_obj_get_child(games_grid_obj, 0);
+        if (first != NULL) lv_group_focus_obj(first);
     }
 }
 
 static void Build_Games_Screen(void)
 {
-    file_list_obj = lv_list_create(workspace_cont);
-    lv_obj_set_size(file_list_obj, 308, 204);
-    lv_obj_align(file_list_obj, LV_ALIGN_CENTER, 0, 0);
+    games_grid_obj = lv_obj_create(workspace_cont);
+    lv_obj_set_size(games_grid_obj, 320, 216);
+    lv_obj_align(games_grid_obj, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(games_grid_obj, 0, 0);
+    lv_obj_set_style_border_width(games_grid_obj, 0, 0);
+    lv_obj_set_style_bg_opa(games_grid_obj, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(games_grid_obj, 8, 0);
+    lv_obj_set_style_pad_row(games_grid_obj, 8, 0);
+    lv_obj_set_style_pad_column(games_grid_obj, 8, 0);
+    lv_obj_set_flex_flow(games_grid_obj, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_scroll_dir(games_grid_obj, LV_DIR_VER);
 
-    Populate_Games_List_From_Cache();
+    Populate_Games_Grid();
     OSTasks_RequestDirList("/games");
-}
-
-/* ==========================================================================
- * 4. Built-in Arcade Game: Cyber-Pong (Gamepad / Touch / Mouse / Keys)
- * ========================================================================== */
-
-static void game_loop_timer_cb(lv_timer_t * t)
-{
-    (void)t;
-    if (current_screen != UI_SCREEN_CYBER_PONG || game_paddle == NULL || game_ball == NULL)
-    {
-        return;
-    }
-
-    /* 1. Read USB Gamepad D-Pad */
-    USB_GamepadState_t pad;
-    if (USBHostManager_GetGamepadState(&pad))
-    {
-        if (pad.dpad_left || pad.btn_l1)  paddle_x -= 6;
-        if (pad.dpad_right || pad.btn_r1) paddle_x += 6;
-        if (pad.btn_b)
-        {
-            UIManager_ShowScreen(UI_SCREEN_HOME);
-            return;
-        }
-    }
-
-    /* 2. Read Physical Board Buttons KEY_0 (Left) & KEY_2 (Right) */
-    if (HAL_GPIO_ReadPin(KEY_0_GPIO_Port, KEY_0_Pin) == GPIO_PIN_RESET) paddle_x -= 5;
-    if (HAL_GPIO_ReadPin(KEY_2_GPIO_Port, KEY_2_Pin) == GPIO_PIN_RESET) paddle_x += 5;
-
-    /* 3. Follow Touch / Mouse X if pressed */
-    lv_indev_t * indev = lv_indev_get_act();
-    lv_point_t pt;
-    if (indev != NULL)
-    {
-        lv_indev_get_point(indev, &pt);
-        if (pt.y > 60 && (pt.x > 0 && pt.x < 320))
-        {
-            /* Smoothly move towards pointer if mouse/touch active */
-        }
-    }
-
-    if (paddle_x < 4)   paddle_x = 4;
-    if (paddle_x > 246) paddle_x = 246;
-    lv_obj_set_pos(game_paddle, paddle_x, 192);
-
-    /* 4. Update Ball Physics */
-    ball_x += ball_vx;
-    ball_y += ball_vy;
-
-    /* Bounce Left / Right walls */
-    if (ball_x <= 4)
-    {
-        ball_x  = 4;
-        ball_vx = -ball_vx;
-        Beeper_Beep(8);
-    }
-    else if (ball_x >= 304)
-    {
-        ball_x  = 304;
-        ball_vx = -ball_vx;
-        Beeper_Beep(8);
-    }
-
-    /* Bounce Top ceiling */
-    if (ball_y <= 34)
-    {
-        ball_y  = 34;
-        ball_vy = -ball_vy;
-        Beeper_Beep(8);
-    }
-
-    /* Check Paddle Collision */
-    if (ball_vy > 0 && ball_y >= 180 && ball_y <= 194)
-    {
-        if (ball_x + 12 >= paddle_x && ball_x <= paddle_x + 70)
-        {
-            ball_y  = 179;
-            ball_vy = -ball_vy;
-            game_score++;
-            if (game_score > game_best) game_best = game_score;
-            Beeper_Click();
-
-            if (game_score_lbl != NULL)
-            {
-                lv_label_set_text_fmt(game_score_lbl, "Score: %lu   Best: %lu",
-                                      (unsigned long)game_score, (unsigned long)game_best);
-            }
-        }
-    }
-
-    /* Ball missed paddle -> Reset round */
-    if (ball_y > 210)
-    {
-        Beeper_Beep(60);
-        game_score = 0;
-        ball_x     = 154;
-        ball_y     = 60;
-        ball_vy    = 3;
-        if (game_score_lbl != NULL)
-        {
-            lv_label_set_text_fmt(game_score_lbl, "Score: %lu   Best: %lu",
-                                  (unsigned long)game_score, (unsigned long)game_best);
-        }
-    }
-
-    lv_obj_set_pos(game_ball, ball_x, ball_y);
-}
-
-static void game_touch_move_cb(lv_event_t * e)
-{
-    if (lv_event_get_code(e) == LV_EVENT_PRESSING)
-    {
-        lv_indev_t * indev = lv_indev_get_act();
-        if (indev != NULL)
-        {
-            lv_point_t p;
-            lv_indev_get_point(indev, &p);
-            paddle_x = p.x - 35;
-        }
-    }
-    else if (lv_event_get_code(e) == LV_EVENT_KEY)
-    {
-        uint32_t key = lv_event_get_key(e);
-        if (key == LV_KEY_ESC)
-        {
-            UIManager_ShowScreen(UI_SCREEN_GAMES);
-        }
-    }
-}
-
-static void Build_CyberPong_Screen(void)
-{
-    game_score = 0;
-    paddle_x   = 125;
-    ball_x     = 154;
-    ball_y     = 60;
-    ball_vx    = 3;
-    ball_vy    = 3;
-
-    /* Touch area on workspace to drag paddle with finger or mouse */
-    lv_obj_add_event_cb(workspace_cont, game_touch_move_cb, LV_EVENT_PRESSING, NULL);
-
-    /* Top bar: Back button & Score */
-    lv_obj_t * btn_exit = lv_btn_create(workspace_cont);
-    lv_obj_set_size(btn_exit, 64, 24);
-    lv_obj_align(btn_exit, LV_ALIGN_TOP_LEFT, 6, 4);
-    lv_obj_t * lbl = lv_label_create(btn_exit);
-    lv_label_set_text(lbl, LV_SYMBOL_HOME " Exit");
-    lv_obj_center(lbl);
-    lv_obj_add_event_cb(btn_exit, btn_back_home_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(btn_exit, global_key_event_cb, LV_EVENT_KEY, NULL);
-
-    lv_group_t * grp = lv_group_get_default();
-    if (grp != NULL) lv_group_add_obj(grp, btn_exit);
-
-    game_score_lbl = lv_label_create(workspace_cont);
-    lv_obj_set_style_text_color(game_score_lbl, lv_color_hex(0x00FF66), 0);
-    lv_obj_align(game_score_lbl, LV_ALIGN_TOP_RIGHT, -12, 8);
-    lv_label_set_text_fmt(game_score_lbl, "Score: 0   Best: %lu", (unsigned long)game_best);
-
-    /* Neon Paddle */
-    game_paddle = lv_obj_create(workspace_cont);
-    lv_obj_set_size(game_paddle, 70, 10);
-    lv_obj_set_pos(game_paddle, paddle_x, 192);
-    lv_obj_set_style_bg_color(game_paddle, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_border_width(game_paddle, 0, 0);
-    lv_obj_set_style_radius(game_paddle, 4, 0);
-    lv_obj_clear_flag(game_paddle, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Neon Ball */
-    game_ball = lv_obj_create(workspace_cont);
-    lv_obj_set_size(game_ball, 12, 12);
-    lv_obj_set_pos(game_ball, ball_x, ball_y);
-    lv_obj_set_style_bg_color(game_ball, lv_color_hex(0xFFAE00), 0);
-    lv_obj_set_style_border_width(game_ball, 0, 0);
-    lv_obj_set_style_radius(game_ball, LV_RADIUS_CIRCLE, 0);
-    lv_obj_clear_flag(game_ball, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Start 50 Hz Game Loop Timer */
-    game_timer = lv_timer_create(game_loop_timer_cb, 20, NULL);
 }
 
 /* ==========================================================================
@@ -1213,7 +1221,7 @@ static void Build_SysInfo_Screen(void)
     lv_obj_t * info_lbl = lv_label_create(panel);
     lv_obj_set_style_text_color(info_lbl, lv_color_hex(0xE0E0E0), 0);
     lv_label_set_text_fmt(info_lbl,
-        "MCU: STM32F407ZET6 @ 168 MHz\n"
+        "MCU: STM32F407ZGT6 @ 168 MHz\n"
         "FSMC SRAM: %lu KB (%s)\n"
         "CCM RAM: 64 KB (%s)\n"
         "SPI Flash W25Q: ID 0x%06X\n"
