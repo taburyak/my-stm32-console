@@ -28,6 +28,7 @@ extern "C" {
 #define APP_KEY_B               SDK_KEY_B
 #define APP_KEY_X               SDK_KEY_X
 #define APP_KEY_EXIT            SDK_KEY_EXIT
+#define APP_KEY_START           SDK_KEY_START
 
 typedef SDK_DrawTextParams_t App_DrawTextParams_t;
 

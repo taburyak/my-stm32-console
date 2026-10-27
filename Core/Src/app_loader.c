@@ -456,6 +456,8 @@ uint32_t AppLoader_ReadInputMask_Privileged(void)
         if (pad.dpad_down)                mask |= APP_KEY_DOWN;
         if (pad.btn_a)                    mask |= APP_KEY_A;
         if (pad.btn_x)                    mask |= APP_KEY_B; /* X acts as Secondary Action / Hard Drop */
+        if (pad.btn_y)                    mask |= APP_KEY_X;
+        if (pad.btn_l2 || pad.btn_r2)     mask |= APP_KEY_START;
         if (pad.btn_b || pad.btn_select)  mask |= APP_KEY_EXIT;
     }
 

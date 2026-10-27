@@ -50,6 +50,7 @@ console_sdk_app(crash_test "${CMAKE_SOURCE_DIR}/sdk_apps/crash_test.c")
 console_sdk_app(file_test "${CMAKE_SOURCE_DIR}/sdk_apps/file_test.c")
 console_sdk_app(storage_test "${CMAKE_SOURCE_DIR}/sdk_apps/storage_test.c")
 console_sdk_app(media_test "${CMAKE_SOURCE_DIR}/sdk_apps/media_test.c")
+console_sdk_app(snake     "${CMAKE_SOURCE_DIR}/sdk_apps/snake.c")
 
 # Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
 set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")

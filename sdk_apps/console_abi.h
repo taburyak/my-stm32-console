@@ -131,8 +131,9 @@ typedef struct {
 #define SDK_KEY_DOWN            (1UL << 3) /* Gamepad Down  / Keyboard Down Arrow or 'S' */
 #define SDK_KEY_A               (1UL << 4) /* Gamepad 'A'   / Keyboard Space or Enter */
 #define SDK_KEY_B               (1UL << 5) /* Gamepad 'X'   / Keyboard 'X' or 'Z' */
-#define SDK_KEY_X               (1UL << 6)
+#define SDK_KEY_X               (1UL << 6) /* Gamepad 'Y'   / Keyboard 'C' */
 #define SDK_KEY_EXIT            (1UL << 7) /* Gamepad 'B' or Select / Keyboard ESC / Board KEY_3 */
+#define SDK_KEY_START           (1UL << 8) /* Gamepad L2 or R2 / Keyboard 'P' (pause) */
 
 /* ---- SDK_SVC_DRAW_TEXT parameter block ---- */
 typedef struct {

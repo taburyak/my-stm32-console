@@ -25,6 +25,7 @@
 #define KEY_B                   SDK_KEY_B
 #define KEY_X                   SDK_KEY_X
 #define KEY_EXIT                SDK_KEY_EXIT
+#define KEY_START               SDK_KEY_START
 
 /* ==========================================================================
  * 3. RGB565 Color Macros & Palette
@@ -407,6 +408,75 @@ SDK_SYSCALL int32_t sys_gpio_write(uint32_t pin, uint32_t value)
 SDK_SYSCALL int32_t sys_gpio_read(uint32_t pin)
 {
     return (int32_t)SDK_SVC_CALL1(SDK_SVC_GPIO_READ, pin);
+}
+
+/* ==========================================================================
+ * 7. Game Helpers
+ * ========================================================================== */
+
+/* Sleeps until the next frame deadline; *next_tick = 0 starts the clock. Drops frames instead of catching up */
+static inline void sdk_frame_sync(uint32_t *next_tick, uint32_t period_ms)
+{
+    uint32_t now = sys_get_tick();
+    if (*next_tick == 0U)
+    {
+        *next_tick = now;
+    }
+    *next_tick += period_ms;
+    int32_t wait = (int32_t)(*next_tick - now);
+    if (wait > 0)
+    {
+        sys_sleep_ms((uint32_t)wait);
+    }
+    else
+    {
+        *next_tick = now;
+    }
+}
+
+#define SDK_INPUT_KEYS      9U   /* bits 0..8 of the key mask */
+#define SDK_INPUT_DAS_MS    170U /* delay before auto-repeat */
+#define SDK_INPUT_ARR_MS    50U  /* auto-repeat period */
+
+/* Edge and auto-repeat tracking: pressed/released/repeat hold one frame, repeat also fires on press */
+typedef struct {
+    uint32_t held;
+    uint32_t pressed;
+    uint32_t released;
+    uint32_t repeat;
+    uint32_t next_repeat[SDK_INPUT_KEYS];
+    uint16_t das_ms;
+    uint16_t arr_ms;
+} SDK_Input_t;
+
+static inline void sdk_input_init(SDK_Input_t *in)
+{
+    sdk_memset(in, 0, sizeof(*in));
+    in->held   = sys_get_keys();  /* keys held at start do not count as presses */
+    in->das_ms = SDK_INPUT_DAS_MS;
+    in->arr_ms = SDK_INPUT_ARR_MS;
+}
+
+static inline void sdk_input_update(SDK_Input_t *in, uint32_t keys, uint32_t now)
+{
+    in->pressed  = keys & ~in->held;
+    in->released = in->held & ~keys;
+    in->held     = keys;
+    in->repeat   = 0U;
+    for (uint32_t i = 0U; i < SDK_INPUT_KEYS; i++)
+    {
+        uint32_t bit = 1UL << i;
+        if ((in->pressed & bit) != 0U)
+        {
+            in->repeat |= bit;
+            in->next_repeat[i] = now + in->das_ms;
+        }
+        else if (((keys & bit) != 0U) && ((int32_t)(now - in->next_repeat[i]) >= 0))
+        {
+            in->repeat |= bit;
+            in->next_repeat[i] = now + in->arr_ms;
+        }
+    }
 }
 
 #endif /* CONSOLE_SDK_H */
