@@ -809,6 +809,9 @@ static void MX_FSMC_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+_Static_assert(MM_APP_RAM_SIZE == (32UL * 1024UL), "MPU Region 2 size must match MM_APP_RAM_SIZE");
+_Static_assert(MM_EXT_APP_SIZE == (512UL * 1024UL), "MPU Region 4 size must match MM_EXT_APP_SIZE");
+
 void MPU_Config_UserSandbox(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
@@ -830,36 +833,56 @@ void MPU_Config_UserSandbox(void)
   MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 1: Internal SRAM (Stacks, Variables & 0-WS App Sandbox at 0x20018000)
+  // Region 1: Internal SRAM (kernel) - privileged only, never executable
   MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
   MPU_InitStruct.Number           = MPU_REGION_NUMBER1;
   MPU_InitStruct.BaseAddress      = 0x20000000;
   MPU_InitStruct.Size             = MPU_REGION_SIZE_128KB;
   MPU_InitStruct.SubRegionDisable = 0x0;
   MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
-  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
-  MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_ENABLE; // Allow Sandbox code execution!
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+  MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
   MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
   MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
   MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 2: External SRAM (Sandbox & Framebuffers) — Normal Non-Cacheable Memory (TEX=1, C=0, B=0)
-  MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+  // Region 2: App sandbox in internal SRAM (code + data + stack); overrides Region 1
   MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
-  MPU_InitStruct.BaseAddress      = 0x68000000;
-  MPU_InitStruct.Size             = MPU_REGION_SIZE_1MB;
-  MPU_InitStruct.SubRegionDisable = 0x0;
-  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1; // CRITICAL: Normal Memory (allows unaligned access!)
+  MPU_InitStruct.BaseAddress      = MM_APP_RAM_BASE;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_32KB;
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_ENABLE;
-  MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  // Region 3: External SRAM (kernel buffers & heap) - Normal Non-Cacheable (TEX=1, C=0, B=0), privileged only
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER3;
+  MPU_InitStruct.BaseAddress      = MM_EXT_BASE;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_1MB;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1; // CRITICAL: Normal Memory (allows unaligned access!)
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+  MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
   MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
   MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Enable the MPU. The background region will allow the kernel to access the peripherals (0x40000000)
-  // But our task (via tag 1) won't have access there!
+  // Region 4: App data sandbox in external SRAM; overrides Region 3, no code fetch from FSMC
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER4;
+  MPU_InitStruct.BaseAddress      = MM_EXT_APP_BASE;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_512KB;
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  // Region 5: CCM RAM (kernel stacks) - privileged only, never executable
+  MPU_InitStruct.Number           = MPU_REGION_NUMBER5;
+  MPU_InitStruct.BaseAddress      = 0x10000000;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
+  MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_PRIV_RW;
+  MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  // Enable the MPU. The background region keeps peripherals accessible to privileged code only
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 
   // Dedicated BusFault / UsageFault handlers (MemManage is enabled by HAL_MPU_Enable)
