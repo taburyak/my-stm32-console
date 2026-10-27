@@ -114,6 +114,10 @@ const HeapRegion_t xHeapRegions[] = {
 
 /* Framebuffer in External SRAM (Bank 3) */
 uint16_t *frame_buffer = NULL; // It will be allocated via the FreeRTOS heap
+
+/* App sandbox bounds defined only in linker/STM32F407ZG_console.ld */
+extern uint8_t _sapp_ram[];
+extern uint8_t _eapp_ram[];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -191,6 +195,13 @@ int main(void)
   MX_USB_OTG_FS_HCD_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
+
+  if (((uint32_t)_sapp_ram != MM_APP_RAM_BASE) ||
+      ((uint32_t)_eapp_ram != (MM_APP_RAM_BASE + MM_APP_RAM_SIZE)))
+  {
+    printf("[MEM] FATAL: linker APP_RAM does not match memory_map.h\r\n");
+    Error_Handler();
+  }
 
   // IMPORTANT: Configure and enable the MPU before the OS starts
   MPU_Config_UserSandbox();
@@ -900,6 +911,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  /* SVCall must stay unmasked (priority 0) until FreeRTOS issues 'svc 0' with BASEPRI set;
+   * afterwards app syscalls run below all peripheral IRQs and above PendSV. */
+  HAL_NVIC_SetPriority(SVCall_IRQn, 14U, 0U);
+
   printf("[OS] GuiRenderTask (DefaultTask) Started.\r\n");
 
   printf("\r\n----------------------------------------\r\n");

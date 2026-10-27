@@ -246,12 +246,13 @@ __attribute__((noinline)) static void sys_play_tone(uint16_t freq_hz, uint16_t d
     __asm volatile ("svc 14" : "+r"(r0) : "r"(r1) : "memory");
 }
 
+/* Blocking syscalls (15, 16) run through the kernel gate: r1-r3, r12 and flags are clobbered */
 __attribute__((noinline)) static bool sys_save_state(const char *filename, const void *data, uint32_t len)
 {
     register uint32_t r0 __asm("r0") = (uint32_t)filename;
     register uint32_t r1 __asm("r1") = (uint32_t)data;
     register uint32_t r2 __asm("r2") = len;
-    __asm volatile ("svc 15" : "+r"(r0) : "r"(r1), "r"(r2) : "memory");
+    __asm volatile ("svc 15" : "+r"(r0), "+r"(r1), "+r"(r2) : : "r3", "r12", "cc", "memory");
     return (r0 != 0U);
 }
 
@@ -260,7 +261,7 @@ __attribute__((noinline)) static uint32_t sys_load_state(const char *filename, v
     register uint32_t r0 __asm("r0") = (uint32_t)filename;
     register uint32_t r1 __asm("r1") = (uint32_t)dst;
     register uint32_t r2 __asm("r2") = max_len;
-    __asm volatile ("svc 16" : "+r"(r0) : "r"(r1), "r"(r2) : "memory");
+    __asm volatile ("svc 16" : "+r"(r0), "+r"(r1), "+r"(r2) : : "r3", "r12", "cc", "memory");
     return r0;
 }
 

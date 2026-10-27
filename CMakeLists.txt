@@ -34,6 +34,13 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+# Project-owned linker script: replaces the CubeMX one (-T ...STM32F407xx_FLASH.ld) set in the toolchain file
+set(CONSOLE_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/STM32F407ZG_console.ld")
+string(REGEX REPLACE "-T *\"[^\"]*\\.ld\"" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+string(REGEX REPLACE "-T *[^ \"]*\\.ld" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-T${CONSOLE_LINKER_SCRIPT}")
+set_property(TARGET ${CMAKE_PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS "${CONSOLE_LINKER_SCRIPT}")
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 

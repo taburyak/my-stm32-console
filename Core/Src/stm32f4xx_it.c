@@ -49,13 +49,22 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+/* Syscall gate state: blocking syscalls run in privileged thread mode on the sandbox task */
+volatile uint32_t g_sandbox_in_gate = 0U;
+volatile uint32_t g_gate_number     = 0U;
+volatile uint32_t g_gate_app_lr     = 0U;
+volatile uint32_t g_gate_ret_pc     = 0U;
 
+/* Minimum free app stack for FatFs + SD driver running on the app stack */
+#define SVC_GATE_MIN_STACK_BYTES  2048U
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 extern void vPortSVCHandler(void); // Original FreeRTOS handler
 void Custom_SVC_Handler_C(uint32_t *svc_args);
+uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2);
+void Svc_GateTrampoline(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -302,7 +311,7 @@ void DMA2_Stream6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-// Assembly wrapper to catch context and route SVC 0 directly to FreeRTOS!
+// SVC 0 from MSP starts FreeRTOS; every SVC from a task (PSP) goes to the custom dispatcher
 __attribute__((naked)) void SVC_Handler(void)
 {
     __asm volatile(
@@ -310,13 +319,85 @@ __attribute__((naked)) void SVC_Handler(void)
         "ite eq                    \n"
         "mrseq r0, msp             \n" /* r0 = stack frame pointer */
         "mrsne r0, psp             \n"
+        "bne 2f                    \n" /* Task (PSP) caller: never route to vPortSVCHandler */
         "ldr r1, [r0, #24]         \n" /* r1 = stacked PC */
         "ldrb r1, [r1, #-2]        \n" /* r1 = SVC number (byte from 'svc #N' instruction) */
         "cbz r1, 1f                \n" /* If SVC number == 0, jump directly to vPortSVCHandler! */
-        "b Custom_SVC_Handler_C    \n" /* Otherwise, handle custom OS syscalls (1..8) in C */
+        "2:                        \n"
+        "b Custom_SVC_Handler_C    \n"
         "1:                        \n"
         "b vPortSVCHandler         \n" /* Direct tail-jump with untouched MSP and LR! */
     );
+}
+
+/*
+ * Blocking syscalls cannot wait in handler mode. The SVC handler redirects the exception
+ * return to Svc_GateTrampoline, which runs privileged in thread mode on the app stack,
+ * calls Svc_GateDispatch, drops privilege and resumes the app after its 'svc' instruction.
+ * Clobbers r1-r3, r12 and flags; r0 = result; LR is restored.
+ */
+static void Svc_EnterGate(uint32_t *frame, uint8_t number)
+{
+  uint32_t free_stack = (uint32_t)frame - MM_APP_STACK_BASE;
+
+  if ((g_sandbox_in_gate != 0U) ||
+      ((uint32_t)frame < MM_APP_STACK_BASE) ||
+      (free_stack < SVC_GATE_MIN_STACK_BYTES))
+  {
+    frame[0] = 0U;
+    return;
+  }
+
+  g_gate_number     = number;
+  g_gate_app_lr     = frame[5];
+  g_gate_ret_pc     = frame[6] | 1U;
+  g_sandbox_in_gate = 1U;
+
+  __set_CONTROL(__get_CONTROL() & ~CONTROL_nPRIV_Msk);
+  frame[6] = ((uint32_t)Svc_GateTrampoline) & ~1U;
+}
+
+__attribute__((naked)) void Svc_GateTrampoline(void)
+{
+    __asm volatile(
+        "mov  r3, sp                          \n" /* Align SP to 8 bytes for AAPCS */
+        "bic  r12, r3, #7                     \n"
+        "mov  sp, r12                         \n"
+        "push {r3, r4}                        \n"
+        "bl   Svc_GateDispatch                \n" /* r0..r2 = app arguments, r0 = result */
+        "pop  {r3, r4}                        \n"
+        "mov  sp, r3                          \n"
+        "movw r1, #:lower16:g_gate_app_lr     \n"
+        "movt r1, #:upper16:g_gate_app_lr     \n"
+        "ldr  lr, [r1]                        \n"
+        "movw r1, #:lower16:g_gate_ret_pc     \n"
+        "movt r1, #:upper16:g_gate_ret_pc     \n"
+        "ldr  r12, [r1]                       \n"
+        "movw r1, #:lower16:g_sandbox_in_gate \n" /* Clear the flag while still privileged */
+        "movt r1, #:upper16:g_sandbox_in_gate \n"
+        "movs r2, #0                          \n"
+        "str  r2, [r1]                        \n"
+        "mrs  r1, control                     \n"
+        "orr  r1, r1, #1                      \n"
+        "msr  control, r1                     \n"
+        "isb                                  \n"
+        "bx   r12                             \n"
+    );
+}
+
+uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2)
+{
+  switch (g_gate_number)
+  {
+    case 15U: /* bool sys_save_state(const char *filename, const void *data, uint32_t len) */
+      return AppLoader_SaveState_Privileged((const char *)a0, (const void *)a1, a2) ? 1U : 0U;
+
+    case 16U: /* uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
+      return AppLoader_LoadState_Privileged((const char *)a0, (void *)a1, a2);
+
+    default:
+      return 0U;
+  }
 }
 
 // C-handler for system calls (SVC 1..255) from Unprivileged Sandbox
@@ -486,15 +567,8 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
       break;
 
     case 15U: /* SVC 15: bool sys_save_state(const char *filename, const void *data, uint32_t len) */
-      svc_args[0] = AppLoader_SaveState_Privileged((const char *)svc_args[0],
-                                                   (const void *)svc_args[1],
-                                                   svc_args[2]) ? 1U : 0U;
-      break;
-
     case 16U: /* SVC 16: uint32_t sys_load_state(const char *filename, void *dst, uint32_t max_len) */
-      svc_args[0] = AppLoader_LoadState_Privileged((const char *)svc_args[0],
-                                                   (void *)svc_args[1],
-                                                   svc_args[2]);
+      Svc_EnterGate(svc_args, svc_number);
       break;
 
     default:
