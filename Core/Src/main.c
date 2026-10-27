@@ -988,7 +988,8 @@ void StartDefaultTask(void *argument)
         printf("[LOADER] App crashed: %s\r\n", crash_text);
         lv_obj_t *mbox = lv_msgbox_create(NULL, "App crashed", crash_text, NULL, false);
         lv_obj_center(mbox);
-        lv_obj_del_delayed(mbox, 4000);
+        /* With a NULL parent LVGL wraps the box in a dimmed modal backdrop: delete the backdrop */
+        lv_obj_del_delayed(lv_obj_get_parent(mbox), 4000);
         Beeper_ErrorAlert();
       }
       else
