@@ -305,7 +305,7 @@ void app_main(void)
                     s_mode = (uint8_t)((s_mode + 1U) % MODE_COUNT);
                     draw_menu();
                 }
-                if (in.pressed & KEY_A)
+                if (in.pressed & (KEY_A | KEY_UP))
                 {
                     start_game();
                     next_step = now + step_interval();

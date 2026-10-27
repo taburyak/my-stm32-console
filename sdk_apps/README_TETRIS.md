@@ -3,19 +3,21 @@
 A fully featured, standalone 8-bit Cyber-Tetris application for the STM32F407 console.
 
 ## Features
-- **7 Classic Tetromino Shapes** (I, J, L, O, S, T, Z) with 4-state rotations and wall-kick tolerance.
-- **Dynamic Speed & Levels**: Fall speed increases as you clear lines (level up every 10 lines).
-- **Next Piece Window**: Preview the upcoming piece.
-- **Score & High Score**: Full score calculation based on single, double, triple, and 4-line Tetris clears.
-- **Soft & Hard Drops**: Tap Down for soft drop or B for instant Hard Drop.
-- **Sound & LED Feedback**: Beeper alerts on rotation, drop, line clear, and game over.
+- 7-bag randomizer, SRS rotation states with simple wall kicks (0, ±1, ±2 columns, 1 row up).
+- Lock delay 400 ms (reset by moves/rotations, up to 15 times).
+- Levels every 10 lines; gravity 450 ms at level 0 down to 80 ms.
+- Scoring: 40 / 100 / 300 / 1200 x (level + 1); soft drop +1 per cell, hard drop +2 per cell.
+- Ghost piece, hold slot, next preview, line-clear flash, pause.
+- Best score: `SD:/appdata/tetris/best.dat` (imported once from the old `/saves/tetris.sav`).
 
 ## Controls
-- **D-Pad Left / Right**: Move piece
-- **D-Pad Down**: Soft drop
-- **Button A / D-Pad Up**: Rotate piece clockwise
-- **Button B**: Hard drop (instant)
-- **Button Home / Exit**: Return to Console Main Menu
+- **Left / Right**: move (auto-repeat after 170 ms, every 50 ms)
+- **Down**: soft drop
+- **A / Up**: rotate clockwise (A or Up also starts a game)
+- **B** (pad X, key X/Z): hard drop
+- **X** (pad Y, key C): hold
+- **START** (pad L2/R2, key P): pause
+- **ESC** / pad B / board KEY3: exit
 
 ## How to Build
 Built together with the firmware (CMake target `sdk_app_tetris`) into `build/<preset>/sdk_apps/tetris.bin`.

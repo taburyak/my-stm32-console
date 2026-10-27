@@ -44,7 +44,7 @@ set_property(TARGET ${CMAKE_PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS "${CONSOL
 # SDK apps: built into ${CMAKE_BINARY_DIR}/sdk_apps/<name>.bin (copy to SD card games/)
 include(sdk_apps/console_sdk_app.cmake)
 console_sdk_app(arkanoid  "${CMAKE_SOURCE_DIR}/sdk_apps/arkanoid.c")
-console_sdk_app(tetris    "${CMAKE_SOURCE_DIR}/sdk_apps/tetris_ext.c")
+console_sdk_app(tetris    "${CMAKE_SOURCE_DIR}/sdk_apps/tetris.c")
 console_sdk_app(sdk_test  "${CMAKE_SOURCE_DIR}/sdk_apps/sdk_test.c")
 console_sdk_app(crash_test "${CMAKE_SOURCE_DIR}/sdk_apps/crash_test.c")
 console_sdk_app(file_test "${CMAKE_SOURCE_DIR}/sdk_apps/file_test.c")

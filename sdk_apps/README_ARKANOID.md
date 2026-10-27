@@ -8,9 +8,11 @@ The same source is also built into the firmware by CMake and shown in the Games 
 so it is available without an SD card.
 
 ## Gameplay
-- 4 x 8 brick wall (top rows give more points); a cleared wall respawns and the ball speeds up.
-- Paddle: Left / Right (gamepad, keyboard arrows / A-D, board keys); launch the ball with A / Space.
-- High score is saved to `/saves/arkanoid.sav` (needs an SD card).
+- 4 level patterns of 6 x 8 bricks; silver-framed bricks need two hits. Each level is faster.
+- 3 lives. The bounce angle depends on where the ball hits the paddle; side hits on bricks reflect horizontally.
+- Paddle: Left / Right (gamepad, keyboard arrows / A-D, board keys), USB mouse or touch screen.
+- Launch: A / Space / board UP / mouse click / tap. Pause: gamepad L2/R2 or key P.
+- Best score: `SD:/appdata/arkanoid/best.dat` (imported once from the old `/saves/arkanoid.sav`).
 - Exit: ESC / gamepad B / board KEY3.
 
 ## Build for the SD card
