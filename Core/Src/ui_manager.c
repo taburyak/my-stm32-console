@@ -1253,27 +1253,73 @@ static void Build_SysInfo_Screen(void)
     uint32_t total_mb = 0, free_mb = 0;
     (void)SDCard_GetFreeSpace(&total_mb, &free_mb);
 
+    /* Get CPU Load and Heap status */
+    uint32_t free_heap = xPortGetFreeHeapSize();
+    uint32_t cpu_load = 0;
+
+#if (configGENERATE_RUN_TIME_STATS == 1)
+    static TaskStatus_t *pxTaskStatusArray = NULL;
+    static uint32_t ulLastTotalRunTime = 0;
+    static uint32_t ulLastIdleRunTime = 0;
+
+    UBaseType_t uxArraySize = uxTaskGetNumberOfTasks();
+    pxTaskStatusArray = pvPortMalloc(uxArraySize * sizeof(TaskStatus_t));
+
+    if (pxTaskStatusArray != NULL)
+    {
+        uint32_t ulTotalRunTime;
+        uxArraySize = uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, &ulTotalRunTime);
+
+        if (ulTotalRunTime > 0)
+        {
+            uint32_t ulIdleRunTime = 0;
+            for (UBaseType_t x = 0; x < uxArraySize; x++)
+            {
+                if (strcmp(pxTaskStatusArray[x].pcTaskName, "IDLE") == 0)
+                {
+                    ulIdleRunTime = pxTaskStatusArray[x].ulRunTimeCounter;
+                    break;
+                }
+            }
+
+            /* Calculate delta-based (instant) CPU load */
+            if (ulTotalRunTime != ulLastTotalRunTime)
+            {
+                uint32_t deltaTotal = ulTotalRunTime - ulLastTotalRunTime;
+                uint32_t deltaIdle = ulIdleRunTime - ulLastIdleRunTime;
+                cpu_load = 100 - (deltaIdle * 100 / deltaTotal);
+            }
+
+            ulLastTotalRunTime = ulTotalRunTime;
+            ulLastIdleRunTime = ulIdleRunTime;
+        }
+        vPortFree(pxTaskStatusArray);
+    }
+#endif
+
     lv_obj_t * panel = lv_obj_create(workspace_cont);
-    lv_obj_set_size(panel, 296, 145);
-    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_set_size(panel, 296, 155);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 5);
     lv_obj_set_style_bg_color(panel, lv_color_hex(0x101520), 0);
 
     lv_obj_t * info_lbl = lv_label_create(panel);
     lv_obj_set_style_text_color(info_lbl, lv_color_hex(0xE0E0E0), 0);
     lv_label_set_text_fmt(info_lbl,
         "MCU: STM32F407ZGT6 @ 168 MHz\n"
+        "CPU Load: %lu %% | Free Heap: %lu KB\n"
         "FSMC SRAM: %lu KB (%s)\n"
         "CCM RAM: 64 KB (%s)\n"
         "SPI Flash W25Q: ID 0x%06X\n"
-        "EEPROM AT24C02: %s\n"
         "SD Card: %lu MB Free / %lu MB",
+        (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
         (unsigned long)rep->sram_size_kb, rep->sram_ok ? "OK" : "ERR",
         rep->ccmram_ok ? "OK" : "ERR",
         (unsigned int)rep->flash_id,
-        rep->eeprom_ok ? "OK" : "Missing",
         (unsigned long)free_mb, (unsigned long)total_mb);
 
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+
     lv_obj_set_size(btn_back, 120, 34);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
     lv_obj_t * lbl_b = lv_label_create(btn_back);

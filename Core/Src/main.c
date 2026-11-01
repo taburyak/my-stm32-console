@@ -77,6 +77,8 @@ DMA_HandleTypeDef hdma_sdio_tx;
 
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim5;
+
 UART_HandleTypeDef huart3;
 
 HCD_HandleTypeDef hhcd_USB_OTG_FS;
@@ -127,6 +129,7 @@ static void MX_SDIO_SD_Init(void);
 static void MX_USB_OTG_FS_HCD_Init(void);
 static void MX_RTC_Init(void);
 static void MX_IWDG_Init(void);
+static void MX_TIM5_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -147,7 +150,19 @@ int _write(int file, char *ptr, int len)
     HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
     return len;
 }
+
+/* FreeRTOS RunTime Stats Timer Implementation using CubeMX-generated htim5 (32-bit) */
+void configureTimerForRunTimeStats(void)
+{
+    HAL_TIM_Base_Start(&htim5);
+}
+
+unsigned long getRunTimeCounterValue(void)
+{
+    return (unsigned long)__HAL_TIM_GET_COUNTER(&htim5);
+}
 /* USER CODE END 0 */
+
 
 /**
   * @brief  The application entry point.
@@ -189,6 +204,7 @@ int main(void)
   MX_USB_OTG_FS_HCD_Init();
   MX_RTC_Init();
   MX_IWDG_Init();
+  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -535,6 +551,51 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 83;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 4294967295;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -633,6 +694,9 @@ static void MX_DMA_Init(void)
   }
 
   /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
   /* DMA2_Stream3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
@@ -1082,12 +1146,14 @@ void StartDefaultTask(void *argument)
     }
 
         /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
-    UIManager_Update();
+        UIManager_Update();
 
-    /* 4. LVGL Graphics Rendering */
-    lv_timer_handler();
+        /* 4. LVGL Graphics Rendering */
+        LVGL_Port_HandleFlushConfirmation();
+        lv_timer_handler();
 
         /* 5. Refresh Watchdog */
+
     HAL_IWDG_Refresh(&hiwdg);
 
     /* 6. Pause 15ms (~66 FPS frame pacing) */

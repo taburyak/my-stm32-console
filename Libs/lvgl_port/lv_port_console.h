@@ -10,10 +10,17 @@ extern "C" {
 /**
  * @brief Initialization of the LVGL graphics engine and rendering buffers
  *        and registration of the display and touchscreen drivers.
- */
+  */
 void LVGL_Port_Init(void);
 
+/**
+ * @brief  Safely notify LVGL that the DMA transfer is finished.
+ *         Must be called from the GUI task thread before lv_timer_handler().
+ */
+void LVGL_Port_HandleFlushConfirmation(void);
+
 #ifdef __cplusplus
+
 }
 #endif
 

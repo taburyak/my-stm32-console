@@ -61,6 +61,9 @@ volatile uint32_t g_gate_ret_pc     = 0U;
 
 /* Minimum free app stack for FatFs + SD driver running on the app stack */
 #define SVC_GATE_MIN_STACK_BYTES  2048U
+
+/* Non-blocking LCD flush helpers */
+extern void LVGL_Port_OnFlushFinished(void);
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -77,6 +80,7 @@ void Svc_GateTrampoline(void);
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 extern DMA_HandleTypeDef hdma_sdio_rx;
 extern DMA_HandleTypeDef hdma_sdio_tx;
 extern SD_HandleTypeDef hsd;
@@ -288,6 +292,20 @@ void SDIO_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles DMA2 stream0 global interrupt.
+  */
+void DMA2_Stream0_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream0_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream0_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_memtomem_dma2_stream0);
+  /* USER CODE BEGIN DMA2_Stream0_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream0_IRQn 1 */
+}
+
+/**
   * @brief This function handles DMA2 stream3 global interrupt.
   */
 void DMA2_Stream3_IRQHandler(void)
@@ -331,7 +349,20 @@ void DMA2_Stream6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief DMA Transfer Complete Callback (overrides weak HAL implementation)
+  */
+void HAL_DMA_XferCpltCallback(DMA_HandleTypeDef *hdma)
+{
+    if (hdma->Instance == DMA2_Stream0)
+    {
+        LVGL_Port_OnFlushFinished();
+    }
+}
+
 // SVC 0 from MSP starts FreeRTOS; every SVC from a task (PSP) goes to the custom dispatcher
+
 __attribute__((naked)) void SVC_Handler(void)
 {
     __asm volatile(
