@@ -67,6 +67,8 @@ CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
 
+IWDG_HandleTypeDef hiwdg;
+
 RTC_HandleTypeDef hrtc;
 
 SD_HandleTypeDef hsd;
@@ -127,7 +129,6 @@ static void MX_RTC_Init(void);
 static void MX_IWDG_Init(void);
 void StartDefaultTask(void *argument);
 
-
 /* USER CODE BEGIN PFP */
 void MPU_Config_UserSandbox(void);
 /* USER CODE END PFP */
@@ -185,7 +186,7 @@ int main(void)
   MX_SPI1_Init();
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
-    MX_USB_OTG_FS_HCD_Init();
+  MX_USB_OTG_FS_HCD_Init();
   MX_RTC_Init();
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
@@ -278,9 +279,11 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE
+                              |RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -308,27 +311,7 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief IWDG Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_IWDG_Init(void)
-{
-  /* IWDG clocked from LSI (~32 kHz).
-   * Prescaler 32, Reload 4095 => ~4 seconds timeout. */
-  IWDG_HandleTypeDef hiwdg;
-  hiwdg.Instance = IWDG;
-  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
-  hiwdg.Init.Reload = 4095;
-  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
-
-/**
   * @brief CRC Initialization Function
-
   * @param None
   * @retval None
   */
@@ -384,6 +367,34 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -1013,10 +1024,13 @@ void StartDefaultTask(void *argument)
 
   bool was_app_running = false;
 
-  /* Infinite GUI & Render Loop (~66 FPS / 15ms period) */
+    /* Infinite GUI & Render Loop (~66 FPS / 15ms period) */
   for(;;)
   {
-    /* If an external .bin app is running in SandboxTask, yield display to it */
+    /* 1. Refresh Watchdog - must be called regardless of whether an app is running */
+    HAL_IWDG_Refresh(&hiwdg);
+
+    /* 2. If an external .bin app is running in SandboxTask, yield display to it */
     if (AppLoader_IsRunning())
     {
       was_app_running = true;
@@ -1025,6 +1039,7 @@ void StartDefaultTask(void *argument)
       continue;
     }
     else if (was_app_running)
+
     {
       /* External app just exited! Restore LVGL screen redraw */
       was_app_running = false;
@@ -1072,10 +1087,11 @@ void StartDefaultTask(void *argument)
     /* 4. LVGL Graphics Rendering */
     lv_timer_handler();
 
-    /* 5. Refresh Watchdog */
-    HAL_IWDG_Refresh(&IWDG->KR);
+        /* 5. Refresh Watchdog */
+    HAL_IWDG_Refresh(&hiwdg);
 
     /* 6. Pause 15ms (~66 FPS frame pacing) */
+
     osDelay(15);
   }
 
