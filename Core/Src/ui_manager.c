@@ -407,7 +407,31 @@ void UIManager_Init(void)
 
 void UIManager_Update(void)
 {
+    /* 0. Check for sandbox crashes and show a modal alert */
+    AppLoader_FaultInfo_t fault;
+    if (AppLoader_TakeFaultInfo(&fault))
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "Application Crashed!\n\n"
+                 "PC:  0x%08lX\n"
+                 "CFSR: 0x%08lX\n"
+                 "Addr: 0x%08lX",
+                 (unsigned long)fault.pc,
+                 (unsigned long)fault.cfsr,
+                 (unsigned long)fault.fault_addr);
+
+        lv_obj_t * mbox = lv_msgbox_create(NULL, "Hardware Fault", msg, NULL, false);
+        lv_obj_center(mbox);
+        lv_obj_set_style_bg_color(mbox, lv_color_hex(0x400000), 0);
+        lv_obj_set_style_text_color(mbox, lv_color_hex(0xFFFFFF), 0);
+        /* Delete the modal backdrop after 10 seconds or on screen change */
+        lv_obj_del_delayed(lv_obj_get_parent(mbox), 10000);
+        Beeper_ErrorAlert();
+    }
+
     /* Process deferred screen transitions safely outside LVGL input callbacks! */
+
     if (s_pending_screen >= 0)
     {
         UI_Screen_t target = (UI_Screen_t)s_pending_screen;

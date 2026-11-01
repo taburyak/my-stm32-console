@@ -74,7 +74,9 @@ Mcu.IP10=SPI1
 Mcu.IP11=SYS
 Mcu.IP12=USART3
 Mcu.IP13=USB_OTG_FS
+Mcu.IP14=IWDG
 Mcu.IP2=FATFS
+
 Mcu.IP3=FREERTOS
 Mcu.IP4=FSMC
 Mcu.IP5=I2C1
@@ -82,7 +84,8 @@ Mcu.IP6=NVIC
 Mcu.IP7=RCC
 Mcu.IP8=RTC
 Mcu.IP9=SDIO
-Mcu.IPNb=14
+Mcu.IPNb=15
+
 Mcu.Name=STM32F407Z(E-G)Tx
 Mcu.Package=LQFP144
 Mcu.Pin0=PE3
@@ -384,7 +387,11 @@ PH0-OSC_IN.Signal=RCC_OSC_IN
 PH1-OSC_OUT.Mode=HSE-External-Oscillator
 PH1-OSC_OUT.Signal=RCC_OSC_OUT
 PinOutPanel.RotationAngle=0
+IWDG.IPParameters=Prescaler,Reload
+IWDG.Prescaler=IWDG_PRESCALER_32
+IWDG.Reload=4095
 ProjectManager.AskForMigrate=true
+
 ProjectManager.BackupPrevious=false
 ProjectManager.CompilerLinker=GCC
 ProjectManager.CompilerOptimize=6

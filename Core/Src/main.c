@@ -124,7 +124,9 @@ static void MX_SPI1_Init(void);
 static void MX_SDIO_SD_Init(void);
 static void MX_USB_OTG_FS_HCD_Init(void);
 static void MX_RTC_Init(void);
+static void MX_IWDG_Init(void);
 void StartDefaultTask(void *argument);
+
 
 /* USER CODE BEGIN PFP */
 void MPU_Config_UserSandbox(void);
@@ -183,9 +185,11 @@ int main(void)
   MX_SPI1_Init();
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
-  MX_USB_OTG_FS_HCD_Init();
+    MX_USB_OTG_FS_HCD_Init();
   MX_RTC_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
+
 
   if (((uint32_t)_sapp_ram != MM_APP_RAM_BASE) ||
       ((uint32_t)_eapp_ram != (MM_APP_RAM_BASE + MM_APP_RAM_SIZE)))
@@ -304,7 +308,27 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+  /* IWDG clocked from LSI (~32 kHz).
+   * Prescaler 32, Reload 4095 => ~4 seconds timeout. */
+  IWDG_HandleTypeDef hiwdg;
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
   * @brief CRC Initialization Function
+
   * @param None
   * @retval None
   */
@@ -1042,15 +1066,19 @@ void StartDefaultTask(void *argument)
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
     }
 
-    /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
+        /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
     UIManager_Update();
 
     /* 4. LVGL Graphics Rendering */
     lv_timer_handler();
 
-    /* 5. Pause 15ms (~66 FPS frame pacing) */
+    /* 5. Refresh Watchdog */
+    HAL_IWDG_Refresh(&IWDG->KR);
+
+    /* 6. Pause 15ms (~66 FPS frame pacing) */
     osDelay(15);
   }
+
   /* USER CODE END 5 */
 }
 

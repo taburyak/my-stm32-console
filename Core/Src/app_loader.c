@@ -385,7 +385,12 @@ bool AppLoader_HandleFault(uint32_t exc_return)
                               (((cfsr & SCB_CFSR_BFARVALID_Msk) != 0U) ? SCB->BFAR : 0U);
     s_fault_info.pc         = stacking_error ? 0U : ((uint32_t *)__get_PSP())[6];
 
+    printf("[FAULT] Sandbox crashed! CFSR: 0x%08lX, HFSR: 0x%08lX, Addr: 0x%08lX, PC: 0x%08lX\r\n",
+           (unsigned long)s_fault_info.cfsr, (unsigned long)s_fault_info.hfsr,
+           (unsigned long)s_fault_info.fault_addr, (unsigned long)s_fault_info.pc);
+
     SCB->CFSR = cfsr;
+
     SCB->HFSR = hfsr;
 
     /* Fresh exception frame near the top of the app stack (room for an FPU frame) */
