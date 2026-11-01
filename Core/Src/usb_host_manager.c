@@ -204,7 +204,7 @@ uint32_t USBHostManager_GetKeyboardGameMask(void)
         if (kc == 0x1BU || kc == 0x1DU) mask |= APP_KEY_B;     /* 'X' or 'Z' -> Secondary / Hard Drop */
         if (kc == 0x06U)                mask |= APP_KEY_X;     /* 'C' */
         if (kc == 0x13U)                mask |= APP_KEY_START; /* 'P' -> Pause */
-        if (kc == 0x29U)                mask |= APP_KEY_EXIT;  /* ESC -> Exit game */
+        if (kc == 0x29U || kc == 0x2AU) mask |= APP_KEY_EXIT;  /* ESC -> Exit game */
     }
     return mask;
 }
