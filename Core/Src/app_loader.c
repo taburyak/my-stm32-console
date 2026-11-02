@@ -3,6 +3,7 @@
 #include "app_services.h"
 #include "fatfs.h"
 #include "ili9341_simple.h"
+#include "lv_port_console.h"
 #include "usb_host_manager.h"
 #include "buttons_manager.h"
 #include "beeper.h"
@@ -209,6 +210,9 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
     {
         strcpy(s_app_name, "app");
     }
+
+    /* Ensure any in-flight LVGL DMA transfer finishes before the app takes over the display */
+    LVGL_Port_WaitFlushIdle();
 
     /* Flush all pending key/button events before starting the game */
     USBHostManager_FlushInputQueues();
@@ -455,15 +459,15 @@ uint32_t AppLoader_ReadInputMask_Privileged(void)
     USB_GamepadState_t pad;
     if (USBHostManager_GetGamepadState(&pad))
     {
-        if (pad.dpad_left  || pad.btn_l1) mask |= APP_KEY_LEFT;
-        if (pad.dpad_right || pad.btn_r1) mask |= APP_KEY_RIGHT;
-        if (pad.dpad_up)                  mask |= APP_KEY_UP;
-        if (pad.dpad_down)                mask |= APP_KEY_DOWN;
-        if (pad.btn_a)                    mask |= APP_KEY_A;
-        if (pad.btn_x)                    mask |= APP_KEY_B; /* X acts as Secondary Action / Hard Drop */
-        if (pad.btn_y)                    mask |= APP_KEY_X;
-        if (pad.btn_l2 || pad.btn_r2)     mask |= APP_KEY_START;
-        if (pad.btn_b || pad.btn_select)  mask |= APP_KEY_EXIT;
+        if (pad.dpad_left  || pad.btn_l1 || (pad.left_x < -48)) mask |= APP_KEY_LEFT;
+        if (pad.dpad_right || pad.btn_r1 || (pad.left_x >  48)) mask |= APP_KEY_RIGHT;
+        if (pad.dpad_up                  || (pad.left_y < -48)) mask |= APP_KEY_UP;
+        if (pad.dpad_down                || (pad.left_y >  48)) mask |= APP_KEY_DOWN;
+        if (pad.btn_a)                                          mask |= APP_KEY_A;
+        if (pad.btn_x)                                          mask |= APP_KEY_B; /* X acts as Secondary Action / Hard Drop */
+        if (pad.btn_y)                                          mask |= APP_KEY_X;
+        if (pad.btn_l2 || pad.btn_r2 || pad.btn_start)          mask |= APP_KEY_START;
+        if (pad.btn_b || pad.btn_select)                        mask |= APP_KEY_EXIT;
     }
 
     /* 2.5. USB HID Keyboard (Cursor Arrows, WASD, Space, Enter, ESC) */
@@ -487,6 +491,13 @@ uint32_t AppLoader_ReadInputMask_Privileged(void)
     return mask;
 }
 
+extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
+
+/* Minimum pixel count to use DMA2 M2M constant fill instead of CPU writes in SVC 5/12 */
+#ifndef LCD_DMA_FILL_MIN_PIXELS
+#define LCD_DMA_FILL_MIN_PIXELS 256U
+#endif
+
 static void Kernel_FillRect_Fast(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
     if (x >= 320U || y >= 240U || w == 0U || h == 0U) return;
@@ -495,9 +506,16 @@ static void Kernel_FillRect_Fast(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
 
     lcdSetWindow(x, y, x + w - 1U, y + h - 1U);
     uint32_t total = (uint32_t)w * (uint32_t)h;
-    while (total--)
+    if (total >= LCD_DMA_FILL_MIN_PIXELS)
     {
-        LCD_DataWrite(color);
+        lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, color, total);
+    }
+    else
+    {
+        while (total--)
+        {
+            LCD_DataWrite(color);
+        }
     }
 }
 
@@ -664,7 +682,11 @@ bool AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst)
     dst->connected = 1U;
     dst->left_x    = pad.left_x;
     dst->left_y    = pad.left_y;
+    dst->right_x   = pad.right_x;
+    dst->right_y   = pad.right_y;
     dst->hat       = pad.hat;
+    dst->raw_len   = pad.raw_len;
+    memcpy(dst->raw, pad.raw, sizeof(dst->raw));
 
     uint32_t b = 0U;
     if (pad.dpad_up)    b |= SDK_PAD_UP;
@@ -681,7 +703,24 @@ bool AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst)
     if (pad.btn_r2)     b |= SDK_PAD_R2;
     if (pad.btn_start)  b |= SDK_PAD_START;
     if (pad.btn_select) b |= SDK_PAD_SELECT;
+    if (pad.btn_l3)     b |= SDK_PAD_L3;
+    if (pad.btn_r3)     b |= SDK_PAD_R3;
     dst->buttons = b;
+    return true;
+}
+
+bool AppLoader_GetKeyEvent_Privileged(SDK_KeyEvent_t *dst)
+{
+    USB_KeyboardEvent_t evt;
+    if (!USBHostManager_GetAppKeyEvent(&evt))
+    {
+        return false;
+    }
+
+    dst->scancode  = evt.scancode;
+    dst->ascii     = (char)evt.ascii;
+    dst->pressed   = evt.is_pressed ? 1U : 0U;
+    dst->modifiers = evt.modifiers;
     return true;
 }
 

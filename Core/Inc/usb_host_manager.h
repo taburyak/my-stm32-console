@@ -23,6 +23,7 @@ typedef struct {
     uint8_t scancode;   /* USB HID Scancode */
     uint8_t ascii;      /* Translated ASCII Character */
     bool    is_pressed; /* Key state */
+    uint8_t modifiers;  /* HID Keyboard modifier byte */
 } USB_KeyboardEvent_t;
 
 /**
@@ -44,8 +45,10 @@ typedef struct {
 typedef struct {
     int8_t   left_x;    /* Left stick X (-127..+127) */
     int8_t   left_y;    /* Left stick Y (-127..+127) */
+    int8_t   right_x;   /* Right stick X (-127..+127) */
+    int8_t   right_y;   /* Right stick Y (-127..+127) */
     uint8_t  hat;       /* D-Pad Hat switch (0=Up, 2=Right, 4=Down, 6=Left, 0x0F=Center) */
-    uint16_t buttons;   /* Bitmask of buttons 0..14 */
+    uint16_t buttons;   /* Bitmask of buttons 0..15 */
     bool     dpad_up;
     bool     dpad_down;
     bool     dpad_left;
@@ -60,6 +63,10 @@ typedef struct {
     bool     btn_r2;    /* Right trigger */
     bool     btn_start; /* Start button */
     bool     btn_select;/* Select button */
+    bool     btn_l3;    /* Left stick click */
+    bool     btn_r3;    /* Right stick click */
+    uint8_t  raw_len;   /* Length of last HID report (0..8) */
+    uint8_t  raw[8];    /* Raw HID report bytes */
 } USB_GamepadState_t;
 
 /**
@@ -94,6 +101,7 @@ bool USBHostManager_IsGamepadReady(void);
 
 bool USBHostManager_GetKey(char *ch);
 bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event);
+bool USBHostManager_GetAppKeyEvent(USB_KeyboardEvent_t *event);
 bool USBHostManager_GetMouseState(USB_MouseEvent_t *state);
 bool USBHostManager_GetGamepadState(USB_GamepadState_t *state);
 uint32_t USBHostManager_GetKeyboardGameMask(void);

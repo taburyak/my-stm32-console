@@ -58,6 +58,7 @@ void     AppLoader_DrawText_Privileged(const App_DrawTextParams_t *p);
 bool     AppLoader_SaveState_Privileged(const char *filename, const void *data, uint32_t len);
 uint32_t AppLoader_LoadState_Privileged(const char *filename, void *dst, uint32_t max_len);
 bool     AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst);
+bool     AppLoader_GetKeyEvent_Privileged(SDK_KeyEvent_t *dst);
 bool     AppLoader_GetMouse_Privileged(SDK_MouseState_t *dst);
 void     AppLoader_GetSysInfo_Privileged(SDK_SysInfo_t *dst);
 

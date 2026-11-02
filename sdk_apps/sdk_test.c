@@ -51,9 +51,11 @@ static void draw_static(const SDK_SysInfo_t *info)
     sys_draw_text(130, ROW(2), "FLAGS:", COLOR_WHITE, COLOR_DARK_BG, 1);
 
     sys_draw_text(10, ROW(4), "KEYS:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(150, ROW(4), "KBD:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(5), "PAD:", COLOR_WHITE, COLOR_DARK_BG, 1);
-    sys_draw_text(10, ROW(6), "PAD BTN:", COLOR_WHITE, COLOR_DARK_BG, 1);
-    sys_draw_text(10, ROW(7), "PAD X/Y:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(140, ROW(5), "BTN:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(6), "RAW:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(7), "LXY/RXY:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(8), "MOUSE:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(9), "MOUSE XY:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(10), "SLEEP 500MS:", COLOR_WHITE, COLOR_DARK_BG, 1);
@@ -96,14 +98,31 @@ void app_main(void)
         (void)sys_get_info(&info);
         draw_hex(70, ROW(2), info.devices, 2);
         draw_hex(180, ROW(2), info.flags, 2);
-        draw_hex(70, ROW(4), keys, 8);
+        draw_hex(55, ROW(4), keys, 4);
+
+        SDK_KeyEvent_t kevt;
+        while (sys_get_key_event(&kevt))
+        {
+            draw_hex(185, ROW(4), kevt.scancode, 2);
+            char ch_str[4] = { '[', (kevt.ascii >= 32 && kevt.ascii < 127) ? kevt.ascii : '.', ']', '\0' };
+            sys_draw_text(205, ROW(4), ch_str, kevt.pressed ? COLOR_NEON_GREEN : COLOR_AMBER, COLOR_DARK_BG, 1);
+            draw_hex(235, ROW(4), kevt.modifiers, 2);
+            sys_draw_text(255, ROW(4), kevt.pressed ? "DN" : "UP",
+                          kevt.pressed ? COLOR_NEON_GREEN : COLOR_AMBER, COLOR_DARK_BG, 1);
+        }
 
         SDK_GamepadState_t pad;
         bool pad_ok = sys_get_gamepad(&pad);
-        sys_draw_text(70, ROW(5), pad_ok ? "CONNECTED " : "NONE      ", COLOR_NEON_GREEN, COLOR_DARK_BG, 1);
-        draw_hex(70, ROW(6), pad.buttons, 4);
-        draw_num(70, ROW(7), pad.left_x, 1);
-        draw_num(130, ROW(7), pad.left_y, 1);
+        sys_draw_text(45, ROW(5), pad_ok ? "CONN " : "NONE ", COLOR_NEON_GREEN, COLOR_DARK_BG, 1);
+        draw_hex(175, ROW(5), pad.buttons, 4);
+        for (uint8_t i = 0; i < 8U; i++)
+        {
+            draw_hex((uint16_t)(45U + i * 20U), ROW(6), pad.raw[i], 2);
+        }
+        draw_num(70,  ROW(7), pad.left_x,  1);
+        draw_num(125, ROW(7), pad.left_y,  1);
+        draw_num(180, ROW(7), pad.right_x, 1);
+        draw_num(235, ROW(7), pad.right_y, 1);
 
         SDK_MouseState_t mse;
         bool mse_ok = sys_get_mouse(&mse);
