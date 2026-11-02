@@ -34,6 +34,21 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
     lv_disp_flush_ready(disp_drv);
 }
 
+void LVGL_Port_HandleFlushConfirmation(void)
+{
+    /* No-op in blocking mode */
+}
+
+/* This function is called from the DMA interrupt handler */
+void LVGL_Port_OnFlushFinished(void)
+{
+    /* No-op in blocking mode */
+}
+
+
+
+
+
 /**
  * @brief Touch Read Callback for the XPT2046 Touch Controller
  */
@@ -177,7 +192,9 @@ void LVGL_Port_Init(void)
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
 
+
     /* 4. Registration of the input device (touch screen) */
+
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;

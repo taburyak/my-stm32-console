@@ -385,7 +385,12 @@ bool AppLoader_HandleFault(uint32_t exc_return)
                               (((cfsr & SCB_CFSR_BFARVALID_Msk) != 0U) ? SCB->BFAR : 0U);
     s_fault_info.pc         = stacking_error ? 0U : ((uint32_t *)__get_PSP())[6];
 
+    printf("[FAULT] Sandbox crashed! CFSR: 0x%08lX, HFSR: 0x%08lX, Addr: 0x%08lX, PC: 0x%08lX\r\n",
+           (unsigned long)s_fault_info.cfsr, (unsigned long)s_fault_info.hfsr,
+           (unsigned long)s_fault_info.fault_addr, (unsigned long)s_fault_info.pc);
+
     SCB->CFSR = cfsr;
+
     SCB->HFSR = hfsr;
 
     /* Fresh exception frame near the top of the app stack (room for an FPU frame) */
@@ -716,11 +721,17 @@ void AppLoader_GetSysInfo_Privileged(SDK_SysInfo_t *dst)
     dst->api_version    = (uint16_t)SDK_API_VERSION;
     dst->screen_w       = (uint16_t)SDK_SCREEN_W;
     dst->screen_h       = (uint16_t)SDK_SCREEN_H;
+
+    /* Dynamic memory info */
     dst->app_ram_size   = APP_SANDBOX_MAX_SIZE;
     dst->app_stack_size = MM_APP_STACK_SIZE;
     dst->app_ext_size   = APP_EXT_DATA_MAX_SIZE;
 
+    /* FreeRTOS Heap stats */
+    dst->reserved       = (uint16_t)xPortGetFreeHeapSize(); // Pass total free heap in reserved field for now
+
     dst->devices = SDK_DEV_TOUCH;
+
     if (USBHostManager_IsKeyboardReady()) dst->devices |= SDK_DEV_KEYBOARD;
     if (USBHostManager_IsMouseReady())    dst->devices |= SDK_DEV_MOUSE;
     if (USBHostManager_IsGamepadReady())  dst->devices |= SDK_DEV_GAMEPAD;
