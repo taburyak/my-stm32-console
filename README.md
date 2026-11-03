@@ -5,11 +5,9 @@ Hobby game & tool console on an STM32F407ZGT6 development board: FreeRTOS, LVGL 
 
 ## Documentation
 
-- [docs/PROJECT_REFERENCE.md](docs/PROJECT_REFERENCE.md) — hardware, build, source map, tasks, memory map, syscalls, pitfalls.
-- [docs/ROADMAP.md](docs/ROADMAP.md) — planned work.
-- [docs/architecture/os-platform-guide.md](docs/architecture/os-platform-guide.md) — kernel, MPU, display and task architecture as built.
-- [docs/architecture/memory-and-resource-strategy.md](docs/architecture/memory-and-resource-strategy.md) — memory budget and decisions.
-- [my-stm32-console-rule.md](my-stm32-console-rule.md) — development rules.
+- [doc/C_SCRIPT_MANUAL.md](doc/C_SCRIPT_MANUAL.md) — user manual and API reference for writing C-Script (`*.c`) games and apps.
+- [sdk_apps/README_ARKANOID.md](sdk_apps/README_ARKANOID.md), [sdk_apps/README_TETRIS.md](sdk_apps/README_TETRIS.md) — SDK game guides.
+- Local working notes (if present): `docs/PROJECT_REFERENCE.md`, `docs/ROADMAP.md`.
 
 ## Building
 

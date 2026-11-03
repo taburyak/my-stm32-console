@@ -42,6 +42,8 @@ typedef struct {
 
 bool AppLoader_LoadAndRun(const char *fatfs_path);
 bool AppLoader_LoadAndRunImage(const uint8_t *image, uint32_t size);
+bool AppLoader_LoadAndRunScript(const char *fatfs_path);
+bool AppLoader_LoadAndRunScriptText(const char *name, const char *script_text, uint32_t len);
 const char *AppLoader_GetLastError(void);
 const char *AppLoader_GetAppName(void);
 bool AppLoader_IsRunning(void);

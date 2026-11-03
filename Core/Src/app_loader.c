@@ -1,6 +1,7 @@
 #include "app_loader.h"
 #include "app_files.h"
 #include "app_services.h"
+#include "script_engine.h"
 #include "fatfs.h"
 #include "ili9341_simple.h"
 #include "lv_port_console.h"
@@ -125,9 +126,15 @@ bool AppLoader_IsUserBufferValid(const void *ptr, uint32_t len)
 
 static void AppLoader_ClearSandboxes(void)
 {
-    /* App image area only: the task stack at the top of the sandbox is managed by FreeRTOS */
+    /* App image area in internal SRAM */
     memset((void *)APP_SANDBOX_BASE_ADDR, 0, APP_SANDBOX_MAX_SIZE);
-    memset((void *)APP_EXT_DATA_BASE_ADDR, 0, APP_EXT_DATA_MAX_SIZE);
+
+    /* Clear only the first 64 KB of external SRAM using 32-bit word writes (fast, avoids FSMC byte-strobe stress) */
+    uint32_t *ext_words = (uint32_t *)APP_EXT_DATA_BASE_ADDR;
+    for (uint32_t i = 0U; i < (64UL * 1024UL) / 4UL; i++)
+    {
+        ext_words[i] = 0U;
+    }
 }
 
 /* CRC-32 (IEEE 802.3, reflected 0xEDB88320), same as sdk_apps/sdk_app_crc.cmake */
@@ -317,6 +324,137 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
     }
 
     return AppLoader_StartLoadedImage((uint32_t)fsize);
+}
+
+static void AppLoader_SetAppNameFromPath(const char *path)
+{
+    const char *base = path;
+    for (const char *p = path; *p != '\0'; p++)
+    {
+        if (*p == '/' || *p == '\\')
+        {
+            base = p + 1;
+        }
+    }
+
+    uint32_t n = 0U;
+    for (uint32_t i = 0U; (n < SDK_APP_NAME_LEN) && (base[i] != '\0') && (base[i] != '.'); i++)
+    {
+        char c = base[i];
+        bool ok = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) ||
+                  ((c >= '0') && (c <= '9')) || (c == '_') || (c == '-');
+        s_app_name[n++] = ok ? c : '_';
+    }
+    s_app_name[n] = '\0';
+    if (n == 0U)
+    {
+        strcpy(s_app_name, "script");
+    }
+}
+
+static bool AppLoader_StartLoadedScript(uint32_t len)
+{
+    LVGL_Port_WaitFlushIdle();
+    USBHostManager_FlushInputQueues();
+    Buttons_Init();
+
+    __DSB();
+    __ISB();
+
+    const osThreadAttr_t sbx_attr = {
+        .name       = "sandboxTask",
+        .cb_mem     = &s_sbx_tcb,
+        .cb_size    = sizeof(s_sbx_tcb),
+        .stack_mem  = (void *)MM_APP_STACK_BASE,
+        .stack_size = MM_APP_STACK_SIZE,
+        .priority   = (osPriority_t)osPriorityLow
+    };
+
+    s_loaded_app_size  = len;
+    s_app_exit_request = false;
+    s_fault_pending    = false;
+
+    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, (void *)ScriptEngine_RunSandbox, &sbx_attr);
+    if (s_sbx_handle == NULL)
+    {
+        s_last_error = "Cannot create script task";
+        printf("[LOADER] Failed to create script sandbox task\r\n");
+        return false;
+    }
+    vTaskSetApplicationTaskTag((TaskHandle_t)s_sbx_handle, (TaskHookFunction_t)1);
+    s_app_running = true;
+
+    printf("[LOADER] Loaded C-script '%.16s' (%lu bytes) into ext SRAM. Launching in Sandbox!\r\n",
+           s_app_name, (unsigned long)len);
+    return true;
+}
+
+bool AppLoader_LoadAndRunScriptText(const char *name, const char *script_text, uint32_t len)
+{
+    if (s_app_running || script_text == NULL)
+    {
+        return false;
+    }
+    if (len == 0U || len >= SCRIPT_SOURCE_MAX_SIZE)
+    {
+        s_last_error = "Script size invalid\n(max 64 KB)";
+        return false;
+    }
+
+    AppLoader_ClearSandboxes();
+    memcpy((void *)SCRIPT_SOURCE_BASE_ADDR, script_text, len);
+    ((char *)SCRIPT_SOURCE_BASE_ADDR)[len] = '\0';
+
+    AppLoader_SetAppNameFromPath((name != NULL) ? name : "script");
+    return AppLoader_StartLoadedScript(len);
+}
+
+bool AppLoader_LoadAndRunScript(const char *fatfs_path)
+{
+    if (s_app_running || fatfs_path == NULL)
+    {
+        return false;
+    }
+
+    const char *clean_path = (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path;
+    static FIL scr_file;
+    UINT br = 0;
+
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
+
+    if (f_open(&scr_file, clean_path, FA_READ) != FR_OK)
+    {
+        s_last_error = "Cannot open script";
+        printf("[LOADER] Failed to open script: %s\r\n", clean_path);
+        StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+        return false;
+    }
+
+    FSIZE_t fsize = f_size(&scr_file);
+    if (fsize == 0U || fsize >= SCRIPT_SOURCE_MAX_SIZE)
+    {
+        s_last_error = "Bad script size\n(max 64 KB)";
+        f_close(&scr_file);
+        StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+        return false;
+    }
+
+    AppLoader_ClearSandboxes();
+
+    char *dst = (char *)SCRIPT_SOURCE_BASE_ADDR;
+    FRESULT res = f_read(&scr_file, dst, (UINT)fsize, &br);
+    f_close(&scr_file);
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+
+    if (res != FR_OK || br != fsize)
+    {
+        s_last_error = "SD read error";
+        return false;
+    }
+    dst[br] = '\0';
+
+    AppLoader_SetAppNameFromPath(clean_path);
+    return AppLoader_StartLoadedScript((uint32_t)fsize);
 }
 
 const char *AppLoader_GetLastError(void)
