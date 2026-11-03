@@ -1,8 +1,8 @@
 #include "console_sdk.h"
 
 /* =========================================================================
- * Flappy Bird: Q8 physics, dirty-strip pipe scrolling, ground scrolled with
- * a strided LCD blit from external SRAM. The gap narrows as the score grows.
+ * Flappy Bird: Smooth Q8 physics, gentle flap impulse, dirty-strip pipe
+ * scrolling, and zero-FSMC-contention animated ground strip.
  * Controls: A / UP / B / click / tap flap, START (pad L2/R2, key P) pause, ESC exit.
  * Best score: SD:/appdata/flappy/best.dat
  * ========================================================================= */
@@ -11,15 +11,17 @@
 #define HUD_H           16
 #define GROUND_Y        220
 #define GROUND_H        (SDK_SCREEN_H - GROUND_Y)
+#define STRIPE_H        6
 #define GROUND_PERIOD   16
-#define GROUND_BUF_W    (SDK_SCREEN_W + GROUND_PERIOD)
 
 #define BIRD_X          60
 #define BIRD_W          14
 #define BIRD_H          10
-#define GRAVITY         82
-#define FLAP_V          (-1280)
-#define MAX_FALL        (6 * FP)
+
+/* Gentle, controllable flap & gravity parameters */
+#define GRAVITY         48          /* ~0.19 px/frame^2 (smooth arc) */
+#define FLAP_V          (-780)      /* ~3.0 px/frame upward velocity (~19 px jump height) */
+#define MAX_FALL        (3 * FP + FP / 2)
 
 #define PIPES           3
 #define PIPE_W          26
@@ -27,12 +29,13 @@
 #define CAP_H           8
 #define PIPE_SPACING    120
 #define SCROLL          2
-#define GAP_START       72
-#define GAP_MIN         52
+#define GAP_START       76
+#define GAP_MIN         56
 
 #define SKY             0x5D1FU
 #define PIPE_BODY       0x05E0U
 #define PIPE_CAP        0x07E0U
+#define DIRT_COLOR      0xB3A0U
 
 enum { ST_READY, ST_PLAY, ST_PAUSE, ST_DEAD, ST_OVER };
 
@@ -51,11 +54,12 @@ static const char *const s_bird_rows[2][BIRD_H] = {
 };
 
 static const SDK_Note_t s_snd_flap[]  = { { 1, 6 } };
-static const SDK_Note_t s_snd_point[] = { { 1, 25 }, { 0, 25 }, { 1, 25 } };
-static const SDK_Note_t s_snd_hit[]   = { { 1, 200 }, { 0, 80 }, { 1, 300 } };
+static const SDK_Note_t s_snd_point[] = { { 1, 20 } };
+static const SDK_Note_t s_snd_hit[]   = { { 1, 160 }, { 0, 60 }, { 1, 240 } };
 
+/* Compact sprites in fast Internal SRAM (zero FSMC bus contention!) */
 static uint16_t s_bird[2][BIRD_W * BIRD_H];
-static SDK_EXT_BSS uint16_t s_ground[GROUND_BUF_W * GROUND_H];
+static uint16_t s_grass_strip[SDK_SCREEN_W * STRIPE_H];
 
 static Pipe_t   s_pipes[PIPES];
 static int32_t  s_y, s_vy;            /* Q8 */
@@ -71,16 +75,39 @@ static void sound(const SDK_Note_t *notes, uint32_t n)
     (void)sys_audio_play(notes, n, 0);
 }
 
-/* fill_rect clipped to the screen horizontally */
+/* fill_rect safely clipped to the screen horizontally and vertically */
 static void fill(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color)
 {
-    if (x < 0) { w = (int16_t)(w + x); x = 0; }
-    if (x + w > SDK_SCREEN_W) w = (int16_t)(SDK_SCREEN_W - x);
-    if ((w <= 0) || (h <= 0)) return;
+    if (x < 0)
+    {
+        w = (int16_t)(w + x);
+        x = 0;
+    }
+    if (y < HUD_H)
+    {
+        h = (int16_t)(h - (HUD_H - y));
+        y = HUD_H;
+    }
+    if ((w <= 0) || (h <= 0) || (x >= (int16_t)SDK_SCREEN_W) || (y >= GROUND_Y))
+    {
+        return;
+    }
+    if ((int16_t)(x + w) > (int16_t)SDK_SCREEN_W)
+    {
+        w = (int16_t)((int16_t)SDK_SCREEN_W - x);
+    }
+    if ((int16_t)(y + h) > GROUND_Y)
+    {
+        h = (int16_t)(GROUND_Y - y);
+    }
+    if ((w <= 0) || (h <= 0))
+    {
+        return;
+    }
     sys_lcd_fill_rect((uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h, color);
 }
 
-static void build_graphics(void)
+static void build_bird_sprites(void)
 {
     for (uint8_t f = 0; f < 2U; f++)
     {
@@ -102,30 +129,30 @@ static void build_graphics(void)
             }
         }
     }
-
-    for (uint16_t y = 0; y < GROUND_H; y++)
-    {
-        for (uint16_t x = 0; x < GROUND_BUF_W; x++)
-        {
-            uint16_t c;
-            if (y < 2U)       c = 0x07E0U;
-            else if (y < 4U)  c = 0x0400U;
-            else              c = (((x + y) % GROUND_PERIOD) < (GROUND_PERIOD / 2U)) ? 0xB3A0U : 0x8A60U;
-            s_ground[y * GROUND_BUF_W + x] = c;
-        }
-    }
 }
 
 /* ---------------------------------------------------------------- drawing */
 
-static void draw_ground(void)
+static void draw_ground_scroll(void)
 {
-    (void)sys_lcd_blit(0, GROUND_Y, SDK_SCREEN_W, GROUND_H, &s_ground[s_ground_off], GROUND_BUF_W);
+    for (uint16_t y = 0; y < STRIPE_H; y++)
+    {
+        for (uint16_t x = 0; x < SDK_SCREEN_W; x++)
+        {
+            uint16_t c;
+            if (y < 2U)      c = 0x07E0U;
+            else if (y < 3U) c = 0x0400U;
+            else             c = (((x + s_ground_off + y) % GROUND_PERIOD) < (GROUND_PERIOD / 2U)) ? 0xB3A0U : 0x8A60U;
+            s_grass_strip[y * SDK_SCREEN_W + x] = c;
+        }
+    }
+    sys_draw_sprite(0, GROUND_Y, SDK_SCREEN_W, STRIPE_H, s_grass_strip);
 }
 
 static void draw_bird(void)
 {
     int16_t y = (int16_t)(s_y / FP);
+    if (y < HUD_H) y = HUD_H;
     if (y + BIRD_H > GROUND_Y) y = GROUND_Y - BIRD_H;
     int16_t old = s_drawn_y;
 
@@ -145,7 +172,7 @@ static void draw_bird(void)
             fill(BIRD_X, (int16_t)(y + BIRD_H), BIRD_W, (int16_t)(-d), SKY);
         }
     }
-    sys_draw_sprite(BIRD_X, (uint16_t)y, BIRD_W, BIRD_H, s_bird[s_wing]);
+    sys_draw_sprite(BIRD_X, (uint16_t)y, BIRD_W, BIRD_H, s_bird[s_wing & 1U]);
     s_drawn_y = y;
 }
 
@@ -231,6 +258,8 @@ static void reset_world(void)
 {
     sys_clear_screen(SKY);
     sys_lcd_fill_rect(0, 0, SDK_SCREEN_W, HUD_H, COLOR_PANEL_BG);
+    sys_lcd_fill_rect(0, GROUND_Y + STRIPE_H, SDK_SCREEN_W, GROUND_H - STRIPE_H, DIRT_COLOR);
+
     s_score = 0;
     for (uint8_t i = 0; i < PIPES; i++)
     {
@@ -242,7 +271,7 @@ static void reset_world(void)
     s_drawn_y = -1;
     s_state = ST_READY;
     draw_hud();
-    draw_ground();
+    draw_ground_scroll();
     center_text(60, "FLAPPY", COLOR_YELLOW, SKY, 4);
     center_text(150, "A / UP / TAP TO FLAP", COLOR_WHITE, SKY, 1);
 }
@@ -279,8 +308,8 @@ static void show_over(void)
 
 static bool hits_pipe(const Pipe_t *p, int16_t by)
 {
-    int16_t l = (int16_t)(BIRD_X + 1);
-    int16_t r = (int16_t)(BIRD_X + BIRD_W - 1);
+    int16_t l = (int16_t)(BIRD_X + 2);
+    int16_t r = (int16_t)(BIRD_X + BIRD_W - 2);
     if ((r <= p->x - CAP_OVER) || (l >= p->x + PIPE_W + CAP_OVER)) return false;
     return (by + 1 < p->gap_top) || (by + BIRD_H - 1 > p->gap_bot);
 }
@@ -299,28 +328,33 @@ static void physics(void)
 
 static void scroll_world(void)
 {
-    int16_t rightmost = 0;
-    for (uint8_t i = 0; i < PIPES; i++)
-    {
-        if (s_pipes[i].x > rightmost) rightmost = s_pipes[i].x;
-    }
     for (uint8_t i = 0; i < PIPES; i++)
     {
         Pipe_t *p = &s_pipes[i];
         p->x = (int16_t)(p->x - SCROLL);
         draw_pipe_edges(p);
-        if (p->x + PIPE_W + CAP_OVER < 0)
-        {
-            p->x = (int16_t)(rightmost + PIPE_SPACING);
-            place_gap(p);
-        }
+
         if (!p->scored && (p->x + PIPE_W < BIRD_X))
         {
             p->scored = true;
             s_score++;
             if (s_score > s_best) s_best = s_score;
             draw_hud();
-            sound(s_snd_point, 3);
+            sound(s_snd_point, 1);
+        }
+
+        if (p->x + PIPE_W + CAP_OVER + SCROLL < 0)
+        {
+            /* Ensure any residual pixel at left border x=0..SCROLL is cleared */
+            fill(0, HUD_H, SCROLL * 2, GROUND_Y - HUD_H, SKY);
+
+            int16_t rightmost = 0;
+            for (uint8_t k = 0; k < PIPES; k++)
+            {
+                if (s_pipes[k].x > rightmost) rightmost = s_pipes[k].x;
+            }
+            p->x = (int16_t)(rightmost + PIPE_SPACING);
+            place_gap(p);
         }
     }
     s_ground_off = (uint8_t)((s_ground_off + SCROLL) % GROUND_PERIOD);
@@ -333,7 +367,7 @@ void app_main(void)
     uint32_t next_frame = 0;
     uint32_t frame = 0;
 
-    build_graphics();
+    build_bird_sprites();
     load_best();
     reset_world();
     sdk_input_init(&in);
@@ -433,7 +467,7 @@ void app_main(void)
         }
         if ((s_state == ST_READY) || (s_state == ST_PLAY))
         {
-            draw_ground();
+            draw_ground_scroll();
         }
         sdk_frame_sync(&next_frame, 16U);
     }
