@@ -14,10 +14,15 @@ static volatile bool is_gamepad_ready = false;
 /* Global debug info for Watch window & LCD HUD */
 volatile USB_DebugInfo_t g_usb_dbg = {0};
 
-/* Keyboard Queue */
+/* Keyboard Queue (LVGL UI navigation) */
 static USB_KeyboardEvent_t kbd_queue[KBD_QUEUE_SIZE];
 static volatile uint8_t kbd_head = 0;
 static volatile uint8_t kbd_tail = 0;
+
+/* App Keyboard Event Queue (raw press + release events for SDK apps) */
+static USB_KeyboardEvent_t app_kbd_queue[KBD_QUEUE_SIZE];
+static volatile uint8_t app_kbd_head = 0;
+static volatile uint8_t app_kbd_tail = 0;
 
 /* Previous keyboard report for key-press edge detection */
 static hid_keyboard_report_t prev_kbd_report = {0};
@@ -35,6 +40,24 @@ static USB_GamepadState_t current_gamepad_state = {0};
 /* Lookup table: HID Scancode to ASCII [unshifted, shifted] */
 static uint8_t const keycode2ascii[128][2] = { HID_KEYCODE_TO_ASCII };
 
+static void enqueue_app_key(uint8_t scancode, uint8_t ascii, bool is_pressed, uint8_t modifiers)
+{
+    if (!AppLoader_IsRunning())
+    {
+        return;
+    }
+
+    uint8_t next_head = (app_kbd_head + 1U) % KBD_QUEUE_SIZE;
+    if (next_head != app_kbd_tail)
+    {
+        app_kbd_queue[app_kbd_head].scancode   = scancode;
+        app_kbd_queue[app_kbd_head].ascii      = ascii;
+        app_kbd_queue[app_kbd_head].is_pressed = is_pressed;
+        app_kbd_queue[app_kbd_head].modifiers  = modifiers;
+        app_kbd_head = next_head;
+    }
+}
+
 static void enqueue_key(uint8_t scancode, uint8_t ascii, bool is_pressed)
 {
     /* Do not enqueue LVGL navigation keys while a native Sandbox app owns the screen */
@@ -49,6 +72,7 @@ static void enqueue_key(uint8_t scancode, uint8_t ascii, bool is_pressed)
         kbd_queue[kbd_head].scancode   = scancode;
         kbd_queue[kbd_head].ascii      = ascii;
         kbd_queue[kbd_head].is_pressed = is_pressed;
+        kbd_queue[kbd_head].modifiers  = 0U;
         kbd_head = next_head;
     }
 }
@@ -57,6 +81,8 @@ void USBHostManager_FlushInputQueues(void)
 {
     kbd_head = 0;
     kbd_tail = 0;
+    app_kbd_head = 0;
+    app_kbd_tail = 0;
     memset(&prev_kbd_report, 0, sizeof(prev_kbd_report));
 }
 
@@ -150,6 +176,20 @@ bool USBHostManager_GetKeyEvent(USB_KeyboardEvent_t *event)
     return true;
 }
 
+bool USBHostManager_GetAppKeyEvent(USB_KeyboardEvent_t *event)
+{
+    if (app_kbd_tail == app_kbd_head)
+    {
+        return false;
+    }
+    if (event)
+    {
+        *event = app_kbd_queue[app_kbd_tail];
+    }
+    app_kbd_tail = (app_kbd_tail + 1U) % KBD_QUEUE_SIZE;
+    return true;
+}
+
 bool USBHostManager_GetMouseState(USB_MouseEvent_t *state)
 {
     if (!is_mouse_ready || state == NULL)
@@ -216,6 +256,18 @@ static void Parse_Keyboard_Report(uint8_t const *buf, uint16_t len)
     hid_keyboard_report_t const *kbd_report = (hid_keyboard_report_t const *)buf;
     bool is_shift = (kbd_report->modifier & (KEYBOARD_MODIFIER_LEFTSHIFT | KEYBOARD_MODIFIER_RIGHTSHIFT)) != 0;
 
+    /* 1. Detect released keys (present in prev_kbd_report, absent in kbd_report) */
+    for (uint8_t i = 0; i < 6U; i++)
+    {
+        uint8_t prev_sc = prev_kbd_report.keycode[i];
+        if (prev_sc != 0U && !is_key_in_report(kbd_report, prev_sc))
+        {
+            uint8_t ascii = (prev_sc < 128U) ? keycode2ascii[prev_sc][is_shift ? 1 : 0] : 0U;
+            enqueue_app_key(prev_sc, ascii, false, kbd_report->modifier);
+        }
+    }
+
+    /* 2. Detect newly pressed keys */
     for (uint8_t i = 0; i < 6U; i++)
     {
         uint8_t scancode = kbd_report->keycode[i];
@@ -231,6 +283,7 @@ static void Parse_Keyboard_Report(uint8_t const *buf, uint16_t len)
             g_usb_dbg.last_ascii    = ascii;
 
             enqueue_key(scancode, ascii, true);
+            enqueue_app_key(scancode, ascii, true, kbd_report->modifier);
         }
     }
 
@@ -289,22 +342,54 @@ static void Parse_Mouse_Report(uint8_t const *buf, uint16_t len)
     g_usb_dbg.mouse_btns = b0 & 0x07U;
 }
 
+static int8_t Axis_U8_To_I8(uint8_t raw)
+{
+    int16_t centered = (int16_t)raw - 128;
+    if (centered < -127) centered = -127;
+    if (centered >  127) centered =  127;
+    /* Small deadzone around neutral 0x7F/0x80 */
+    if (centered >= -4 && centered <= 4) centered = 0;
+    return (int8_t)centered;
+}
+
 static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
 {
     if (len < 3U) return;
 
-    /* 1. BUTTONS (Byte buf[0]) */
-    bool btn_a  = ((buf[0] & 0x04U) != 0U); /* Button A */
-    bool btn_b  = ((buf[0] & 0x02U) != 0U); /* Button B */
-    bool btn_x  = ((buf[0] & 0x08U) != 0U); /* Button X */
-    bool btn_y  = ((buf[0] & 0x01U) != 0U); /* Button Y */
-    bool btn_l1 = ((buf[0] & 0x10U) != 0U); /* L1 / LB */
-    bool btn_r1 = ((buf[0] & 0x20U) != 0U); /* R1 / RB */
-    bool btn_l2 = ((buf[0] & 0x40U) != 0U); /* L2 / LT */
-    bool btn_r2 = ((buf[0] & 0x80U) != 0U); /* R2 / RT */
+    uint8_t copy_len = (len <= 8U) ? (uint8_t)len : 8U;
+    current_gamepad_state.raw_len = copy_len;
+    for (uint8_t i = 0U; i < copy_len; i++)
+    {
+        current_gamepad_state.raw[i] = buf[i];
+    }
+    for (uint8_t i = copy_len; i < 8U; i++)
+    {
+        current_gamepad_state.raw[i] = 0U;
+    }
+
+    /* 1. BUTTONS: byte buf[0] (face + shoulders) and buf[1] (Select/Start/L3/R3 on STK-7024X) */
+    bool btn_a      = ((buf[0] & 0x04U) != 0U); /* Button A */
+    bool btn_b      = ((buf[0] & 0x02U) != 0U); /* Button B */
+    bool btn_x      = ((buf[0] & 0x08U) != 0U); /* Button X */
+    bool btn_y      = ((buf[0] & 0x01U) != 0U); /* Button Y */
+    bool btn_l1     = ((buf[0] & 0x10U) != 0U); /* L1 / LB */
+    bool btn_r1     = ((buf[0] & 0x20U) != 0U); /* R1 / RB */
+    bool btn_l2     = ((buf[0] & 0x40U) != 0U); /* L2 / LT */
+    bool btn_r2     = ((buf[0] & 0x80U) != 0U); /* R2 / RT */
+
+    bool btn_select = ((buf[1] & 0x01U) != 0U); /* Select / Back */
+    bool btn_start  = ((buf[1] & 0x02U) != 0U); /* Start */
+    bool btn_l3     = ((buf[1] & 0x04U) != 0U); /* L3 (left stick press) */
+    bool btn_r3     = ((buf[1] & 0x08U) != 0U); /* R3 (right stick press) */
 
     /* 2. D-PAD CROSS (Byte buf[2]) */
     uint8_t hat = buf[2] & 0x0FU; /* 0=Up, 2=Right, 4=Down, 6=Left, 0x0F=Neutral */
+
+    /* 3. ANALOG STICKS (Bytes buf[3..6] when present: LX, LY, RX, RY centered at 0x7F/0x80) */
+    int8_t lx = (len >= 5U) ? Axis_U8_To_I8(buf[3]) : 0;
+    int8_t ly = (len >= 5U) ? Axis_U8_To_I8(buf[4]) : 0;
+    int8_t rx = (len >= 7U) ? Axis_U8_To_I8(buf[5]) : 0;
+    int8_t ry = (len >= 7U) ? Axis_U8_To_I8(buf[6]) : 0;
 
     bool up    = (hat == 0U || hat == 1U || hat == 7U);
     bool right = (hat == 1U || hat == 2U || hat == 3U);
@@ -324,7 +409,12 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
     if (btn_r1 && !current_gamepad_state.btn_r1)    enqueue_key(0x4F, 0, true);    /* Right Arrow */
 
     /* Save current state */
+    current_gamepad_state.left_x     = lx;
+    current_gamepad_state.left_y     = ly;
+    current_gamepad_state.right_x    = rx;
+    current_gamepad_state.right_y    = ry;
     current_gamepad_state.hat        = hat;
+    current_gamepad_state.buttons    = (uint16_t)buf[0] | ((uint16_t)(buf[1] & 0x0FU) << 8);
     current_gamepad_state.dpad_up    = up;
     current_gamepad_state.dpad_down  = down;
     current_gamepad_state.dpad_left  = left;
@@ -337,6 +427,10 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
     current_gamepad_state.btn_r1     = btn_r1;
     current_gamepad_state.btn_l2     = btn_l2;
     current_gamepad_state.btn_r2     = btn_r2;
+    current_gamepad_state.btn_select = btn_select;
+    current_gamepad_state.btn_start  = btn_start;
+    current_gamepad_state.btn_l3     = btn_l3;
+    current_gamepad_state.btn_r3     = btn_r3;
 }
 
 /* ==========================================================================

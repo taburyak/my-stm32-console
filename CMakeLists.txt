@@ -120,6 +120,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_files.c
     Core/Src/app_storage.c
     Core/Src/app_services.c
+    Core/Src/script_engine.c
 )
 
 # Add include paths

@@ -205,6 +205,7 @@ int32_t AppSvc_GpioRead(uint32_t pin)
 void AppSvc_ResetHardware(void)
 {
     Beeper_StopSequence();
+    lcdWaitDMAIdle(&hdma_memtomem_dma2_stream0);
 
     for (uint32_t i = 0U; i < USER_GPIO_COUNT; i++)
     {

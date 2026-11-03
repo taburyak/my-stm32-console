@@ -547,9 +547,16 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
 
           lcdSetWindow(x, y, x + w - 1U, y + h - 1U);
           uint32_t total = (uint32_t)w * (uint32_t)h;
-          while (total--)
+          if (total >= 256U)
           {
-            LCD_DataWrite(color);
+            lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, color, total);
+          }
+          else
+          {
+            while (total--)
+            {
+              LCD_DataWrite(color);
+            }
           }
           __DSB();
           __ISB();
@@ -612,11 +619,7 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
       {
         uint16_t color = (uint16_t)(svc_args[0] & 0xFFFFU);
         lcdSetWindow(0U, 0U, 319U, 239U);
-        uint32_t total = 320UL * 240UL;
-        while (total--)
-        {
-          LCD_DataWrite(color);
-        }
+        lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, color, 320UL * 240UL);
         __DSB();
         __ISB();
       }
@@ -671,6 +674,14 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
 
     case SDK_SVC_RANDOM:
       svc_args[0] = AppSvc_Random();
+      break;
+
+    case SDK_SVC_KEY_EVENT:
+      {
+        SDK_KeyEvent_t *dst = (SDK_KeyEvent_t *)svc_args[0];
+        svc_args[0] = (AppLoader_IsUserBufferValid(dst, sizeof(*dst)) &&
+                       AppLoader_GetKeyEvent_Privileged(dst)) ? 1U : 0U;
+      }
       break;
 
     case SDK_SVC_INPUT_STATE:

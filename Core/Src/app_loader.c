@@ -1,8 +1,10 @@
 #include "app_loader.h"
 #include "app_files.h"
 #include "app_services.h"
+#include "script_engine.h"
 #include "fatfs.h"
 #include "ili9341_simple.h"
+#include "lv_port_console.h"
 #include "usb_host_manager.h"
 #include "buttons_manager.h"
 #include "beeper.h"
@@ -124,9 +126,15 @@ bool AppLoader_IsUserBufferValid(const void *ptr, uint32_t len)
 
 static void AppLoader_ClearSandboxes(void)
 {
-    /* App image area only: the task stack at the top of the sandbox is managed by FreeRTOS */
+    /* App image area in internal SRAM */
     memset((void *)APP_SANDBOX_BASE_ADDR, 0, APP_SANDBOX_MAX_SIZE);
-    memset((void *)APP_EXT_DATA_BASE_ADDR, 0, APP_EXT_DATA_MAX_SIZE);
+
+    /* Clear only the first 64 KB of external SRAM using 32-bit word writes (fast, avoids FSMC byte-strobe stress) */
+    uint32_t *ext_words = (uint32_t *)APP_EXT_DATA_BASE_ADDR;
+    for (uint32_t i = 0U; i < (64UL * 1024UL) / 4UL; i++)
+    {
+        ext_words[i] = 0U;
+    }
 }
 
 /* CRC-32 (IEEE 802.3, reflected 0xEDB88320), same as sdk_apps/sdk_app_crc.cmake */
@@ -209,6 +217,9 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
     {
         strcpy(s_app_name, "app");
     }
+
+    /* Ensure any in-flight LVGL DMA transfer finishes before the app takes over the display */
+    LVGL_Port_WaitFlushIdle();
 
     /* Flush all pending key/button events before starting the game */
     USBHostManager_FlushInputQueues();
@@ -313,6 +324,137 @@ bool AppLoader_LoadAndRun(const char *fatfs_path)
     }
 
     return AppLoader_StartLoadedImage((uint32_t)fsize);
+}
+
+static void AppLoader_SetAppNameFromPath(const char *path)
+{
+    const char *base = path;
+    for (const char *p = path; *p != '\0'; p++)
+    {
+        if (*p == '/' || *p == '\\')
+        {
+            base = p + 1;
+        }
+    }
+
+    uint32_t n = 0U;
+    for (uint32_t i = 0U; (n < SDK_APP_NAME_LEN) && (base[i] != '\0') && (base[i] != '.'); i++)
+    {
+        char c = base[i];
+        bool ok = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) ||
+                  ((c >= '0') && (c <= '9')) || (c == '_') || (c == '-');
+        s_app_name[n++] = ok ? c : '_';
+    }
+    s_app_name[n] = '\0';
+    if (n == 0U)
+    {
+        strcpy(s_app_name, "script");
+    }
+}
+
+static bool AppLoader_StartLoadedScript(uint32_t len)
+{
+    LVGL_Port_WaitFlushIdle();
+    USBHostManager_FlushInputQueues();
+    Buttons_Init();
+
+    __DSB();
+    __ISB();
+
+    const osThreadAttr_t sbx_attr = {
+        .name       = "sandboxTask",
+        .cb_mem     = &s_sbx_tcb,
+        .cb_size    = sizeof(s_sbx_tcb),
+        .stack_mem  = (void *)MM_APP_STACK_BASE,
+        .stack_size = MM_APP_STACK_SIZE,
+        .priority   = (osPriority_t)osPriorityLow
+    };
+
+    s_loaded_app_size  = len;
+    s_app_exit_request = false;
+    s_fault_pending    = false;
+
+    s_sbx_handle = osThreadNew(Sandbox_TaskEntry, (void *)ScriptEngine_RunSandbox, &sbx_attr);
+    if (s_sbx_handle == NULL)
+    {
+        s_last_error = "Cannot create script task";
+        printf("[LOADER] Failed to create script sandbox task\r\n");
+        return false;
+    }
+    vTaskSetApplicationTaskTag((TaskHandle_t)s_sbx_handle, (TaskHookFunction_t)1);
+    s_app_running = true;
+
+    printf("[LOADER] Loaded C-script '%.16s' (%lu bytes) into ext SRAM. Launching in Sandbox!\r\n",
+           s_app_name, (unsigned long)len);
+    return true;
+}
+
+bool AppLoader_LoadAndRunScriptText(const char *name, const char *script_text, uint32_t len)
+{
+    if (s_app_running || script_text == NULL)
+    {
+        return false;
+    }
+    if (len == 0U || len >= SCRIPT_SOURCE_MAX_SIZE)
+    {
+        s_last_error = "Script size invalid\n(max 64 KB)";
+        return false;
+    }
+
+    AppLoader_ClearSandboxes();
+    memcpy((void *)SCRIPT_SOURCE_BASE_ADDR, script_text, len);
+    ((char *)SCRIPT_SOURCE_BASE_ADDR)[len] = '\0';
+
+    AppLoader_SetAppNameFromPath((name != NULL) ? name : "script");
+    return AppLoader_StartLoadedScript(len);
+}
+
+bool AppLoader_LoadAndRunScript(const char *fatfs_path)
+{
+    if (s_app_running || fatfs_path == NULL)
+    {
+        return false;
+    }
+
+    const char *clean_path = (fatfs_path[0] == '/') ? (fatfs_path + 1) : fatfs_path;
+    static FIL scr_file;
+    UINT br = 0;
+
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
+
+    if (f_open(&scr_file, clean_path, FA_READ) != FR_OK)
+    {
+        s_last_error = "Cannot open script";
+        printf("[LOADER] Failed to open script: %s\r\n", clean_path);
+        StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+        return false;
+    }
+
+    FSIZE_t fsize = f_size(&scr_file);
+    if (fsize == 0U || fsize >= SCRIPT_SOURCE_MAX_SIZE)
+    {
+        s_last_error = "Bad script size\n(max 64 KB)";
+        f_close(&scr_file);
+        StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+        return false;
+    }
+
+    AppLoader_ClearSandboxes();
+
+    char *dst = (char *)SCRIPT_SOURCE_BASE_ADDR;
+    FRESULT res = f_read(&scr_file, dst, (UINT)fsize, &br);
+    f_close(&scr_file);
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+
+    if (res != FR_OK || br != fsize)
+    {
+        s_last_error = "SD read error";
+        return false;
+    }
+    dst[br] = '\0';
+
+    AppLoader_SetAppNameFromPath(clean_path);
+    return AppLoader_StartLoadedScript((uint32_t)fsize);
 }
 
 const char *AppLoader_GetLastError(void)
@@ -455,15 +597,15 @@ uint32_t AppLoader_ReadInputMask_Privileged(void)
     USB_GamepadState_t pad;
     if (USBHostManager_GetGamepadState(&pad))
     {
-        if (pad.dpad_left  || pad.btn_l1) mask |= APP_KEY_LEFT;
-        if (pad.dpad_right || pad.btn_r1) mask |= APP_KEY_RIGHT;
-        if (pad.dpad_up)                  mask |= APP_KEY_UP;
-        if (pad.dpad_down)                mask |= APP_KEY_DOWN;
-        if (pad.btn_a)                    mask |= APP_KEY_A;
-        if (pad.btn_x)                    mask |= APP_KEY_B; /* X acts as Secondary Action / Hard Drop */
-        if (pad.btn_y)                    mask |= APP_KEY_X;
-        if (pad.btn_l2 || pad.btn_r2)     mask |= APP_KEY_START;
-        if (pad.btn_b || pad.btn_select)  mask |= APP_KEY_EXIT;
+        if (pad.dpad_left  || pad.btn_l1 || (pad.left_x < -48)) mask |= APP_KEY_LEFT;
+        if (pad.dpad_right || pad.btn_r1 || (pad.left_x >  48)) mask |= APP_KEY_RIGHT;
+        if (pad.dpad_up                  || (pad.left_y < -48)) mask |= APP_KEY_UP;
+        if (pad.dpad_down                || (pad.left_y >  48)) mask |= APP_KEY_DOWN;
+        if (pad.btn_a)                                          mask |= APP_KEY_A;
+        if (pad.btn_x)                                          mask |= APP_KEY_B; /* X acts as Secondary Action / Hard Drop */
+        if (pad.btn_y)                                          mask |= APP_KEY_X;
+        if (pad.btn_l2 || pad.btn_r2 || pad.btn_start)          mask |= APP_KEY_START;
+        if (pad.btn_b || pad.btn_select)                        mask |= APP_KEY_EXIT;
     }
 
     /* 2.5. USB HID Keyboard (Cursor Arrows, WASD, Space, Enter, ESC) */
@@ -487,6 +629,13 @@ uint32_t AppLoader_ReadInputMask_Privileged(void)
     return mask;
 }
 
+extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
+
+/* Minimum pixel count to use DMA2 M2M constant fill instead of CPU writes in SVC 5/12 */
+#ifndef LCD_DMA_FILL_MIN_PIXELS
+#define LCD_DMA_FILL_MIN_PIXELS 256U
+#endif
+
 static void Kernel_FillRect_Fast(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
     if (x >= 320U || y >= 240U || w == 0U || h == 0U) return;
@@ -495,9 +644,16 @@ static void Kernel_FillRect_Fast(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
 
     lcdSetWindow(x, y, x + w - 1U, y + h - 1U);
     uint32_t total = (uint32_t)w * (uint32_t)h;
-    while (total--)
+    if (total >= LCD_DMA_FILL_MIN_PIXELS)
     {
-        LCD_DataWrite(color);
+        lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, color, total);
+    }
+    else
+    {
+        while (total--)
+        {
+            LCD_DataWrite(color);
+        }
     }
 }
 
@@ -664,7 +820,11 @@ bool AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst)
     dst->connected = 1U;
     dst->left_x    = pad.left_x;
     dst->left_y    = pad.left_y;
+    dst->right_x   = pad.right_x;
+    dst->right_y   = pad.right_y;
     dst->hat       = pad.hat;
+    dst->raw_len   = pad.raw_len;
+    memcpy(dst->raw, pad.raw, sizeof(dst->raw));
 
     uint32_t b = 0U;
     if (pad.dpad_up)    b |= SDK_PAD_UP;
@@ -681,7 +841,24 @@ bool AppLoader_GetGamepad_Privileged(SDK_GamepadState_t *dst)
     if (pad.btn_r2)     b |= SDK_PAD_R2;
     if (pad.btn_start)  b |= SDK_PAD_START;
     if (pad.btn_select) b |= SDK_PAD_SELECT;
+    if (pad.btn_l3)     b |= SDK_PAD_L3;
+    if (pad.btn_r3)     b |= SDK_PAD_R3;
     dst->buttons = b;
+    return true;
+}
+
+bool AppLoader_GetKeyEvent_Privileged(SDK_KeyEvent_t *dst)
+{
+    USB_KeyboardEvent_t evt;
+    if (!USBHostManager_GetAppKeyEvent(&evt))
+    {
+        return false;
+    }
+
+    dst->scancode  = evt.scancode;
+    dst->ascii     = (char)evt.ascii;
+    dst->pressed   = evt.is_pressed ? 1U : 0U;
+    dst->modifiers = evt.modifiers;
     return true;
 }
 

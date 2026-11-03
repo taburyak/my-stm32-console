@@ -10,12 +10,27 @@ extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 
 #define MY_DISP_HOR_RES    320
 #define MY_DISP_VER_RES    240
-#define DISP_BUF_SIZE      (MY_DISP_HOR_RES * 40)
 
-_Static_assert(DISP_BUF_SIZE * sizeof(lv_color_t) <= MM_EXT_LVGL_DRAW_BUF_SIZE, "LVGL draw buffer exceeds its ext SRAM slot");
+#if LVGL_PORT_USE_DOUBLE_BUF
+#define DISP_BUF_LINES     25
+#define DISP_BUF_SIZE      (MY_DISP_HOR_RES * DISP_BUF_LINES)
+_Static_assert(2U * DISP_BUF_SIZE * sizeof(lv_color_t) <= MM_EXT_LVGL_DRAW_BUF_SIZE,
+               "Dual LVGL draw buffers exceed MM_EXT_LVGL_DRAW_BUF_SIZE");
+static lv_color_t *buf_1 = (lv_color_t *)MM_EXT_LVGL_DRAW_BUF;
+static lv_color_t *buf_2 = (lv_color_t *)(MM_EXT_LVGL_DRAW_BUF + (DISP_BUF_SIZE * sizeof(lv_color_t)));
+#else
+#define DISP_BUF_SIZE      (MY_DISP_HOR_RES * 40)
+_Static_assert(DISP_BUF_SIZE * sizeof(lv_color_t) <= MM_EXT_LVGL_DRAW_BUF_SIZE,
+               "LVGL draw buffer exceeds its ext SRAM slot");
+static lv_color_t *buf_1 = (lv_color_t *)MM_EXT_LVGL_DRAW_BUF;
+static lv_color_t *buf_2 = NULL;
+#endif
+
+#if LVGL_PORT_USE_DMA_IT
+static lv_disp_drv_t * volatile s_active_disp_drv = NULL;
+#endif
 
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t *buf_1 = (lv_color_t *)MM_EXT_LVGL_DRAW_BUF;
 
 /* Pointer to the mouse cursor object on lv_layer_sys() */
 static lv_obj_t * mouse_cursor_obj = NULL;
@@ -25,24 +40,80 @@ static lv_obj_t * mouse_cursor_obj = NULL;
  */
 static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
 {
-    uint32_t width  = area->x2 - area->x1 + 1;
-    uint32_t height = area->y2 - area->y1 + 1;
+    uint32_t width  = (uint32_t)(area->x2 - area->x1 + 1);
+    uint32_t height = (uint32_t)(area->y2 - area->y1 + 1);
     uint32_t pixels_count = width * height;
 
+#if LVGL_PORT_USE_DMA_IT
+    /* Wait if a previous strip is still in flight on DMA2 Stream0 */
+    LVGL_Port_WaitFlushIdle();
+
+    lcdSetWindow(area->x1, area->y1, area->x2, area->y2);
+    s_active_disp_drv = disp_drv;
+    __DSB();
+
+    if (!lcdFlushFrameBufferDMA_IT(&hdma_memtomem_dma2_stream0, (uint16_t *)color_p, pixels_count))
+    {
+        /* Fallback to blocking transfer if DMA_IT could not start */
+        s_active_disp_drv = NULL;
+        lcdFlushFrameBufferDMA(&hdma_memtomem_dma2_stream0, (uint16_t *)color_p, pixels_count);
+        lv_disp_flush_ready(disp_drv);
+    }
+#else
     lcdSetWindow(area->x1, area->y1, area->x2, area->y2);
     lcdFlushFrameBufferDMA(&hdma_memtomem_dma2_stream0, (uint16_t *)color_p, pixels_count);
     lv_disp_flush_ready(disp_drv);
+#endif
+}
+
+void LVGL_Port_WaitFlushIdle(void)
+{
+#if LVGL_PORT_USE_DMA_IT
+    lcdWaitDMAIdle(&hdma_memtomem_dma2_stream0);
+    if (s_active_disp_drv != NULL)
+    {
+        __disable_irq();
+        lv_disp_drv_t *drv = s_active_disp_drv;
+        s_active_disp_drv = NULL;
+        __enable_irq();
+        if (drv != NULL)
+        {
+            lv_disp_flush_ready(drv);
+        }
+    }
+#endif
 }
 
 void LVGL_Port_HandleFlushConfirmation(void)
 {
-    /* No-op in blocking mode */
+#if LVGL_PORT_USE_DMA_IT
+    /* Safety net: if DMA finished but state was not cleared, complete the flush */
+    if ((s_active_disp_drv != NULL) &&
+        (HAL_DMA_GetState(&hdma_memtomem_dma2_stream0) == HAL_DMA_STATE_READY))
+    {
+        __disable_irq();
+        lv_disp_drv_t *drv = s_active_disp_drv;
+        s_active_disp_drv = NULL;
+        __enable_irq();
+        if (drv != NULL)
+        {
+            lv_disp_flush_ready(drv);
+        }
+    }
+#endif
 }
 
 /* This function is called from the DMA interrupt handler */
 void LVGL_Port_OnFlushFinished(void)
 {
-    /* No-op in blocking mode */
+#if LVGL_PORT_USE_DMA_IT
+    lv_disp_drv_t *drv = s_active_disp_drv;
+    if (drv != NULL)
+    {
+        s_active_disp_drv = NULL;
+        lv_disp_flush_ready(drv);
+    }
+#endif
 }
 
 
@@ -175,13 +246,21 @@ static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     data->state = LV_INDEV_STATE_REL;
 }
 
+#if LVGL_PORT_USE_DMA_IT
+static void lvgl_dma_xfer_cplt_cb(DMA_HandleTypeDef *hdma)
+{
+    (void)hdma;
+    LVGL_Port_OnFlushFinished();
+}
+#endif
+
 void LVGL_Port_Init(void)
 {
     /* 1. Initialization of the LVGL core */
     lv_init();
 
     /* 2. Initialization of the rendering buffer */
-    lv_disp_draw_buf_init(&draw_buf, buf_1, NULL, DISP_BUF_SIZE);
+    lv_disp_draw_buf_init(&draw_buf, buf_1, buf_2, DISP_BUF_SIZE);
 
     /* 3. Registration of the display */
     static lv_disp_drv_t disp_drv;
@@ -191,6 +270,13 @@ void LVGL_Port_Init(void)
     disp_drv.flush_cb = disp_flush;
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
+
+#if LVGL_PORT_USE_DMA_IT
+    /* Attach DMA completion callback to hdma->XferCpltCallback (STM32F4 HAL_DMA_IRQHandler invokes this field) */
+    (void)HAL_DMA_RegisterCallback(&hdma_memtomem_dma2_stream0,
+                                   HAL_DMA_XFER_CPLT_CB_ID,
+                                   lvgl_dma_xfer_cplt_cb);
+#endif
 
 
     /* 4. Registration of the input device (touch screen) */

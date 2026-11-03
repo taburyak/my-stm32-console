@@ -49,7 +49,8 @@ typedef struct {
 #define SDK_SVC_SLEEP_MS        18U /* blocking (kernel gate) */
 /* 19, 20 reserved */
 #define SDK_SVC_RANDOM          21U
-/* 22, 23 reserved */
+#define SDK_SVC_KEY_EVENT       22U
+/* 23 reserved */
 #define SDK_SVC_INPUT_STATE     24U
 #define SDK_SVC_LCD_BLIT        25U /* blocking (kernel gate) */
 /* 26, 27 reserved */
@@ -160,6 +161,8 @@ typedef struct {
 #define SDK_PAD_R2              (1UL << 11)
 #define SDK_PAD_START           (1UL << 12)
 #define SDK_PAD_SELECT          (1UL << 13)
+#define SDK_PAD_L3              (1UL << 14)
+#define SDK_PAD_R3              (1UL << 15)
 
 typedef struct {
     uint8_t  connected;
@@ -167,7 +170,28 @@ typedef struct {
     int8_t   left_y;    /* -127..127 */
     uint8_t  hat;       /* 0=Up, 2=Right, 4=Down, 6=Left, 0x0F=Center */
     uint32_t buttons;   /* SDK_PAD_* */
+    int8_t   right_x;   /* -127..127 */
+    int8_t   right_y;   /* -127..127 */
+    uint8_t  raw_len;   /* Length of last HID report (0..8) */
+    uint8_t  raw[8];    /* Raw HID report bytes for calibration / diagnostics */
 } SDK_GamepadState_t;
+
+/* ---- SDK_SVC_KEY_EVENT ---- */
+#define SDK_MOD_LCTRL           (1U << 0)
+#define SDK_MOD_LSHIFT          (1U << 1)
+#define SDK_MOD_LALT            (1U << 2)
+#define SDK_MOD_LGUI            (1U << 3)
+#define SDK_MOD_RCTRL           (1U << 4)
+#define SDK_MOD_RSHIFT          (1U << 5)
+#define SDK_MOD_RALT            (1U << 6)
+#define SDK_MOD_RGUI            (1U << 7)
+
+typedef struct {
+    uint8_t scancode;   /* USB HID Keyboard Usage ID (0x04='a', 0x28=Enter, 0x29=ESC, ...) */
+    char    ascii;      /* Translated ASCII character, or 0 for non-printable keys */
+    uint8_t pressed;    /* 1 = key press, 0 = key release */
+    uint8_t modifiers;  /* SDK_MOD_* bitmask */
+} SDK_KeyEvent_t;
 
 /* ---- SDK_SVC_GET_MOUSE ---- */
 #define SDK_MOUSE_SRC_NONE      0U

@@ -66,6 +66,7 @@ _Static_assert(GAMES_MAX_TILES * GAME_ICON_SLOT_BYTES <= MM_EXT_IMAGE_BUF_SIZE, 
 typedef struct {
     char file[STORAGE_MAX_NAME_LEN];
     bool builtin;
+    bool is_script;
 } Game_Entry_t;
 
 static lv_obj_t *    games_grid_obj = NULL;
@@ -851,6 +852,14 @@ static void file_list_btn_event_cb(lv_event_t * e)
                 Show_App_Load_Error();
             }
         }
+        /* 4. C-Script Apps (.c) */
+        else if (Ends_With_IgnoreCase(s_clicked_item, ".c"))
+        {
+            if (!AppLoader_LoadAndRunScript(s_next_path))
+            {
+                Show_App_Load_Error();
+            }
+        }
     }
 }
 
@@ -944,10 +953,97 @@ static void games_tile_event_cb(lv_event_t * e)
 
     Beeper_Click();
     bool started;
-    if (s_games[idx].builtin)
+    if (s_games[idx].builtin && s_games[idx].is_script)
+    {
+        /* Built-in ROM C-script demo (works even without SD card) */
+        static const char s_rom_script_demo[] =
+            "// Built-in C-Script Demo (Starfield & Bounce)\n"
+            "int sx[24];\n"
+            "int sy[24];\n"
+            "int spd[24];\n"
+            "void draw_hud(int score, int best) {\n"
+            "    fill_rect(0, 0, 320, 20, COLOR_PANEL_BG);\n"
+            "    draw_text(8, 6, \"C-SCRIPT DEMO   SCORE:\", COLOR_NEON_GREEN, COLOR_PANEL_BG, 1);\n"
+            "    draw_num(146, 6, score, COLOR_YELLOW, COLOR_PANEL_BG, 1, 3);\n"
+            "    draw_text(192, 6, \"BEST:\", COLOR_WHITE, COLOR_PANEL_BG, 1);\n"
+            "    draw_num(226, 6, best, COLOR_CYAN, COLOR_PANEL_BG, 1, 3);\n"
+            "}\n"
+            "void main() {\n"
+            "    for (int i = 0; i < 24; i++) {\n"
+            "        sx[i] = rand_range(6, 314);\n"
+            "        sy[i] = rand_range(24, 212);\n"
+            "        spd[i] = rand_range(1, 4);\n"
+            "    }\n"
+            "    int best = load_int(\"best.dat\", 0);\n"
+            "    int bx = 160, by = 90, vx = 3, vy = 2, score = 0;\n"
+            "    int px = 136, old_px = 136;\n"
+            "    clear_screen(COLOR_DARK_BG);\n"
+            "    draw_hud(score, best);\n"
+            "    fill_rect(px, 220, 48, 5, COLOR_CYAN);\n"
+            "    fill_rect(bx - 4, by - 4, 9, 9, COLOR_AMBER);\n"
+            "    while (1) {\n"
+            "        int k = input_poll();\n"
+            "        if (input_pressed(KEY_EXIT)) break;\n"
+            "        old_px = px;\n"
+            "        if (k & KEY_LEFT)  px -= 5;\n"
+            "        if (k & KEY_RIGHT) px += 5;\n"
+            "        px += pad_lx() / 24;\n"
+            "        px = clamp(px, 4, 268);\n"
+            "        if (px != old_px) {\n"
+            "            fill_rect(old_px, 220, 48, 5, COLOR_DARK_BG);\n"
+            "            fill_rect(px, 220, 48, 5, COLOR_CYAN);\n"
+            "        }\n"
+            "        for (int i = 0; i < 24; i++) {\n"
+            "            if (sx[i] < bx - 6 || sx[i] > bx + 6 || sy[i] < by - 6 || sy[i] > by + 6) {\n"
+            "                draw_pixel(sx[i], sy[i], COLOR_DARK_BG);\n"
+            "            }\n"
+            "            sy[i] += spd[i];\n"
+            "            if (sy[i] >= 214) { sy[i] = 24; sx[i] = rand_range(6, 314); }\n"
+            "            if (sx[i] < bx - 6 || sx[i] > bx + 6 || sy[i] < by - 6 || sy[i] > by + 6) {\n"
+            "                draw_pixel(sx[i], sy[i], (spd[i] > 2) ? COLOR_CYAN : COLOR_WHITE);\n"
+            "            }\n"
+            "        }\n"
+            "        int old_bx = bx, old_by = by;\n"
+            "        bx += vx; by += vy;\n"
+            "        if (bx <= 8)   { bx = 8;   vx = -vx; beep(15); }\n"
+            "        if (bx >= 311) { bx = 311; vx = -vx; beep(15); }\n"
+            "        if (by <= 26)  { by = 26;  vy = -vy; beep(15); }\n"
+            "        if (vy > 0 && by >= 214 && by <= 222 && bx >= px - 4 && bx <= px + 52) {\n"
+            "            by = 214;\n"
+            "            vy = -vy;\n"
+            "            vx = clamp((bx - (px + 24)) / 5, -5, 5);\n"
+            "            if (vx == 0) vx = 2;\n"
+            "            score++;\n"
+            "            if (score > best) {\n"
+            "                best = score;\n"
+            "                save_int(\"best.dat\", best);\n"
+            "            }\n"
+            "            draw_hud(score, best);\n"
+            "            beep(30);\n"
+            "        } else if (by > 232) {\n"
+            "            beep(120);\n"
+            "            score = 0;\n"
+            "            draw_hud(score, best);\n"
+            "            bx = 160; by = 80; vy = 2;\n"
+            "        }\n"
+            "        fill_rect(old_bx - 4, old_by - 4, 9, 9, COLOR_DARK_BG);\n"
+            "        fill_rect(bx - 4, by - 4, 9, 9, COLOR_AMBER);\n"
+            "        fill_rect(px, 220, 48, 5, COLOR_CYAN);\n"
+            "        frame_sync(16);\n"
+            "    }\n"
+            "}\n";
+        started = AppLoader_LoadAndRunScriptText("c_demo", s_rom_script_demo,
+                                                 (uint32_t)(sizeof(s_rom_script_demo) - 1U));
+    }
+    else if (s_games[idx].builtin)
     {
         started = AppLoader_LoadAndRunImage(g_rom_arkanoid_bin,
                                             (uint32_t)(g_rom_arkanoid_bin_end - g_rom_arkanoid_bin));
+    }
+    else if (s_games[idx].is_script)
+    {
+        snprintf(s_next_path, sizeof(s_next_path), "games/%.60s", s_games[idx].file);
+        started = AppLoader_LoadAndRunScript(s_next_path);
     }
     else
     {
@@ -961,20 +1057,20 @@ static void games_tile_event_cb(lv_event_t * e)
 }
 
 /* Looks for "<base>.bmp" next to the game in the cached /games listing */
-static bool Games_FindIcon(const char *bin_name, char *out_path, size_t out_size)
+static bool Games_FindIcon(const char *app_name, char *out_path, size_t out_size)
 {
-    size_t base_len = strlen(bin_name);
-    if (base_len <= 4U)
+    const char *dot = strrchr(app_name, '.');
+    if (dot == NULL || dot == app_name)
     {
         return false;
     }
-    base_len -= 4U; /* strip ".bin" */
+    size_t base_len = (size_t)(dot - app_name);
 
     for (uint32_t i = 0; i < g_dir_cache.count; i++)
     {
         const char *name = g_dir_cache.items[i].name;
         if (!g_dir_cache.items[i].is_dir && strlen(name) == base_len + 4U &&
-            strncmp(name, bin_name, base_len) == 0 && Ends_With_IgnoreCase(name, ".bmp"))
+            strncmp(name, app_name, base_len) == 0 && Ends_With_IgnoreCase(name, ".bmp"))
         {
             snprintf(out_path, out_size, "games/%.60s", name);
             return true;
@@ -1051,14 +1147,22 @@ static void Populate_Games_Grid(void)
     lv_obj_clean(games_grid_obj);
     s_games_count = 0;
 
-    /* 1. Built-in game (works without an SD card) */
+    /* 1. Built-in games (work without an SD card) */
     strncpy(s_games[0].file, "Arkanoid", sizeof(s_games[0].file) - 1U);
     s_games[0].file[sizeof(s_games[0].file) - 1U] = '\0';
-    s_games[0].builtin = true;
+    s_games[0].builtin   = true;
+    s_games[0].is_script = false;
     s_games_count = 1;
     Games_AddTile("Arkanoid", NULL, 0x00FF66);
 
-    /* 2. SD card games */
+    strncpy(s_games[1].file, "C-Demo.c", sizeof(s_games[1].file) - 1U);
+    s_games[1].file[sizeof(s_games[1].file) - 1U] = '\0';
+    s_games[1].builtin   = true;
+    s_games[1].is_script = true;
+    s_games_count = 2;
+    Games_AddTile("C-Demo.c", NULL, 0x00E5FF);
+
+    /* 2. SD card games (.bin native apps and .c C-scripts) */
     static char title[STORAGE_MAX_NAME_LEN];
     static char icon_path[STORAGE_MAX_PATH_LEN];
     bool games_listed = g_dir_cache.io_success && (strcmp(g_dir_cache.path, "/games") == 0);
@@ -1066,7 +1170,9 @@ static void Populate_Games_Grid(void)
     for (uint32_t i = 0; games_listed && i < g_dir_cache.count && s_games_count < GAMES_MAX_TILES; i++)
     {
         const char *fname = g_dir_cache.items[i].name;
-        if (g_dir_cache.items[i].is_dir || !Ends_With_IgnoreCase(fname, ".bin"))
+        bool is_bin = !g_dir_cache.items[i].is_dir && Ends_With_IgnoreCase(fname, ".bin");
+        bool is_scr = !g_dir_cache.items[i].is_dir && Ends_With_IgnoreCase(fname, ".c");
+        if (!is_bin && !is_scr)
         {
             continue;
         }
@@ -1074,16 +1180,20 @@ static void Populate_Games_Grid(void)
         Game_Entry_t *g = &s_games[s_games_count];
         strncpy(g->file, fname, sizeof(g->file) - 1U);
         g->file[sizeof(g->file) - 1U] = '\0';
-        g->builtin = false;
+        g->builtin   = false;
+        g->is_script = is_scr;
         s_games_count++;
 
         strncpy(title, fname, sizeof(title) - 1U);
         title[sizeof(title) - 1U] = '\0';
-        size_t len = strlen(title);
-        if (len > 4U) title[len - 4U] = '\0';
+        if (is_bin)
+        {
+            size_t len = strlen(title);
+            if (len > 4U) title[len - 4U] = '\0';
+        }
 
         bool has_icon = Games_FindIcon(fname, icon_path, sizeof(icon_path));
-        Games_AddTile(title, has_icon ? icon_path : NULL, 0xFFAE00);
+        Games_AddTile(title, has_icon ? icon_path : NULL, is_scr ? 0x00E5FF : 0xFFAE00);
     }
 
     if (!SDCard_IsMounted())

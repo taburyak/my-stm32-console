@@ -340,6 +340,12 @@ SDK_SYSCALL uint32_t sys_random(void)
     return SDK_SVC_CALL0(SDK_SVC_RANDOM);
 }
 
+/* Pops the next keyboard press/release event from the queue; returns false if empty */
+SDK_SYSCALL bool sys_get_key_event(SDK_KeyEvent_t *dst)
+{
+    return SDK_SVC_CALL1(SDK_SVC_KEY_EVENT, dst) != 0U;
+}
+
 /* Uniform value in [0, n) */
 static inline uint32_t sys_random_range(uint32_t n)
 {
