@@ -3,15 +3,14 @@
 /* =========================================================================
  * STACK UP (ZX Spectrum 1991 style arcade puzzle for STM32 Console)
  *
- * Faithful recreation of the screenshot layout:
+ * Faithful recreation of the screenshot layout & original mechanics:
  *  - Rainbow diagonal ZX Spectrum dithered background
  *  - 6x12 Playfield Well with 16x16 px beveled symbol blocks:
  *      1: Red Heart      2: Magenta Circle-Slash   3: Green Triangle
  *      4: Cyan Arrow     5: Yellow Diamond         6: Grey Steel Block
- *  - Left Panels:  1UP / TOP score, ROUND / LINES LEFT, NEXT 3-block preview
- *  - Right Panels: SPEED bar, CREDIT, live BLOCKS counter per symbol + Sigma sum
- *  - Mechanics: Horizontal & Vertical 3-block piece, color cycling (A/UP),
- *               orientation flip (X), chain-reaction cascades, round clear!
+ *  - Authentic Split-Fall Mechanic: when 1 or 2 blocks of a horizontal
+ *    triplet land on a stack, they lock in place while the remaining
+ *    unsupported block(s) keep falling and remain steerable Left/Right!
  *  - Best score: SD:/appdata/stackup/best.dat
  * ========================================================================= */
 
@@ -98,11 +97,12 @@ static uint8_t  s_grid[ROWS][COLS];
 static uint8_t  s_shown[ROWS][COLS];
 static uint8_t  s_mark[ROWS][COLS];
 
-/* Active falling 3-block piece & next piece */
+/* Active falling piece (up to 3 independent blocks that can split on landing!) */
 static uint8_t  s_cur[3];
+static int8_t   s_bx[3];
+static int8_t   s_by[3];
+static bool     s_bactive[3];
 static uint8_t  s_next[3];
-static int8_t   s_px, s_py;
-static bool     s_vertical;     /* false = horizontal 3x1, true = vertical 1x3 */
 
 static uint8_t  s_state = ST_READY;
 static uint32_t s_state_tick;
@@ -125,13 +125,9 @@ static void sound(const SDK_Note_t *notes, uint32_t n)
 
 static void build_sprites(void)
 {
-    /* Empty black cell */
     for (uint16_t i = 0; i < CELL * CELL; i++) s_tile_spr[SYM_EMPTY][i] = COLOR_BLACK;
-
-    /* Flash white cell */
     for (uint16_t i = 0; i < CELL * CELL; i++) s_tile_spr[SYM_FLASH][i] = COLOR_WHITE;
 
-    /* 6 Beveled Symbol Blocks (16x16) */
     for (uint8_t s = 1; s <= 6U; s++)
     {
         uint16_t bg = s_sym_colors[s];
@@ -142,27 +138,22 @@ static void build_sprites(void)
             for (uint8_t x = 0; x < CELL; x++)
             {
                 uint16_t c = bg;
-                /* Rounded dark corners */
                 if (((y == 0U || y == 15U) && (x == 0U || x == 15U)))
                 {
                     c = COLOR_BLACK;
                 }
-                /* Top/Left 3D bevel highlight */
                 else if (y == 0U || x == 0U)
                 {
                     c = COLOR_WHITE;
                 }
-                /* Bottom/Right 3D shadow */
                 else if (y == 15U || x == 15U)
                 {
                     c = 0x2104U;
                 }
-                /* Inner dotted corner accents (like ZX Spectrum tiles) */
                 else if ((y == 2U || y == 13U) && (x == 2U || x == 13U))
                 {
                     c = COLOR_BLACK;
                 }
-                /* Center symbol bitmap */
                 else if ((bmp[y] & (0x8000U >> x)) != 0U)
                 {
                     c = (s == SYM_STEEL) ? COLOR_WHITE : COLOR_BLACK;
@@ -172,7 +163,6 @@ static void build_sprites(void)
         }
     }
 
-    /* 5 Mini 8x8 Icons for BLOCKS panel */
     for (uint8_t s = 0; s < 5U; s++)
     {
         uint16_t bg = s_sym_colors[s + 1U];
@@ -187,7 +177,6 @@ static void build_sprites(void)
     }
 }
 
-/* Draws the iconic ZX Spectrum diagonal rainbow striped background */
 static void draw_rainbow_background(void)
 {
     static const uint16_t stripe_pal[8] = {
@@ -204,7 +193,6 @@ static void draw_rainbow_background(void)
             uint8_t  c1   = (uint8_t)(band & 7U);
             uint8_t  c2   = (uint8_t)((band + 1U) & 7U);
 
-            /* Dither transition zone between rainbow stripes */
             uint16_t col;
             if (rem >= 16U && (((x ^ y) & 1U) != 0U))
             {
@@ -220,7 +208,6 @@ static void draw_rainbow_background(void)
     }
 }
 
-/* Draws a black UI box with double neon magenta border (matching screenshot) */
 static void draw_ui_box(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
     sys_lcd_fill_rect(x, y, w, h, COLOR_BLACK);
@@ -268,7 +255,6 @@ static void update_speed_panel(void)
     }
 }
 
-/* Counts live blocks in the well and updates the bottom-right BLOCKS table */
 static void update_blocks_stats(void)
 {
     uint16_t counts[SYM_COUNT + 1U] = { 0 };
@@ -301,35 +287,28 @@ static void draw_static_layout(void)
 {
     draw_rainbow_background();
 
-    /* Center Well Frame */
     sys_lcd_fill_rect(WELL_X - 2, WELL_Y - 2, WELL_W + 4, WELL_H + 4, COLOR_BLACK);
     sys_lcd_fill_rect(WELL_X, WELL_Y, WELL_W, WELL_H, COLOR_BLACK);
 
-    /* Left Panel 1: 1UP & TOP */
     draw_ui_box(8, 20, 82, 56);
     sys_draw_text(34, 28, "1UP", COLOR_WHITE, COLOR_BLACK, 1);
     sys_draw_text(34, 50, "TOP", COLOR_WHITE, COLOR_BLACK, 1);
 
-    /* Left Panel 2: ROUND & LINES LEFT */
     draw_ui_box(8, 86, 82, 72);
     sys_draw_text(28, 96,  "ROUND", COLOR_WHITE, COLOR_BLACK, 1);
     sys_draw_text(28, 120, "LINES", COLOR_WHITE, COLOR_BLACK, 1);
     sys_draw_text(31, 130, "LEFT",  COLOR_WHITE, COLOR_BLACK, 1);
 
-    /* Left Panel 3: NEXT Piece */
     draw_ui_box(8, 168, 82, 48);
     sys_draw_text(34, 178, "NEXT", COLOR_WHITE, COLOR_BLACK, 1);
 
-    /* Right Panel 1: SPEED */
     draw_ui_box(226, 20, 84, 44);
     sys_draw_text(242, 28, "SPEED", COLOR_WHITE, COLOR_BLACK, 1);
 
-    /* Right Panel 2: CREDIT */
     draw_ui_box(226, 74, 84, 42);
     sys_draw_text(238, 84, "CREDIT", COLOR_WHITE, COLOR_BLACK, 1);
     draw_num_padded(258, 96, s_credits, 2, COLOR_WHITE);
 
-    /* Right Panel 3: BLOCKS Statistics */
     draw_ui_box(226, 124, 84, 92);
     sys_draw_text(238, 132, "BLOCKS", COLOR_WHITE, COLOR_BLACK, 1);
     for (uint8_t s = 0; s < SYM_COUNT; s++)
@@ -356,11 +335,9 @@ static void render_well(uint32_t now)
     {
         for (uint8_t i = 0; i < 3U; i++)
         {
-            int8_t cx = s_vertical ? s_px : (int8_t)(s_px + i);
-            int8_t cy = s_vertical ? (int8_t)(s_py + i) : s_py;
-            if (cx >= 0 && cx < COLS && cy >= 0 && cy < ROWS)
+            if (s_bactive[i] && s_bx[i] >= 0 && s_bx[i] < COLS && s_by[i] >= 0 && s_by[i] < ROWS)
             {
-                want[cy][cx] = s_cur[i];
+                want[s_by[i]][s_bx[i]] = s_cur[i];
             }
         }
     }
@@ -433,34 +410,168 @@ static void roll_next_piece(void)
     }
 }
 
-static bool piece_fits(int8_t px, int8_t py, bool vert)
+static bool spawn_piece(uint32_t now)
 {
     for (uint8_t i = 0; i < 3U; i++)
     {
-        int8_t cx = vert ? px : (int8_t)(px + i);
-        int8_t cy = vert ? (int8_t)(py + i) : py;
-        if (cx < 0 || cx >= COLS || cy >= ROWS) return false;
-        if (cy >= 0 && s_grid[cy][cx] != SYM_EMPTY) return false;
+        s_cur[i]     = s_next[i];
+        s_bx[i]      = (int8_t)(1 + i);
+        s_by[i]      = 0;
+        s_bactive[i] = true;
+    }
+    roll_next_piece();
+    update_next_panel();
+    s_fall_tick = now;
+
+    /* Game Over if any of the 3 spawn cells at row 0 are already occupied */
+    for (uint8_t i = 0; i < 3U; i++)
+    {
+        if (s_grid[s_by[i]][s_bx[i]] != SYM_EMPTY)
+        {
+            return false;
+        }
     }
     return true;
 }
 
-static bool spawn_piece(uint32_t now)
+static uint8_t active_block_count(void)
 {
-    for (uint8_t i = 0; i < 3U; i++) s_cur[i] = s_next[i];
-    roll_next_piece();
-    update_next_panel();
-
-    s_vertical = false;
-    s_px = 1;
-    s_py = 0;
-    s_fall_tick = now;
-
-    if (!piece_fits(s_px, s_py, s_vertical))
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < 3U; i++)
     {
-        return false;
+        if (s_bactive[i]) n++;
+    }
+    return n;
+}
+
+/* Move all currently falling (un-landed) blocks Left (-1) or Right (+1) if clear */
+static bool try_move_active_horiz(int8_t dx)
+{
+    for (uint8_t i = 0; i < 3U; i++)
+    {
+        if (!s_bactive[i]) continue;
+        int8_t nx = (int8_t)(s_bx[i] + dx);
+        int8_t ny = s_by[i];
+        if (nx < 0 || nx >= COLS) return false;
+        if (ny >= 0 && s_grid[ny][nx] != SYM_EMPTY) return false;
+    }
+
+    for (uint8_t i = 0; i < 3U; i++)
+    {
+        if (s_bactive[i])
+        {
+            s_bx[i] = (int8_t)(s_bx[i] + dx);
+        }
     }
     return true;
+}
+
+/* Cycle colors among all currently falling blocks (works for 3 or 2 active blocks!) */
+static void cycle_active_colors(void)
+{
+    uint8_t idx[3];
+    uint8_t cnt = 0;
+    for (uint8_t i = 0; i < 3U; i++)
+    {
+        if (s_bactive[i]) idx[cnt++] = i;
+    }
+    if (cnt < 2U) return;
+
+    uint8_t last_col = s_cur[idx[cnt - 1U]];
+    for (uint8_t k = cnt - 1U; k > 0U; k--)
+    {
+        s_cur[idx[k]] = s_cur[idx[k - 1U]];
+    }
+    s_cur[idx[0]] = last_col;
+    sound(s_snd_cycle, 1);
+}
+
+/* Flip intact 3-block piece between Horizontal and Vertical */
+static void try_flip_orientation(void)
+{
+    if (active_block_count() != 3U) return;
+
+    bool is_vert = (s_bx[0] == s_bx[1]) && (s_bx[1] == s_bx[2]);
+    if (!is_vert)
+    {
+        /* Horizontal -> Vertical around middle block s_bx[1] */
+        int8_t cx = s_bx[1];
+        int8_t top_y = s_by[1];
+        if ((top_y + 2 < ROWS) &&
+            (s_grid[top_y][cx] == SYM_EMPTY) &&
+            (s_grid[top_y + 1][cx] == SYM_EMPTY) &&
+            (s_grid[top_y + 2][cx] == SYM_EMPTY))
+        {
+            s_bx[0] = cx; s_by[0] = top_y;
+            s_bx[1] = cx; s_by[1] = (int8_t)(top_y + 1);
+            s_bx[2] = cx; s_by[2] = (int8_t)(top_y + 2);
+            sound(s_snd_cycle, 1);
+        }
+    }
+    else
+    {
+        /* Vertical -> Horizontal around middle block */
+        int8_t cy = s_by[1];
+        int8_t left_x = (int8_t)(s_bx[1] - 1);
+        if (left_x < 0) left_x = 0;
+        if (left_x > COLS - 3) left_x = COLS - 3;
+
+        if ((s_grid[cy][left_x] == SYM_EMPTY) &&
+            (s_grid[cy][left_x + 1] == SYM_EMPTY) &&
+            (s_grid[cy][left_x + 2] == SYM_EMPTY))
+        {
+            s_bx[0] = left_x;            s_by[0] = cy;
+            s_bx[1] = (int8_t)(left_x + 1); s_by[1] = cy;
+            s_bx[2] = (int8_t)(left_x + 2); s_by[2] = cy;
+            sound(s_snd_cycle, 1);
+        }
+    }
+}
+
+/* Steps active blocks down by 1 row. Any block that hits a stack below locks immediately,
+ * while remaining unsupported blocks stay active and steerable! */
+static bool step_active_down(void)
+{
+    bool any_locked = false;
+
+    /* Lock from bottom to top so vertical triplets stack cleanly */
+    bool locked_pass = true;
+    while (locked_pass)
+    {
+        locked_pass = false;
+        for (int8_t i = 2; i >= 0; i--)
+        {
+            if (!s_bactive[i]) continue;
+            int8_t cx = s_bx[i];
+            int8_t ny = (int8_t)(s_by[i] + 1);
+            if ((ny >= ROWS) || (s_grid[ny][cx] != SYM_EMPTY))
+            {
+                s_grid[s_by[i]][cx] = s_cur[i];
+                s_bactive[i] = false;
+                locked_pass  = true;
+                any_locked   = true;
+            }
+        }
+    }
+
+    if (any_locked)
+    {
+        sound(s_snd_lock, 1);
+        update_blocks_stats();
+    }
+
+    /* Advance all remaining active blocks down by 1 row */
+    bool still_falling = false;
+    for (uint8_t i = 0; i < 3U; i++)
+    {
+        if (s_bactive[i])
+        {
+            s_by[i]++;
+            still_falling = true;
+        }
+    }
+
+    return still_falling;
 }
 
 /* Scan for 3+ matching blocks horizontally, vertically, and diagonally */
@@ -481,7 +592,6 @@ static uint16_t find_matches(uint16_t *out_lines)
 
             for (uint8_t d = 0; d < 4U; d++)
             {
-                /* Skip if previous cell in this direction had the same symbol */
                 int8_t pr = (int8_t)(r - dr[d]);
                 int8_t pc = (int8_t)(c - dc[d]);
                 if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS && s_grid[pr][pc] == sym)
@@ -525,7 +635,6 @@ static uint16_t find_matches(uint16_t *out_lines)
     return marked_cells;
 }
 
-/* Drops individual blocks down if there are empty spaces below them */
 static bool apply_column_gravity(void)
 {
     bool moved = false;
@@ -556,7 +665,6 @@ static void setup_round(uint32_t now)
     s_speed_lvl  = (uint8_t)(1U + s_round / 2U);
     if (s_speed_lvl > 8U) s_speed_lvl = 8U;
 
-    /* On Round 2+, populate side columns and corner steel blocks (like screenshot!) */
     if (s_round >= 1U)
     {
         s_grid[ROWS - 1][0]        = SYM_STEEL;
@@ -578,26 +686,15 @@ static void setup_round(uint32_t now)
     sdk_memset(s_shown, 0xFFU, sizeof(s_shown));
 }
 
+/* Relaxed speed curve: Level 1 starts at a comfortable 650 ms per row! */
 static uint32_t fall_interval(void)
 {
-    uint32_t dec = (uint32_t)s_speed_lvl * 42U;
-    return (dec >= 340U) ? 100U : (440U - dec);
+    uint32_t dec = (uint32_t)(s_speed_lvl - 1U) * 60U;
+    return (dec >= 470U) ? 180U : (650U - dec);
 }
 
-static void lock_and_check(uint32_t now)
+static void on_all_blocks_landed(uint32_t now)
 {
-    for (uint8_t i = 0; i < 3U; i++)
-    {
-        int8_t cx = s_vertical ? s_px : (int8_t)(s_px + i);
-        int8_t cy = s_vertical ? (int8_t)(s_py + i) : s_py;
-        if (cx >= 0 && cx < COLS && cy >= 0 && cy < ROWS)
-        {
-            s_grid[cy][cx] = s_cur[i];
-        }
-    }
-    sound(s_snd_lock, 1);
-
-    /* Settle any overhanging horizontal blocks immediately */
     (void)apply_column_gravity();
     update_blocks_stats();
 
@@ -674,64 +771,48 @@ void app_main(void)
                     break;
                 }
 
-                /* Left / Right movement */
-                if ((in.repeat & KEY_LEFT) && piece_fits((int8_t)(s_px - 1), s_py, s_vertical))
+                /* Move all still-falling blocks Left / Right */
+                if ((in.repeat & KEY_LEFT) && try_move_active_horiz(-1))
                 {
-                    s_px--;
                     sound(s_snd_move, 1);
                 }
-                if ((in.repeat & KEY_RIGHT) && piece_fits((int8_t)(s_px + 1), s_py, s_vertical))
+                if ((in.repeat & KEY_RIGHT) && try_move_active_horiz(1))
                 {
-                    s_px++;
                     sound(s_snd_move, 1);
                 }
 
-                /* Cycle colors inside the 3-block piece (A or UP) */
+                /* Cycle colors of active blocks (A or UP) */
                 if (in.pressed & (KEY_A | KEY_UP))
                 {
-                    uint8_t tmp = s_cur[2];
-                    s_cur[2] = s_cur[1];
-                    s_cur[1] = s_cur[0];
-                    s_cur[0] = tmp;
-                    sound(s_snd_cycle, 1);
+                    cycle_active_colors();
                 }
 
-                /* Flip orientation Horizontal <-> Vertical (X button / Key C) */
+                /* Flip orientation Horizontal <-> Vertical when all 3 blocks are intact (X / Key C) */
                 if (in.pressed & KEY_X)
                 {
-                    bool new_vert = !s_vertical;
-                    int8_t nx = s_px;
-                    if (!new_vert && (nx > COLS - 3)) nx = COLS - 3;
-                    if (piece_fits(nx, s_py, new_vert))
-                    {
-                        s_px = nx;
-                        s_vertical = new_vert;
-                        sound(s_snd_cycle, 1);
-                    }
+                    try_flip_orientation();
                 }
 
                 /* Instant Hard Drop (B button) */
                 if (in.pressed & KEY_B)
                 {
-                    while (piece_fits(s_px, (int8_t)(s_py + 1), s_vertical))
+                    while (step_active_down())
                     {
-                        s_py++;
                         s_score += 2U;
                     }
                     if (s_score > s_best) s_best = s_score;
                     update_score_panel();
-                    lock_and_check(now);
+                    on_all_blocks_landed(now);
                     break;
                 }
 
-                /* Gravity & Soft Drop */
-                uint32_t delay = (in.held & KEY_DOWN) ? 45U : fall_interval();
+                /* Gravity & Soft Drop (75 ms soft drop, 650 ms base speed on Round 1) */
+                uint32_t delay = (in.held & KEY_DOWN) ? 75U : fall_interval();
                 if ((now - s_fall_tick) >= delay)
                 {
                     s_fall_tick = now;
-                    if (piece_fits(s_px, (int8_t)(s_py + 1), s_vertical))
+                    if (step_active_down())
                     {
-                        s_py++;
                         if (in.held & KEY_DOWN)
                         {
                             s_score++;
@@ -741,7 +822,7 @@ void app_main(void)
                     }
                     else
                     {
-                        lock_and_check(now);
+                        on_all_blocks_landed(now);
                     }
                 }
                 break;
