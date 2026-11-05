@@ -56,7 +56,8 @@ console_sdk_app(flappy    "${CMAKE_SOURCE_DIR}/sdk_apps/flappy.c")
 console_sdk_app(pacman    "${CMAKE_SOURCE_DIR}/sdk_apps/pacman.c")
 console_sdk_app(loderunner "${CMAKE_SOURCE_DIR}/sdk_apps/loderunner.c")
 console_sdk_app(arkanoid_deluxe "${CMAKE_SOURCE_DIR}/sdk_apps/arkanoid_deluxe.c")
-console_sdk_app(stuck_up "${CMAKE_SOURCE_DIR}/sdk_apps/stuck_up.c")
+console_sdk_app(stack_up "${CMAKE_SOURCE_DIR}/sdk_apps/stack_up.c")
+console_sdk_app(sram_test "${CMAKE_SOURCE_DIR}/sdk_apps/sram_test.c")
 
 
 # Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
@@ -124,6 +125,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_storage.c
     Core/Src/app_services.c
     Core/Src/script_engine.c
+    Core/Src/uart_loader.c
 )
 
 # Add include paths

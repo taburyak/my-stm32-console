@@ -11,6 +11,7 @@
 #include <string.h>
 #include "ccmram.h"
 #include "app_loader.h"
+#include "uart_loader.h"
 
 extern RTC_HandleTypeDef hrtc;
 
@@ -1137,6 +1138,19 @@ static void Games_AddTile(const char *title, const char *icon_path, uint32_t acc
     if (grp != NULL) lv_group_add_obj(grp, btn);
 }
 
+static void btn_uart_rx_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        Beeper_Click();
+        (void)UARTLoader_RunSession(false);
+        if (!AppLoader_IsRunning())
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_GAMES;
+        }
+    }
+}
+
 static void Populate_Games_Grid(void)
 {
     if (games_grid_obj == NULL) return;
@@ -1202,6 +1216,22 @@ static void Populate_Games_Grid(void)
         lv_obj_set_style_text_color(lbl, lv_color_hex(0x888888), 0);
         lv_label_set_text(lbl, "No SD card: built-in games only");
     }
+
+    /* UART Receive tile (XMODEM-CRC / uart_upload.py over USART3) */
+    lv_obj_t * uart_btn = lv_btn_create(games_grid_obj);
+    lv_obj_set_size(uart_btn, 92, 92);
+    lv_obj_set_style_radius(uart_btn, 10, 0);
+    lv_obj_set_style_bg_color(uart_btn, lv_color_hex(0x182B3A), 0);
+    lv_obj_set_style_border_width(uart_btn, 2, 0);
+    lv_obj_set_style_border_color(uart_btn, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_border_color(uart_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_t * uart_lbl = lv_label_create(uart_btn);
+    lv_label_set_text(uart_lbl, LV_SYMBOL_DOWNLOAD "\nUART Rx");
+    lv_obj_set_style_text_align(uart_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(uart_lbl);
+    lv_obj_add_event_cb(uart_btn, btn_uart_rx_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(uart_btn, global_key_event_cb, LV_EVENT_KEY, NULL);
+    if (grp != NULL) lv_group_add_obj(grp, uart_btn);
 
     /* Home tile for touch / mouse users (keys: ESC / gamepad B) */
     lv_obj_t * home = lv_btn_create(games_grid_obj);
@@ -1357,6 +1387,30 @@ static void Build_Settings_Screen(void)
  * 6. System Info Screen (Hardware & Memory Status)
  * ========================================================================== */
 
+static void btn_sram_test_cb(lv_event_t * e)
+{
+    (void)e;
+    bool ok = POST_RunSRAMFullTest(HAL_GetTick() ^ 0xA55AA55AU);
+    const POST_Report_t *rep = POST_GetReport();
+    printf("[DIAG] SRAM Full Test #%lu: %s (Data:%s Addr:%s PRBS:%s, %lu ms, errs=%lu)\r\n",
+           (unsigned long)rep->sram_stress_runs,
+           ok ? "PASS" : "FAIL",
+           rep->sram_data_bus_ok ? "OK" : "ERR",
+           rep->sram_addr_bus_ok ? "OK" : "ERR",
+           rep->sram_prbs_ok     ? "OK" : "ERR",
+           (unsigned long)rep->sram_test_ms,
+           (unsigned long)rep->sram_stress_errs);
+    if (ok)
+    {
+        Beeper_Beep(15);
+    }
+    else
+    {
+        Beeper_ErrorAlert();
+    }
+    s_pending_screen = (int8_t)UI_SCREEN_SYSINFO;
+}
+
 static void Build_SysInfo_Screen(void)
 {
     const POST_Report_t *rep = POST_GetReport();
@@ -1409,29 +1463,64 @@ static void Build_SysInfo_Screen(void)
 
     lv_obj_t * panel = lv_obj_create(workspace_cont);
 
-    lv_obj_set_size(panel, 296, 155);
-    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 5);
+    lv_obj_set_size(panel, 296, 158);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 4);
     lv_obj_set_style_bg_color(panel, lv_color_hex(0x101520), 0);
+    lv_obj_set_style_pad_all(panel, 8, 0);
 
     lv_obj_t * info_lbl = lv_label_create(panel);
     lv_obj_set_style_text_color(info_lbl, lv_color_hex(0xE0E0E0), 0);
-    lv_label_set_text_fmt(info_lbl,
-        "MCU: STM32F407ZGT6 @ 168 MHz\n"
-        "CPU Load: %lu %% | Free Heap: %lu KB\n"
-        "FSMC SRAM: %lu KB (%s)\n"
-        "CCM RAM: 64 KB (%s)\n"
-        "SPI Flash W25Q: ID 0x%06X\n"
-        "SD Card: %lu MB Free / %lu MB",
-        (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
-        (unsigned long)rep->sram_size_kb, rep->sram_ok ? "OK" : "ERR",
-        rep->ccmram_ok ? "OK" : "ERR",
-        (unsigned int)rep->flash_id,
-        (unsigned long)free_mb, (unsigned long)total_mb);
+    if (rep->sram_ok)
+    {
+        lv_label_set_text_fmt(info_lbl,
+            "MCU: STM32F407ZGT6 @ 168 MHz (API v%u)\n"
+            "CPU Load: %lu %% | Free Heap: %lu KB\n"
+            "SRAM: %lu KB [D:OK A:OK P:OK] %lu ms\n"
+            "SRAM Stress: %lu runs / %lu errs | CCM: %s\n"
+            "SPI Flash W25Q: ID 0x%06X\n"
+            "SD Card: %lu MB Free / %lu MB",
+            (unsigned int)SDK_API_VERSION,
+            (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
+            (unsigned long)rep->sram_size_kb, (unsigned long)rep->sram_test_ms,
+            (unsigned long)rep->sram_stress_runs, (unsigned long)rep->sram_stress_errs,
+            rep->ccmram_ok ? "OK" : "ERR",
+            (unsigned int)rep->flash_id,
+            (unsigned long)free_mb, (unsigned long)total_mb);
+    }
+    else
+    {
+        lv_label_set_text_fmt(info_lbl,
+            "MCU: STM32F407ZGT6 @ 168 MHz (API v%u)\n"
+            "CPU Load: %lu %% | Free Heap: %lu KB\n"
+            "SRAM ERR @0x%08lX [D:%s A:%s P:%s]\n"
+            "Exp: 0x%08lX Got: 0x%08lX (%lu errs)\n"
+            "SPI Flash W25Q: ID 0x%06X\n"
+            "SD Card: %lu MB Free / %lu MB",
+            (unsigned int)SDK_API_VERSION,
+            (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
+            (unsigned long)rep->sram_fail_addr,
+            rep->sram_data_bus_ok ? "OK" : "ER",
+            rep->sram_addr_bus_ok ? "OK" : "ER",
+            rep->sram_prbs_ok     ? "OK" : "ER",
+            (unsigned long)rep->sram_fail_exp, (unsigned long)rep->sram_fail_got,
+            (unsigned long)rep->sram_stress_errs,
+            (unsigned int)rep->flash_id,
+            (unsigned long)free_mb, (unsigned long)total_mb);
+    }
+
+    lv_obj_t * btn_test = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_test, 136, 34);
+    lv_obj_align(btn_test, LV_ALIGN_BOTTOM_LEFT, 16, -8);
+    lv_obj_set_style_bg_color(btn_test, lv_color_hex(0x00695C), 0);
+    lv_obj_t * lbl_t = lv_label_create(btn_test);
+    lv_label_set_text(lbl_t, LV_SYMBOL_REFRESH " Test SRAM");
+    lv_obj_center(lbl_t);
+    lv_obj_add_event_cb(btn_test, btn_sram_test_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_test, global_key_event_cb, LV_EVENT_KEY, NULL);
 
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
-
-    lv_obj_set_size(btn_back, 120, 34);
-    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_size(btn_back, 136, 34);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_RIGHT, -16, -8);
     lv_obj_t * lbl_b = lv_label_create(btn_back);
     lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
     lv_obj_center(lbl_b);
@@ -1439,5 +1528,9 @@ static void Build_SysInfo_Screen(void)
     lv_obj_add_event_cb(btn_back, global_key_event_cb, LV_EVENT_KEY, NULL);
 
     lv_group_t * grp = lv_group_get_default();
-    if (grp != NULL) lv_group_add_obj(grp, btn_back);
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, btn_test);
+        lv_group_add_obj(grp, btn_back);
+    }
 }

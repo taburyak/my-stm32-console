@@ -33,6 +33,7 @@
 #include "app_files.h"
 #include "app_storage.h"
 #include "app_services.h"
+#include "uart_loader.h"
 #include "cmsis_os2.h"
 /* USER CODE END Includes */
 
@@ -255,7 +256,19 @@ void TIM4_IRQHandler(void)
 void USART3_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_IRQn 0 */
-
+  uint32_t sr = USART3->SR;
+  if ((sr & USART_SR_RXNE) != 0U)
+  {
+    uint8_t b = (uint8_t)(USART3->DR & 0xFFU);
+    UARTLoader_OnRxByte(b);
+    return;
+  }
+  if ((sr & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) != 0U)
+  {
+    volatile uint32_t dummy = USART3->DR;
+    (void)dummy;
+    return;
+  }
   /* USER CODE END USART3_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
   /* USER CODE BEGIN USART3_IRQn 1 */

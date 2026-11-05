@@ -41,6 +41,7 @@
 #include "os_tasks.h"
 #include "ui_manager.h"
 #include "app_loader.h"
+#include "uart_loader.h"
 #include "ccmram.h"
 /* USER CODE END Includes */
 
@@ -141,13 +142,19 @@ void MPU_Config_UserSandbox(void);
 /* Redirecting `printf` for GCC and Picolibc (CMake toolchain) */
 int __io_putchar(int ch)
 {
-    HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    if (!UARTLoader_IsSessionActive())
+    {
+        HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    }
     return ch;
 }
 
 int _write(int file, char *ptr, int len)
 {
-    HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
+    if (!UARTLoader_IsSessionActive())
+    {
+        HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
+    }
     return len;
 }
 
@@ -162,7 +169,6 @@ unsigned long getRunTimeCounterValue(void)
     return (unsigned long)__HAL_TIM_GET_COUNTER(&htim5);
 }
 /* USER CODE END 0 */
-
 
 /**
   * @brief  The application entry point.
@@ -857,8 +863,8 @@ static void MX_FSMC_Init(void)
   /* Timing */
   Timing.AddressSetupTime = 2;
   Timing.AddressHoldTime = 15;
-  Timing.DataSetupTime = 5;
-  Timing.BusTurnAroundDuration = 2;
+  Timing.DataSetupTime = 6;
+  Timing.BusTurnAroundDuration = 3;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -889,10 +895,10 @@ static void MX_FSMC_Init(void)
   hsram3.Init.WriteBurst = FSMC_WRITE_BURST_DISABLE;
   hsram3.Init.PageSize = FSMC_PAGE_SIZE_NONE;
   /* Timing */
-  Timing.AddressSetupTime = 2;
+  Timing.AddressSetupTime = 3;
   Timing.AddressHoldTime = 15;
-  Timing.DataSetupTime = 8;
-  Timing.BusTurnAroundDuration = 2;
+  Timing.DataSetupTime = 12;
+  Timing.BusTurnAroundDuration = 3;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -904,11 +910,16 @@ static void MX_FSMC_Init(void)
   }
 
   /* USER CODE BEGIN FSMC_Init 2 */
-  /* Add 2 HCLK cycles of Bus Turnaround (BUSTURN) on Bank 3 (SRAM) and Bank 4 (LCD)
-   * to prevent FSMC data bus contention when switching between LCD writes and SRAM instruction fetches! */
-  FSMC_Bank1->BTCR[5] |= (2UL << 16); /* Bank 3 BUSTURN = 2 */
-  FSMC_Bank1->BTCR[7] |= (2UL << 16); /* Bank 4 BUSTURN = 2 */
-  __DSB();
+  /* Fallback override if CubeMX .ioc timings are ever reset:
+   * - Bank 3 (IS62WV51216BLL-55, tAA=55ns): ADDSET=3, DATAST=12 (89.3ns @ 168MHz), BUSTURN=3
+   * - Bank 4 (ILI9341 LCD): ADDSET=2, DATAST=6, BUSTURN=3
+   *
+   * FSMC_Bank1->BTCR[5] = (FSMC_Bank1->BTCR[5] & ~(0xFFUL | (0xFFUL << 8) | (0x0FUL << 16))) |
+   *                       (3UL << 0) | (12UL << 8) | (3UL << 16);
+   * FSMC_Bank1->BTCR[7] = (FSMC_Bank1->BTCR[7] & ~(0xFFUL | (0xFFUL << 8) | (0x0FUL << 16))) |
+   *                       (2UL << 0) | (6UL << 8) | (3UL << 16);
+   * __DSB();
+   */
   /* USER CODE END FSMC_Init 2 */
 }
 
@@ -1080,8 +1091,9 @@ void StartDefaultTask(void *argument)
   /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
   OSTasks_Init();
 
-  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) */
+  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & UART3 Background Uploader */
   UIManager_Init();
+  UARTLoader_Init();
 
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;
@@ -1145,8 +1157,20 @@ void StartDefaultTask(void *argument)
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
     }
 
-        /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
-        UIManager_Update();
+    /* 3. Check for zero-touch USART3 upload trigger from PC */
+    if (UARTLoader_TakeAutoTrigger())
+    {
+      (void)UARTLoader_RunSession(true);
+      if (!AppLoader_IsRunning())
+      {
+        UIManager_ShowScreen(UI_SCREEN_GAMES);
+        lv_obj_invalidate(lv_scr_act());
+      }
+      continue;
+    }
+
+    /* 4. Update Top Status Bar (RTC Clock & USB/SD indicators) */
+    UIManager_Update();
 
         /* 4. LVGL Graphics Rendering */
         LVGL_Port_HandleFlushConfirmation();
