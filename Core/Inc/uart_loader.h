@@ -39,6 +39,25 @@ bool UARTLoader_IsSessionActive(void);
  */
 bool UARTLoader_RunSession(bool auto_triggered);
 
+/**
+ * @brief Request an asynchronous screenshot capture (from button/gamepad hotkey).
+ */
+void Screenshot_Request(void);
+
+/**
+ * @brief Returns true once if a screenshot hotkey was triggered.
+ */
+bool Screenshot_TakeRequest(void);
+
+/**
+ * @brief Capture the current 320x240 display GRAM into a 16-bit RGB565 BMP file
+ *        under SD:/screenshots/shot_NNN.bmp.
+ * @param out_path Optional buffer to receive the saved relative path
+ * @param out_max  Capacity of out_path
+ * @return true if saved to SD card successfully
+ */
+bool Screenshot_CaptureToSD(char *out_path, uint32_t out_max);
+
 #ifdef __cplusplus
 }
 #endif

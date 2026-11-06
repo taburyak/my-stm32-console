@@ -505,6 +505,9 @@ uint32_t Svc_GateDispatch(uint32_t a0, uint32_t a1, uint32_t a2)
     case SDK_SVC_FLASH_WRITE:
       return (uint32_t)AppStorage_FlashWrite(a0, (const void *)a1, a2);
 
+    case SDK_SVC_TEMP_GET:
+      return (uint32_t)AppSvc_GetTempDeci(a0);
+
     default:
       return 0U;
   }
@@ -667,6 +670,7 @@ void Custom_SVC_Handler_C(uint32_t *svc_args)
     case SDK_SVC_FLASH_READ:
     case SDK_SVC_FLASH_ERASE:
     case SDK_SVC_FLASH_WRITE:
+    case SDK_SVC_TEMP_GET:
       Svc_EnterGate(svc_args, svc_number);
       break;
 

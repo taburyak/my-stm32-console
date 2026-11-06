@@ -22,6 +22,8 @@
 
 /* USER CODE BEGIN firstSection */
 /* can be used to modify / undefine following code or add new definitions */
+#include "main.h"
+extern IWDG_HandleTypeDef hiwdg;
 /* USER CODE END firstSection*/
 
 /* Includes ------------------------------------------------------------------*/
@@ -237,6 +239,87 @@ DSTATUS SD_status(BYTE lun)
 
 /* USER CODE BEGIN beforeReadSection */
 /* can be used to modify previous code / undefine following code / add new code */
+#undef SD_TIMEOUT
+#define SD_TIMEOUT 2000U
+
+DRESULT SD_read(BYTE lun, BYTE *buff, DWORD sector, UINT count)
+{
+  uint8_t ret = MSD_ERROR;
+  DRESULT res = RES_ERROR;
+  uint32_t timer;
+  uint16_t event = 0U;
+  osStatus_t status;
+
+  if (SD_CheckStatusWithTimeout(SD_TIMEOUT) < 0)
+  {
+    return res;
+  }
+
+  /* Route external FSMC SRAM (>= 0x60000000) and unaligned buffers through internal 0-WS SRAM scratch */
+  if (!((uint32_t)buff & 0x3U) && ((uint32_t)buff < 0x60000000UL))
+  {
+    ret = BSP_SD_ReadBlocks_DMA((uint32_t *)buff, (uint32_t)sector, count);
+    if (ret == MSD_OK)
+    {
+      status = osMessageQueueGet(SDQueueID, (void *)&event, NULL, SD_TIMEOUT);
+      if ((status == osOK) && (event == READ_CPLT_MSG))
+      {
+        timer = osKernelGetTickCount();
+        while ((osKernelGetTickCount() - timer) < SD_TIMEOUT)
+        {
+          if (BSP_SD_GetCardState() == SD_TRANSFER_OK)
+          {
+            res = RES_OK;
+            break;
+          }
+        }
+      }
+    }
+  }
+  else
+  {
+    UINT i;
+    for (i = 0U; i < count; i++)
+    {
+      (void)HAL_IWDG_Refresh(&hiwdg);
+      ret = BSP_SD_ReadBlocks_DMA((uint32_t *)scratch, (uint32_t)sector++, 1U);
+      if (ret != MSD_OK)
+      {
+        break;
+      }
+      status = osMessageQueueGet(SDQueueID, (void *)&event, NULL, SD_TIMEOUT);
+      if ((status != osOK) || (event != READ_CPLT_MSG))
+      {
+        ret = MSD_ERROR;
+        break;
+      }
+      timer = osKernelGetTickCount();
+      ret = MSD_ERROR;
+      while ((osKernelGetTickCount() - timer) < SD_TIMEOUT)
+      {
+        ret = BSP_SD_GetCardState();
+        if (ret == MSD_OK)
+        {
+          break;
+        }
+      }
+      if (ret != MSD_OK)
+      {
+        break;
+      }
+      memcpy(buff, scratch, BLOCKSIZE);
+      buff += BLOCKSIZE;
+    }
+    if ((i == count) && (ret == MSD_OK))
+    {
+      res = RES_OK;
+    }
+  }
+  return res;
+}
+
+#define SD_read SD_read_CubeMX_Unused
+static DRESULT __attribute__((unused)) SD_read_CubeMX_Unused(BYTE lun, BYTE *buff, DWORD sector, UINT count);
 /* USER CODE END beforeReadSection */
 /**
   * @brief  Reads Sector(s)
@@ -397,6 +480,89 @@ DRESULT SD_read(BYTE lun, BYTE *buff, DWORD sector, UINT count)
 
 /* USER CODE BEGIN beforeWriteSection */
 /* can be used to modify previous code / undefine following code / add new code */
+#undef SD_read
+
+#if _USE_WRITE == 1
+DRESULT SD_write(BYTE lun, const BYTE *buff, DWORD sector, UINT count)
+{
+  DRESULT res = RES_ERROR;
+  uint32_t timer;
+  uint16_t event = 0U;
+  osStatus_t status;
+  int32_t ret = MSD_ERROR;
+
+  if (SD_CheckStatusWithTimeout(SD_TIMEOUT) < 0)
+  {
+    return res;
+  }
+
+  /* Route external FSMC SRAM (>= 0x60000000) and unaligned buffers through internal 0-WS SRAM scratch
+   * so SDIO TX DMA (INC4 burst, no HW flow control) never underruns on 16-bit FSMC wait states! */
+  if (!((uint32_t)buff & 0x3U) && ((uint32_t)buff < 0x60000000UL))
+  {
+    if (BSP_SD_WriteBlocks_DMA((uint32_t *)buff, (uint32_t)sector, count) == MSD_OK)
+    {
+      status = osMessageQueueGet(SDQueueID, (void *)&event, NULL, SD_TIMEOUT);
+      if ((status == osOK) && (event == WRITE_CPLT_MSG))
+      {
+        timer = osKernelGetTickCount();
+        while ((osKernelGetTickCount() - timer) < SD_TIMEOUT)
+        {
+          if (BSP_SD_GetCardState() == SD_TRANSFER_OK)
+          {
+            res = RES_OK;
+            break;
+          }
+        }
+      }
+    }
+  }
+  else
+  {
+    UINT i;
+    for (i = 0U; i < count; i++)
+    {
+      (void)HAL_IWDG_Refresh(&hiwdg);
+      memcpy((void *)scratch, buff, BLOCKSIZE);
+      buff += BLOCKSIZE;
+
+      ret = BSP_SD_WriteBlocks_DMA((uint32_t *)scratch, (uint32_t)sector++, 1U);
+      if (ret != MSD_OK)
+      {
+        break;
+      }
+      status = osMessageQueueGet(SDQueueID, (void *)&event, NULL, SD_TIMEOUT);
+      if ((status != osOK) || (event != WRITE_CPLT_MSG))
+      {
+        ret = MSD_ERROR;
+        break;
+      }
+      timer = osKernelGetTickCount();
+      ret = MSD_ERROR;
+      while ((osKernelGetTickCount() - timer) < SD_TIMEOUT)
+      {
+        ret = BSP_SD_GetCardState();
+        if (ret == MSD_OK)
+        {
+          break;
+        }
+      }
+      if (ret != MSD_OK)
+      {
+        break;
+      }
+    }
+    if ((i == count) && (ret == MSD_OK))
+    {
+      res = RES_OK;
+    }
+  }
+  return res;
+}
+
+#define SD_write SD_write_CubeMX_Unused
+static DRESULT __attribute__((unused)) SD_write_CubeMX_Unused(BYTE lun, const BYTE *buff, DWORD sector, UINT count);
+#endif
 /* USER CODE END beforeWriteSection */
 /**
   * @brief  Writes Sector(s)

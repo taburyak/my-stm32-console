@@ -4,6 +4,7 @@
 #include "XPT2046_touch.h"
 #include "usb_host_manager.h"
 #include "beeper.h"
+#include "app_loader.h"
 #include "memory_map.h"
 
 extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
@@ -40,6 +41,13 @@ static lv_obj_t * mouse_cursor_obj = NULL;
  */
 static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
 {
+    /* If a sandbox app was just launched inside an LVGL event callback, discard remaining LVGL strips */
+    if (AppLoader_IsRunning())
+    {
+        lv_disp_flush_ready(disp_drv);
+        return;
+    }
+
     uint32_t width  = (uint32_t)(area->x2 - area->x1 + 1);
     uint32_t height = (uint32_t)(area->y2 - area->y1 + 1);
     uint32_t pixels_count = width * height;

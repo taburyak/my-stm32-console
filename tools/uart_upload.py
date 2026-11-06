@@ -35,13 +35,14 @@ except ImportError:
     serial = None
     list_ports = None
 
-UPLD_FLAG_SAVE_SD   = 1 << 0
-UPLD_FLAG_RUN_RAM   = 1 << 1
-UPLD_FLAG_DELETE_SD = 1 << 2
-UPLD_FLAG_LIST_SD   = 1 << 3
-UPLD_FLAG_PULL_SD   = 1 << 4
-UPLD_FLAG_MORE      = 1 << 7
-UPLD_CHUNK_SIZE     = 1024
+UPLD_FLAG_SAVE_SD    = 1 << 0
+UPLD_FLAG_RUN_RAM    = 1 << 1
+UPLD_FLAG_DELETE_SD  = 1 << 2
+UPLD_FLAG_LIST_SD    = 1 << 3
+UPLD_FLAG_PULL_SD    = 1 << 4
+UPLD_FLAG_SCREENSHOT = 1 << 5
+UPLD_FLAG_MORE       = 1 << 7
+UPLD_CHUNK_SIZE      = 1024
 
 SOH = 0x01
 STX = 0x02
@@ -307,6 +308,56 @@ def pull_sd_framed(
     return True
 
 
+def screenshot_framed(
+    ser: Any,
+    local_out: pathlib.Path,
+    save_sd: bool = True,
+    more: bool = False,
+    need_wake: bool = True,
+) -> bool:
+    flags = (
+        UPLD_FLAG_SCREENSHOT
+        | (UPLD_FLAG_SAVE_SD if save_sd else 0)
+        | (UPLD_FLAG_MORE if more else 0)
+    )
+
+    if need_wake:
+        wake_console(ser)
+
+    hdr = struct.pack("<4sBBII", b"UPLD", flags, 0, 0, 0)
+    ser.write(hdr)
+    ser.flush()
+
+    ack = read_ack_byte(ser)
+    if ack != b"A":
+        print(f"[uart_upload] Screenshot request rejected by console (got {ack!r})", file=sys.stderr)
+        return False
+
+    meta = read_exact(ser, 8)
+    if len(meta) < 8:
+        print("[uart_upload] Timeout reading screenshot header from console", file=sys.stderr)
+        return False
+    size, exp_crc = struct.unpack("<II", meta)
+    t0 = time.monotonic()
+    data = read_chunked_stream(ser, size)
+    dt = max(0.001, time.monotonic() - t0)
+    if data is None or len(data) != size:
+        print(f"[uart_upload] Incomplete screenshot ({0 if data is None else len(data)}/{size} B)", file=sys.stderr)
+        return False
+    calc_crc = zlib.crc32(data) & 0xFFFFFFFF
+    if calc_crc != exp_crc:
+        print(f"[uart_upload] Screenshot CRC mismatch (0x{calc_crc:08X} != 0x{exp_crc:08X})", file=sys.stderr)
+        return False
+
+    local_out.parent.mkdir(parents=True, exist_ok=True)
+    local_out.write_bytes(data)
+    print(
+        f"[uart_upload] SCREENSHOT saved to '{local_out}' ({size} B, CRC 0x{calc_crc:08X}, {dt:.1f}s)"
+        + (" + SD:/screenshots/shot_NNN.bmp" if save_sd else "")
+    )
+    return True
+
+
 def upload_xmodem(ser: Any, payload: bytes) -> bool:
     print("[uart_upload] Waiting for XMODEM-CRC 'C' poll from console...")
     t0 = time.monotonic()
@@ -360,6 +411,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--ls-dir", type=str, default=None, help="List a specific directory on SD card (e.g. games or appdata/sram_test)")
     ap.add_argument("--pull", type=str, default=None, help="Download a file from SD card (e.g. appdata/sram_test/report.txt)")
     ap.add_argument("-o", "--output", type=pathlib.Path, default=None, help="Local destination path for --pull (prints to stdout if omitted)")
+    ap.add_argument("--screenshot", type=pathlib.Path, default=None, help="Capture live 320x240 display to a local .bmp file (and SD:/screenshots/)")
     ap.add_argument("--delete", action="append", default=[], help="Delete file(s) on console SD card (can be passed multiple times)")
     ap.add_argument("--run", dest="run", action="store_true", default=True, help="Launch last uploaded .bin/.c in RAM (default)")
     ap.add_argument("--no-run", dest="run", action="store_false", help="Save to SD card only without launching")
@@ -383,6 +435,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Build ordered list of batch operations to run over a single serial session
     ops: List[tuple] = []
+    if args.screenshot is not None:
+        ops.append(("shot", args.screenshot))
     if args.ls:
         ops.append(("ls", "/"))
     if args.ls_dir is not None:
@@ -408,7 +462,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             has_more = (idx + 1 < len(ops))
             kind = op[0]
 
-            if kind == "ls":
+            if kind == "shot":
+                ok = screenshot_framed(ser, op[1], save_sd=(not args.ram_only), more=has_more, need_wake=is_first)
+            elif kind == "ls":
                 ok = list_sd_framed(ser, op[1], more=has_more, need_wake=is_first)
             elif kind == "del":
                 ok = delete_framed(ser, op[1], more=has_more, need_wake=is_first)

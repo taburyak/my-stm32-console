@@ -1283,6 +1283,16 @@ static bool sc_call_builtin(const char *name, int32_t *args, uint8_t argc, uint1
         }
         return true;
     }
+    if (sc_streq(name, "temp_mcu") || sc_streq(name, "sys_get_mcu_temp_deci"))
+    {
+        *out = sys_get_mcu_temp_deci();
+        return true;
+    }
+    if (sc_streq(name, "temp_ext") || sc_streq(name, "sys_get_ext_temp_deci"))
+    {
+        *out = sys_get_ext_temp_deci();
+        return true;
+    }
     if (sc_streq(name, "exit") || sc_streq(name, "sys_exit"))
     {
         VM->flow = FLOW_EXIT;

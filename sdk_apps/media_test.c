@@ -62,14 +62,18 @@ static void draw_static(void)
     sys_draw_text(170, ROW(3), "BLIT MS:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(4), "GPIO PINS:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(170, ROW(4), "READ(0):", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(5), "MCU 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(170, ROW(5), "EXT 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(6), "A:MELODY DOWN:LOOP UP:STOP B:BENCH", COLOR_AMBER, COLOR_DARK_BG, 1);
-    sys_draw_text(10, ROW(7), "LEFT: DMA BLIT  RIGHT: 2 STRIDE BLITS", COLOR_AMBER, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(7), "X:READ DS18B20   ESC:EXIT", COLOR_AMBER, COLOR_DARK_BG, 1);
 
     SDK_GpioCaps_t caps;
     sdk_memset(&caps, 0, sizeof(caps));
     (void)sys_gpio_get_caps(&caps);
     draw_int(100, ROW(4), (int32_t)caps.pin_count);
     draw_int(240, ROW(4), sys_gpio_read(0));
+    draw_int(82,  ROW(5), sys_get_mcu_temp_deci());
+    draw_int(240, ROW(5), sys_get_ext_temp_deci());
 }
 
 static void render_anim(uint32_t t)
@@ -139,6 +143,11 @@ void app_main(void)
         {
             blit_ms = benchmark();
             draw_static();
+        }
+        if (pressed & KEY_X)
+        {
+            draw_int(82,  ROW(5), sys_get_mcu_temp_deci());
+            draw_int(240, ROW(5), sys_get_ext_temp_deci());
         }
 
         draw_hex(70, ROW(0), sys_random(), 8);

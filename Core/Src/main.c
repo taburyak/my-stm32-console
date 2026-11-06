@@ -42,6 +42,7 @@
 #include "ui_manager.h"
 #include "app_loader.h"
 #include "uart_loader.h"
+#include "temp_sensor.h"
 #include "ccmram.h"
 /* USER CODE END Includes */
 
@@ -64,6 +65,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
@@ -131,6 +134,7 @@ static void MX_USB_OTG_FS_HCD_Init(void);
 static void MX_RTC_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_TIM5_Init(void);
+static void MX_ADC1_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -211,6 +215,7 @@ int main(void)
   MX_RTC_Init();
   MX_IWDG_Init();
   MX_TIM5_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -330,6 +335,58 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -1091,6 +1148,9 @@ void StartDefaultTask(void *argument)
   /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
   OSTasks_Init();
 
+  /* 7.5. Initialize MCU internal temperature sensor & probe external DS18B20 on PA15 */
+  (void)TempSensor_Init();
+
   /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & UART3 Background Uploader */
   UIManager_Init();
   UARTLoader_Init();
@@ -1106,10 +1166,28 @@ void StartDefaultTask(void *argument)
     /* 1. Refresh Watchdog - must be called regardless of whether an app is running */
     HAL_IWDG_Refresh(&hiwdg);
 
+    /* 1.5. Process screenshot hotkey (KEY2 long press, F12/PrtSc, or Select+R1) */
+    if (Screenshot_TakeRequest() && !AppLoader_IsRunning())
+    {
+      char shot_path[64] = {0};
+      if (Screenshot_CaptureToSD(shot_path, sizeof(shot_path)))
+      {
+        printf("[SHOT] Saved screenshot: %s\r\n", shot_path);
+      }
+    }
+
     /* 2. If an external .bin app is running in SandboxTask, yield display to it */
     if (AppLoader_IsRunning())
     {
       was_app_running = true;
+      if (Screenshot_TakeRequest())
+      {
+        char shot_path[64] = {0};
+        if (Screenshot_CaptureToSD(shot_path, sizeof(shot_path)))
+        {
+          printf("[SHOT] Saved in-game screenshot: %s\r\n", shot_path);
+        }
+      }
       AppLoader_Service();
       osDelay(20);
       continue;
@@ -1150,11 +1228,12 @@ void StartDefaultTask(void *argument)
       }
     }
 
-    /* 2. Non-blocking Heartbeat on LD0 (1 Hz) */
+    /* 2. Non-blocking Heartbeat on LD0 (1 Hz) & periodic MCU overheat check (0.2 Hz) */
     if ((HAL_GetTick() - last_heartbeat_tick) >= 500)
     {
       last_heartbeat_tick = HAL_GetTick();
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
+      TempSensor_PeriodicMcuCheck();
     }
 
     /* 3. Check for zero-touch USART3 upload trigger from PC */

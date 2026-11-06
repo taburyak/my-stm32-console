@@ -100,6 +100,20 @@ python tools/uart_upload.py --delete old_game.bin --port COM9
 python tools/uart_upload.py --delete old_game.bin --delete old_game.bmp --port COM9
 ```
 
+#### Capture a live 320×240 screenshot (`.bmp`) to PC and SD card (`--screenshot`)
+Reads the exact pixel contents of the `ILI9341` GRAM (both in OS UI screens and inside running games) before the uploader screen appears, saves a 16-bit RGB565 `.bmp` to `SD:/screenshots/shot_NNN.bmp`, and downloads a copy to your PC:
+```powershell
+# Save screenshot to PC (shot.bmp) AND SD:/screenshots/shot_NNN.bmp:
+python tools/uart_upload.py --screenshot shot.bmp --port COM9
+
+# Save screenshot to PC only (without writing to the SD card):
+python tools/uart_upload.py --screenshot shot.bmp --ram-only --port COM9
+```
+You can also trigger an on-device screenshot to `SD:/screenshots/shot_NNN.bmp` at any time without a PC:
+- Hold **KEY2** on the board for 1 second,
+- Press **`PrintScreen`** or **`F12`** on a USB keyboard,
+- Press **`Select + R1`** on a USB gamepad.
+
 ---
 
 ### 2.4 Manual XMODEM-CRC Mode (`UART Rx` Tile in Games Hub)

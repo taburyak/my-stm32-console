@@ -26,6 +26,7 @@ extern DMA_HandleTypeDef  hdma_memtomem_dma2_stream0;
 #define UPLD_FLAG_DELETE_SD     (1U << 2)
 #define UPLD_FLAG_LIST_SD       (1U << 3)
 #define UPLD_FLAG_PULL_SD       (1U << 4)
+#define UPLD_FLAG_SCREENSHOT    (1U << 5)
 #define UPLD_FLAG_MORE          (1U << 7) /* Keep session open for next command in batch */
 #define UPLD_CHUNK_SIZE         1024U
 
@@ -49,9 +50,10 @@ extern DMA_HandleTypeDef  hdma_memtomem_dma2_stream0;
 #define COL_WHITE               0xFFFFU
 
 static const uint8_t s_wake_seq[6] = { 'U', 'P', 'L', 'D', '!', '\n' };
-static volatile uint8_t s_wake_idx     = 0U;
-static volatile bool    s_auto_trigger = false;
-static volatile bool    s_in_session   = false;
+static volatile uint8_t s_wake_idx           = 0U;
+static volatile bool    s_auto_trigger       = false;
+static volatile bool    s_in_session         = false;
+static volatile bool    s_screenshot_pending = false;
 
 /* --------------------------------------------------------------------------
  * Low-level polled UART3 helpers (used while USART3_IRQn is disabled)
@@ -426,6 +428,131 @@ static uint32_t format_sd_listing(const char *path, char *out, uint32_t max_len)
 }
 
 /* --------------------------------------------------------------------------
+ * 320x240 16-bit RGB565 BMP Screenshot Capture (153,654 bytes)
+ * -------------------------------------------------------------------------- */
+
+static uint32_t build_screenshot_bmp16(uint8_t *dst)
+{
+    const uint32_t w         = 320U;
+    const uint32_t h         = 240U;
+    const uint32_t row_bytes = w * 2U;
+    const uint32_t img_size  = row_bytes * h;
+    const uint32_t file_size = 54U + img_size;
+
+    memset(dst, 0, 54U);
+    dst[0] = 'B';
+    dst[1] = 'M';
+    dst[2] = (uint8_t)(file_size & 0xFFU);
+    dst[3] = (uint8_t)((file_size >> 8) & 0xFFU);
+    dst[4] = (uint8_t)((file_size >> 16) & 0xFFU);
+    dst[5] = (uint8_t)((file_size >> 24) & 0xFFU);
+    dst[10] = 54U;
+    dst[14] = 40U;
+    dst[18] = (uint8_t)(w & 0xFFU);
+    dst[19] = (uint8_t)((w >> 8) & 0xFFU);
+    dst[22] = (uint8_t)(h & 0xFFU);
+    dst[23] = (uint8_t)((h >> 8) & 0xFFU);
+    dst[26] = 1U;
+    dst[28] = 16U; /* 16 bpp RGB565 (compatible with Load_BMP_To_Buffer) */
+    dst[34] = (uint8_t)(img_size & 0xFFU);
+    dst[35] = (uint8_t)((img_size >> 8) & 0xFFU);
+    dst[36] = (uint8_t)((img_size >> 16) & 0xFFU);
+    dst[37] = (uint8_t)((img_size >> 24) & 0xFFU);
+
+    /* Read bottom-up rows directly from ILI9341 GRAM into the BMP payload */
+    uint16_t *pixels = (uint16_t *)(dst + 54U);
+    for (uint32_t y = 0U; y < h; y++)
+    {
+        if ((y & 31U) == 0U)
+        {
+            (void)HAL_IWDG_Refresh(&hiwdg);
+        }
+        uint32_t bmp_row = (h - 1U) - y;
+        lcdReadPixelsRGB565(0U, (uint16_t)y, (uint16_t)w, 1U, &pixels[bmp_row * w]);
+    }
+
+    return file_size;
+}
+
+static bool write_next_screenshot_sd(const uint8_t *bmp_data, uint32_t bmp_size, char *out_path, uint32_t out_max)
+{
+    if (!SDCard_IsMounted())
+    {
+        return false;
+    }
+
+    (void)f_mkdir("screenshots");
+
+    static FILINFO fno;
+    char candidate[48];
+    uint32_t chosen = 999U;
+    for (uint32_t i = 1U; i <= 999U; i++)
+    {
+        snprintf(candidate, sizeof(candidate), "screenshots/shot_%03lu.bmp", (unsigned long)i);
+        if (f_stat(candidate, &fno) != FR_OK || fno.fsize == 0U)
+        {
+            chosen = i;
+            break;
+        }
+    }
+    snprintf(candidate, sizeof(candidate), "screenshots/shot_%03lu.bmp", (unsigned long)chosen);
+
+    static FIL f;
+    UINT bw = 0U;
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_ON);
+    FRESULT res = f_open(&f, candidate, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res == FR_OK)
+    {
+        res = f_write(&f, bmp_data, (UINT)bmp_size, &bw);
+        (void)f_close(&f);
+    }
+    StatusLED_Set(STATUS_LED_DISK, STATUS_LED_OFF);
+
+    if (res == FR_OK && bw == bmp_size)
+    {
+        if (out_path != NULL && out_max > 0U)
+        {
+            snprintf(out_path, out_max, "%s", candidate);
+        }
+        return true;
+    }
+    return false;
+}
+
+void Screenshot_Request(void)
+{
+    s_screenshot_pending = true;
+}
+
+bool Screenshot_TakeRequest(void)
+{
+    if (!s_screenshot_pending)
+    {
+        return false;
+    }
+    s_screenshot_pending = false;
+    return true;
+}
+
+bool Screenshot_CaptureToSD(char *out_path, uint32_t out_max)
+{
+    LVGL_Port_WaitFlushIdle();
+    uint8_t *stage    = (uint8_t *)UART_STAGE_BASE;
+    uint32_t bmp_size = build_screenshot_bmp16(stage);
+    bool ok           = write_next_screenshot_sd(stage, bmp_size, out_path, out_max);
+
+    if (ok)
+    {
+        Beeper_Beep(35);
+    }
+    else
+    {
+        Beeper_ErrorAlert();
+    }
+    return ok;
+}
+
+/* --------------------------------------------------------------------------
  * Protocol 1: Fast Framed Upload ("UPLD" header from tools/uart_upload.py)
  *   Already consumed 'U'; expects 'P','L','D', flags(1B), name_len(1B),
  *   size(4B LE), crc32(4B LE), name[name_len], then 1 KB chunks.
@@ -527,6 +654,48 @@ static bool receive_framed_upld(uint8_t *stage, uint32_t *out_size, char *out_na
         *out_flags = flags;
         return true;
     }
+
+    /* ---- Command B2: Capture & Stream Screenshot (and optionally save to SD) ---- */
+    if ((flags & UPLD_FLAG_SCREENSHOT) != 0U)
+    {
+        /* Capture the untouched 320x240 GRAM before drawing the uploader UI */
+        uint32_t shot_size = build_screenshot_bmp16(stage);
+        ui_draw_frame("SENDING SCREENSHOT TO PC...", "320x240 RGB565 BMP");
+
+        char saved_path[64] = {0};
+        if ((flags & UPLD_FLAG_SAVE_SD) != 0U && SDCard_IsMounted())
+        {
+            if (name_len > 0U)
+            {
+                (void)save_buffer_to_sd(out_name, stage, shot_size, saved_path, sizeof(saved_path));
+            }
+            else
+            {
+                (void)write_next_screenshot_sd(stage, shot_size, saved_path, sizeof(saved_path));
+            }
+        }
+
+        if (saved_path[0] != '\0')
+        {
+            ui_text(86, 92, "                              ", COL_CYAN, COL_BG, 1);
+            ui_text(86, 92, saved_path, COL_CYAN, COL_BG, 1);
+        }
+
+        uint32_t crc = crc32_ieee(stage, shot_size);
+        uart_putc('A');
+        uart_write_u32_le(shot_size);
+        uart_write_u32_le(crc);
+        if (!uart_send_chunked(stage, shot_size))
+        {
+            return false;
+        }
+
+        *out_size  = 0U;
+        *out_flags = flags;
+        return true;
+    }
+
+    ui_draw_frame("AUTO-TRIGGERED BY PC...", (name_len > 0U) ? out_name : "SD:/games/<auto>");
 
     /* ---- Command C: Delete file on SD Card ---- */
     if ((flags & UPLD_FLAG_DELETE_SD) != 0U)
@@ -813,8 +982,11 @@ bool UARTLoader_RunSession(bool auto_triggered)
     HAL_NVIC_DisableIRQ(USART3_IRQn);
     uart_clear_errors();
 
-    ui_draw_frame(auto_triggered ? "AUTO-TRIGGERED BY PC..." : "WAITING FOR PC (ESC: CANCEL)",
-                  "SD:/games/<auto>");
+    uint8_t *stage = (uint8_t *)UART_STAGE_BASE;
+    if (!auto_triggered)
+    {
+        ui_draw_frame("WAITING FOR PC (ESC: CANCEL)", "SD:/games/<auto>");
+    }
     Beeper_Beep(20);
 
     /* Wait until user releases any held button before checking cancel */
@@ -826,7 +998,6 @@ bool UARTLoader_RunSession(bool auto_triggered)
     /* Notify tools/uart_upload.py that the console is ready */
     uart_puts_raw("RDY\n");
 
-    uint8_t *stage     = (uint8_t *)UART_STAGE_BASE;
     uint32_t rx_size   = 0U;
     uint8_t  flags     = UPLD_FLAG_SAVE_SD | UPLD_FLAG_RUN_RAM;
     char     fname[64] = {0};
@@ -901,7 +1072,7 @@ bool UARTLoader_RunSession(bool auto_triggered)
         OSTasks_RequestDirList("/games");
     }
 
-    if (ok && (flags & (UPLD_FLAG_DELETE_SD | UPLD_FLAG_LIST_SD | UPLD_FLAG_PULL_SD)) != 0U)
+    if (ok && (flags & (UPLD_FLAG_DELETE_SD | UPLD_FLAG_LIST_SD | UPLD_FLAG_PULL_SD | UPLD_FLAG_SCREENSHOT)) != 0U)
     {
         Beeper_Beep(25);
         return true;

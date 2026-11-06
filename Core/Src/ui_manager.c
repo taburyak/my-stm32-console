@@ -12,6 +12,7 @@
 #include "ccmram.h"
 #include "app_loader.h"
 #include "uart_loader.h"
+#include "temp_sensor.h"
 
 extern RTC_HandleTypeDef hrtc;
 
@@ -457,8 +458,9 @@ void UIManager_Update(void)
     const char *c_kbd = USBHostManager_IsKeyboardReady()? "#00E5FF K#"  : "#555555 K#";
     const char *c_mse = USBHostManager_IsMouseReady()   ? "#00E5FF M#"  : "#555555 M#";
     const char *c_pad = USBHostManager_IsGamepadReady() ? "#FFAE00 G#"  : "#555555 G#";
+    const char *c_hot = TempSensor_IsOverheated()       ? " #FF2222 HOT!#" : "";
 
-    lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s", c_sd, c_kbd, c_mse, c_pad);
+    lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s%s", c_sd, c_kbd, c_mse, c_pad, c_hot);
 }
 
 void UIManager_ShowScreen(UI_Screen_t screen)
@@ -1411,6 +1413,22 @@ static void btn_sram_test_cb(lv_event_t * e)
     s_pending_screen = (int8_t)UI_SCREEN_SYSINFO;
 }
 
+static void btn_temp_read_cb(lv_event_t * e)
+{
+    (void)e;
+    (void)TempSensor_ReadMcuDeciC();
+    int32_t ext_dc = 0;
+    if (TempSensor_ReadExtDeciC(&ext_dc))
+    {
+        Beeper_Beep(15);
+    }
+    else
+    {
+        Beeper_Click();
+    }
+    s_pending_screen = (int8_t)UI_SCREEN_SYSINFO;
+}
+
 static void Build_SysInfo_Screen(void)
 {
     const POST_Report_t *rep = POST_GetReport();
@@ -1470,34 +1488,52 @@ static void Build_SysInfo_Screen(void)
 
     lv_obj_t * info_lbl = lv_label_create(panel);
     lv_obj_set_style_text_color(info_lbl, lv_color_hex(0xE0E0E0), 0);
+
+    int32_t mcu_dc   = TempSensor_ReadMcuDeciC();
+    bool    ext_ok   = false;
+    int32_t ext_dc   = TempSensor_GetCachedExtDeciC(&ext_ok);
+    char    ext_str[24];
+    if (ext_ok)
+    {
+        int32_t mag = (ext_dc >= 0) ? ext_dc : -ext_dc;
+        snprintf(ext_str, sizeof(ext_str), "%s%ld.%ld C",
+                 (ext_dc < 0) ? "-" : "", (long)(mag / 10), (long)(mag % 10));
+    }
+    else
+    {
+        snprintf(ext_str, sizeof(ext_str), "N/A");
+    }
+
     if (rep->sram_ok)
     {
         lv_label_set_text_fmt(info_lbl,
-            "MCU: STM32F407ZGT6 @ 168 MHz (API v%u)\n"
-            "CPU Load: %lu %% | Free Heap: %lu KB\n"
+            "OS FW v%s | SDK API v%u (168 MHz)\n"
+            "CPU: %lu%% | Heap: %lu KB | CCM: %s\n"
+            "Temp MCU: %ld.%ld C | DS18B20: %s\n"
             "SRAM: %lu KB [D:OK A:OK P:OK] %lu ms\n"
-            "SRAM Stress: %lu runs / %lu errs | CCM: %s\n"
-            "SPI Flash W25Q: ID 0x%06X\n"
-            "SD Card: %lu MB Free / %lu MB",
-            (unsigned int)SDK_API_VERSION,
+            "SRAM Stress: %lu runs / %lu errs\n"
+            "SD: %lu/%lu MB | W25Q: 0x%06X",
+            CONSOLE_FW_VERSION_STR, (unsigned int)SDK_API_VERSION,
             (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
+            rep->ccmram_ok ? "OK" : "ERR",
+            (long)(mcu_dc / 10), (long)((mcu_dc >= 0 ? mcu_dc : -mcu_dc) % 10), ext_str,
             (unsigned long)rep->sram_size_kb, (unsigned long)rep->sram_test_ms,
             (unsigned long)rep->sram_stress_runs, (unsigned long)rep->sram_stress_errs,
-            rep->ccmram_ok ? "OK" : "ERR",
-            (unsigned int)rep->flash_id,
-            (unsigned long)free_mb, (unsigned long)total_mb);
+            (unsigned long)free_mb, (unsigned long)total_mb,
+            (unsigned int)rep->flash_id);
     }
     else
     {
         lv_label_set_text_fmt(info_lbl,
-            "MCU: STM32F407ZGT6 @ 168 MHz (API v%u)\n"
-            "CPU Load: %lu %% | Free Heap: %lu KB\n"
+            "OS FW v%s | SDK API v%u (168 MHz)\n"
+            "CPU: %lu%% | Heap: %lu KB | MCU: %ld.%ld C\n"
             "SRAM ERR @0x%08lX [D:%s A:%s P:%s]\n"
             "Exp: 0x%08lX Got: 0x%08lX (%lu errs)\n"
             "SPI Flash W25Q: ID 0x%06X\n"
             "SD Card: %lu MB Free / %lu MB",
-            (unsigned int)SDK_API_VERSION,
+            CONSOLE_FW_VERSION_STR, (unsigned int)SDK_API_VERSION,
             (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
+            (long)(mcu_dc / 10), (long)((mcu_dc >= 0 ? mcu_dc : -mcu_dc) % 10),
             (unsigned long)rep->sram_fail_addr,
             rep->sram_data_bus_ok ? "OK" : "ER",
             rep->sram_addr_bus_ok ? "OK" : "ER",
@@ -1509,18 +1545,28 @@ static void Build_SysInfo_Screen(void)
     }
 
     lv_obj_t * btn_test = lv_btn_create(workspace_cont);
-    lv_obj_set_size(btn_test, 136, 34);
-    lv_obj_align(btn_test, LV_ALIGN_BOTTOM_LEFT, 16, -8);
+    lv_obj_set_size(btn_test, 94, 34);
+    lv_obj_align(btn_test, LV_ALIGN_BOTTOM_LEFT, 12, -8);
     lv_obj_set_style_bg_color(btn_test, lv_color_hex(0x00695C), 0);
     lv_obj_t * lbl_t = lv_label_create(btn_test);
-    lv_label_set_text(lbl_t, LV_SYMBOL_REFRESH " Test SRAM");
+    lv_label_set_text(lbl_t, LV_SYMBOL_REFRESH " SRAM");
     lv_obj_center(lbl_t);
     lv_obj_add_event_cb(btn_test, btn_sram_test_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(btn_test, global_key_event_cb, LV_EVENT_KEY, NULL);
 
+    lv_obj_t * btn_temp = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_temp, 94, 34);
+    lv_obj_align(btn_temp, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_set_style_bg_color(btn_temp, lv_color_hex(0x0277BD), 0);
+    lv_obj_t * lbl_tp = lv_label_create(btn_temp);
+    lv_label_set_text(lbl_tp, LV_SYMBOL_REFRESH " Temp");
+    lv_obj_center(lbl_tp);
+    lv_obj_add_event_cb(btn_temp, btn_temp_read_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_temp, global_key_event_cb, LV_EVENT_KEY, NULL);
+
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
-    lv_obj_set_size(btn_back, 136, 34);
-    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_RIGHT, -16, -8);
+    lv_obj_set_size(btn_back, 94, 34);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
     lv_obj_t * lbl_b = lv_label_create(btn_back);
     lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
     lv_obj_center(lbl_b);
@@ -1531,6 +1577,7 @@ static void Build_SysInfo_Screen(void)
     if (grp != NULL)
     {
         lv_group_add_obj(grp, btn_test);
+        lv_group_add_obj(grp, btn_temp);
         lv_group_add_obj(grp, btn_back);
     }
 }

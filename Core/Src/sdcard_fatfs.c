@@ -87,7 +87,8 @@ bool SDCard_InitSystemDirs(void)
         "system",
         "games",
         "assets",
-        "saves"
+        "saves",
+        "screenshots"
     };
 
     printf("\r\n--- [SD Card Directory Initialization] ---\r\n");

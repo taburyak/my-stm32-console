@@ -98,6 +98,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/XPT2046/XPT2046_touch.c
     Libs/AT24XXX/AT24Cxx.c
     Libs/W25QXX/w25qxx.c
+    Libs/DS18B20/onewire.c
+    Libs/DS18B20/ds18b20.c
     FATFS/App/fatfs.c
     FATFS/Target/sd_diskio.c
     FATFS/Target/bsp_driver_sd.c
@@ -126,6 +128,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_services.c
     Core/Src/script_engine.c
     Core/Src/uart_loader.c
+    Core/Src/temp_sensor.c
 )
 
 # Add include paths
@@ -135,6 +138,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/XPT2046
     Libs/AT24XXX
     Libs/W25QXX
+    Libs/DS18B20
     FATFS/App
     FATFS/Target
     Libs/lvgl

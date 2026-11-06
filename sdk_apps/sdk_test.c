@@ -32,7 +32,8 @@ static void draw_num(uint16_t x, uint16_t y, int32_t v, uint8_t min_digits)
 static void draw_static(const SDK_SysInfo_t *info)
 {
     sys_clear_screen(COLOR_DARK_BG);
-    sys_draw_text(10, 8, "SDK TEST", COLOR_CYAN, COLOR_DARK_BG, 2);
+    sys_lcd_fill_rect(0, 0, 320, 26, COLOR_PANEL_BG);
+    sys_draw_text(10, 6, "SDK TEST", COLOR_CYAN, COLOR_PANEL_BG, 2);
 
     sys_draw_text(10, ROW(0), "API:", COLOR_WHITE, COLOR_DARK_BG, 1);
     draw_num(70, ROW(0), (int32_t)info->api_version, 1);
@@ -50,6 +51,19 @@ static void draw_static(const SDK_SysInfo_t *info)
     sys_draw_text(10, ROW(2), "DEVICES:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(130, ROW(2), "FLAGS:", COLOR_WHITE, COLOR_DARK_BG, 1);
 
+    sys_draw_text(10, ROW(3), "MCU 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    draw_num(75, ROW(3), sys_get_mcu_temp_deci(), 1);
+    sys_draw_text(130, ROW(3), "EXT 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    int32_t ext_dc = sys_get_ext_temp_deci();
+    if (ext_dc != SDK_TEMP_INVALID)
+    {
+        draw_num(195, ROW(3), ext_dc, 1);
+    }
+    else
+    {
+        sys_draw_text(195, ROW(3), "N/A     ", COLOR_AMBER, COLOR_DARK_BG, 1);
+    }
+
     sys_draw_text(10, ROW(4), "KEYS:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(150, ROW(4), "KBD:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(5), "PAD:", COLOR_WHITE, COLOR_DARK_BG, 1);
@@ -59,7 +73,7 @@ static void draw_static(const SDK_SysInfo_t *info)
     sys_draw_text(10, ROW(8), "MOUSE:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(9), "MOUSE XY:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(10), "SLEEP 500MS:", COLOR_WHITE, COLOR_DARK_BG, 1);
-    sys_draw_text(10, ROW(12), "A: SLEEP TEST   ESC / PAD B: EXIT", COLOR_AMBER, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(12), "A:SLEEP  X:TEMP  ESC/PAD B:EXIT", COLOR_AMBER, COLOR_DARK_BG, 1);
 }
 
 void app_main(void)
@@ -93,6 +107,20 @@ void app_main(void)
             uint32_t t0 = sys_get_tick();
             sys_sleep_ms(500);
             draw_num(100, ROW(10), (int32_t)(sys_get_tick() - t0), 1);
+        }
+
+        if (just_pressed & KEY_X)
+        {
+            draw_num(75, ROW(3), sys_get_mcu_temp_deci(), 1);
+            int32_t ext_dc = sys_get_ext_temp_deci();
+            if (ext_dc != SDK_TEMP_INVALID)
+            {
+                draw_num(195, ROW(3), ext_dc, 1);
+            }
+            else
+            {
+                sys_draw_text(195, ROW(3), "N/A     ", COLOR_AMBER, COLOR_DARK_BG, 1);
+            }
         }
 
         (void)sys_get_info(&info);

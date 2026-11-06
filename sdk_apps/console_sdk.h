@@ -416,6 +416,22 @@ SDK_SYSCALL int32_t sys_gpio_read(uint32_t pin)
     return (int32_t)SDK_SVC_CALL1(SDK_SVC_GPIO_READ, pin);
 }
 
+/* Returns temperature in tenths of °C (e.g. 365 = 36.5 °C), or SDK_TEMP_INVALID if sensor is absent */
+SDK_SYSCALL int32_t sys_get_temp_deci(uint32_t source)
+{
+    return (int32_t)SDK_SVC_CALL1(SDK_SVC_TEMP_GET, source);
+}
+
+static inline int32_t sys_get_mcu_temp_deci(void)
+{
+    return sys_get_temp_deci(SDK_TEMP_SRC_MCU);
+}
+
+static inline int32_t sys_get_ext_temp_deci(void)
+{
+    return sys_get_temp_deci(SDK_TEMP_SRC_EXT);
+}
+
 /* ==========================================================================
  * 7. Game Helpers
  * ========================================================================== */

@@ -36,6 +36,9 @@ static volatile AppLoader_FaultInfo_t s_fault_info;
 static void Sandbox_TaskEntry(void *argument);
 static void AppLoader_ParkLoop(void);
 
+extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
+#define LOADER_DARK_BG 0x0862U
+
 /* Built-in 5x7 ASCII Font Table (' ' 32 .. 'Z' 90) stored in MCU Flash */
 static const uint8_t s_kernel_font5x7[59][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, /* ' ' */
@@ -218,8 +221,10 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
         strcpy(s_app_name, "app");
     }
 
-    /* Ensure any in-flight LVGL DMA transfer finishes before the app takes over the display */
+    /* Ensure any in-flight LVGL DMA transfer finishes and pre-clear screen before the app takes over */
     LVGL_Port_WaitFlushIdle();
+    lcdSetWindow(0U, 0U, 319U, 239U);
+    lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, LOADER_DARK_BG, 320UL * 240UL);
 
     /* Flush all pending key/button events before starting the game */
     USBHostManager_FlushInputQueues();
@@ -355,6 +360,8 @@ static void AppLoader_SetAppNameFromPath(const char *path)
 static bool AppLoader_StartLoadedScript(uint32_t len)
 {
     LVGL_Port_WaitFlushIdle();
+    lcdSetWindow(0U, 0U, 319U, 239U);
+    lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, LOADER_DARK_BG, 320UL * 240UL);
     USBHostManager_FlushInputQueues();
     Buttons_Init();
 
