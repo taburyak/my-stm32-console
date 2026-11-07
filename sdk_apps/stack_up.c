@@ -75,31 +75,28 @@ static const uint8_t s_pat_heights[][COLS] = {
 };
 
 static const LevelConfig s_levels[] = {
-    { PAT_NONE,        8,  0,                                                   650,    0 },
-    { PAT_NONE,        10, 0,                                                   620,    0 },
-    { PAT_WALLS_LOW,   10, 0,                                                   600,    0 },
-    { PAT_SLOPE_RIGHT, 10, 0,                                                   550,    0 },
-    { PAT_WALLS_HIGH,  12, MOD_STEEL_BASE,                                      500,    0 },
-    { PAT_NONE,        8,  MOD_DIAGONAL,                                        650,    0 },
-    { PAT_SLOPE_LEFT,  10, MOD_STEEL_BASE | MOD_DIAGONAL,                       580,    0 },
-    { PAT_NONE,        10, MOD_REVERSE,                                         550,    0 },
-    { PAT_WALLS_HIGH,  12, MOD_REVERSE,                                         480,    0 },
-    { PAT_NONE,        10, MOD_RANDOM,                                          520, 8000 },
-    { PAT_VALLEY_STEP, 12, MOD_RANDOM,                                          460, 7500 },
-    { PAT_TOWERS,      12, MOD_STEEL_BASE | MOD_STEEL_DROP,                     440,    0 },
-    { PAT_SLOPE_RIGHT, 10, MOD_STEEL_BASE | MOD_DIAGONAL | MOD_REVERSE,         500,    0 },
-    { PAT_VALLEY_STEP, 12, MOD_STEEL_BASE | MOD_REVERSE,                        400,    0 },
-    { PAT_WALLS_LOW,   10, MOD_DIAGONAL | MOD_RANDOM,                           450, 7000 },
-    { PAT_SLOPE_LEFT,  12, MOD_STEEL_BASE | MOD_RANDOM,                         380, 6500 },
-    { PAT_WALLS_HIGH,  12, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL,      350,    0 },
-    { PAT_TOWERS,      14, MOD_STEEL_BASE | MOD_REVERSE | MOD_RANDOM,           320, 6000 },
-    { PAT_VALLEY_STEP, 12, MOD_STEEL_BASE | MOD_DIAGONAL | MOD_REVERSE,         300,    0 },
-    { PAT_SLOPE_RIGHT, 12, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL | MOD_RANDOM,
-                                                                                270, 5500 },
-    { PAT_FORTRESS,    14, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_REVERSE | MOD_RANDOM,
-                                                                                240, 5000 },
-    { PAT_FORTRESS,    16, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL | MOD_REVERSE | MOD_RANDOM,
-                                                                                210, 4500 }
+    { PAT_NONE,        12, 0,                                                                          650,    0 },
+    { PAT_NONE,        14, 0,                                                                          620,    0 },
+    { PAT_WALLS_LOW,   15, 0,                                                                          600,    0 },
+    { PAT_SLOPE_RIGHT, 16, 0,                                                                          550,    0 },
+    { PAT_WALLS_HIGH,  18, MOD_STEEL_BASE,                                                             500,    0 },
+    { PAT_NONE,        10, MOD_DIAGONAL,                                                               650,    0 },
+    { PAT_SLOPE_LEFT,  12, MOD_STEEL_BASE | MOD_DIAGONAL,                                              580,    0 },
+    { PAT_NONE,        16, MOD_REVERSE,                                                                550,    0 },
+    { PAT_WALLS_HIGH,  18, MOD_REVERSE,                                                                480,    0 },
+    { PAT_NONE,        16, MOD_RANDOM,                                                                 520, 8000 },
+    { PAT_VALLEY_STEP, 18, MOD_RANDOM,                                                                460, 7500 },
+    { PAT_TOWERS,      18, MOD_STEEL_BASE | MOD_STEEL_DROP,                                           440,    0 },
+    { PAT_SLOPE_RIGHT, 12, MOD_STEEL_BASE | MOD_DIAGONAL | MOD_REVERSE,                               500,    0 },
+    { PAT_VALLEY_STEP, 20, MOD_STEEL_BASE | MOD_REVERSE,                                              400,    0 },
+    { PAT_WALLS_LOW,   14, MOD_DIAGONAL | MOD_RANDOM,                                                 450, 7000 },
+    { PAT_SLOPE_LEFT,  20, MOD_STEEL_BASE | MOD_RANDOM,                                               380, 6500 },
+    { PAT_WALLS_HIGH,  14, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL,                            350,    0 },
+    { PAT_TOWERS,      22, MOD_STEEL_BASE | MOD_REVERSE | MOD_RANDOM,                                 320, 6000 },
+    { PAT_VALLEY_STEP, 15, MOD_STEEL_BASE | MOD_DIAGONAL | MOD_REVERSE,                               300,    0 },
+    { PAT_SLOPE_RIGHT, 16, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL | MOD_RANDOM,               270, 5500 },
+    { PAT_FORTRESS,    24, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_REVERSE | MOD_RANDOM,                240, 5000 },
+    { PAT_FORTRESS,    18, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL | MOD_REVERSE | MOD_RANDOM, 210, 4500 }
 };
 
 #define LEVEL_COUNT (sizeof(s_levels) / sizeof(s_levels[0]))
@@ -762,7 +759,6 @@ static uint16_t find_matches(uint16_t *out_lines)
 
             for (uint8_t d = 0; d < 4U; d++)
             {
-                if ((level_config()->modifiers & MOD_DIAGONAL) && d < 2U) continue;
                 int8_t pr = (int8_t)(r - dr[d]);
                 int8_t pc = (int8_t)(c - dc[d]);
                 if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS && s_grid[pr][pc] == sym)
@@ -785,8 +781,11 @@ static uint16_t find_matches(uint16_t *out_lines)
                 if (len >= 3U)
                 {
                     uint16_t k_len = (uint16_t)(len - 2U);
-                    lines_found += k_len;
-                    pts_found   += (uint32_t)base_pts[d] * k_len;
+                    if (!(level_config()->modifiers & MOD_DIAGONAL) || (d >= 2U))
+                    {
+                        lines_found += k_len;
+                    }
+                    pts_found += (uint32_t)base_pts[d] * k_len;
                     for (uint8_t k = 0; k < len; k++)
                     {
                         s_mark[r + dr[d] * k][c + dc[d] * k] = 1U;
