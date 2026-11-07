@@ -3,7 +3,7 @@
 /* =========================================================================
  * STACK UP (ZX Spectrum 1991 style arcade puzzle for STM32 Console)
  *
- * Faithful recreation of the screenshot layout & original mechanics:
+ * ZX Spectrum-inspired presentation and a 22-round modifier campaign:
  *  - Rainbow diagonal ZX Spectrum dithered background
  *  - 6x12 Playfield Well with 16x16 px beveled symbol blocks:
  *      1: Red Heart      2: Magenta Circle-Slash   3: Green Triangle
@@ -11,7 +11,7 @@
  *  - Authentic Split-Fall Mechanic: when 1 or 2 blocks of a horizontal
  *    triplet land on a stack, they lock in place while the remaining
  *    unsupported block(s) keep falling and remain steerable Left/Right!
- *  - Best score: SD:/appdata/stackup/best.dat
+ *  - Best score: SD:/appdata/stack_up/best.dat
  * ========================================================================= */
 
 #define COLS            6
@@ -37,7 +37,74 @@
 #define CLEAR_FLASH_MS  260U
 #define CASCADE_STEP_MS 90U
 
-enum { ST_READY, ST_FALL, ST_FLASH, ST_CASCADE, ST_ROUND_WIN, ST_PAUSE, ST_OVER };
+#define MOD_STEEL_BASE  0x01U
+#define MOD_STEEL_DROP  0x02U
+#define MOD_DIAGONAL    0x04U
+#define MOD_RANDOM      0x08U
+#define MOD_REVERSE     0x10U
+
+typedef enum {
+    PAT_NONE = 0,       /* Empty well */
+    PAT_WALLS_LOW,      /* U-shape: side columns medium, next shorter, center empty */
+    PAT_WALLS_HIGH,     /* Deep U-shape: side columns up to mid-well, center empty */
+    PAT_SLOPE_RIGHT,    /* Diagonal staircase: highest on right edge, stepping down left */
+    PAT_SLOPE_LEFT,     /* Diagonal staircase: highest on left edge, stepping down right */
+    PAT_VALLEY_STEP,    /* 3-step V-valley from both walls toward the middle */
+    PAT_TOWERS,         /* Alternating tall/short columns */
+    PAT_FORTRESS        /* Tall side walls + low center floor */
+} FillPattern;
+
+typedef struct {
+    uint8_t pattern;
+    uint8_t lines;
+    uint8_t modifiers;
+    uint16_t fall_ms;
+    uint16_t spawn_ms;
+} LevelConfig;
+
+/* Column height profiles (6 columns, max height 6 = half of the 12-row well) */
+static const uint8_t s_pat_heights[][COLS] = {
+    [PAT_NONE]        = { 0, 0, 0, 0, 0, 0 },
+    [PAT_WALLS_LOW]   = { 4, 2, 0, 0, 2, 4 },
+    [PAT_WALLS_HIGH]  = { 6, 3, 0, 0, 3, 6 },
+    [PAT_SLOPE_RIGHT] = { 1, 2, 3, 4, 5, 6 },
+    [PAT_SLOPE_LEFT]  = { 6, 5, 4, 3, 2, 1 },
+    [PAT_VALLEY_STEP] = { 6, 4, 1, 1, 4, 6 },
+    [PAT_TOWERS]      = { 5, 1, 4, 1, 4, 5 },
+    [PAT_FORTRESS]    = { 6, 5, 2, 2, 5, 6 }
+};
+
+static const LevelConfig s_levels[] = {
+    { PAT_NONE,        8,  0,                                                   650,    0 },
+    { PAT_NONE,        10, 0,                                                   620,    0 },
+    { PAT_WALLS_LOW,   10, 0,                                                   600,    0 },
+    { PAT_SLOPE_RIGHT, 10, 0,                                                   550,    0 },
+    { PAT_WALLS_HIGH,  12, MOD_STEEL_BASE,                                      500,    0 },
+    { PAT_NONE,        8,  MOD_DIAGONAL,                                        650,    0 },
+    { PAT_SLOPE_LEFT,  10, MOD_STEEL_BASE | MOD_DIAGONAL,                       580,    0 },
+    { PAT_NONE,        10, MOD_REVERSE,                                         550,    0 },
+    { PAT_WALLS_HIGH,  12, MOD_REVERSE,                                         480,    0 },
+    { PAT_NONE,        10, MOD_RANDOM,                                          520, 8000 },
+    { PAT_VALLEY_STEP, 12, MOD_RANDOM,                                          460, 7500 },
+    { PAT_TOWERS,      12, MOD_STEEL_BASE | MOD_STEEL_DROP,                     440,    0 },
+    { PAT_SLOPE_RIGHT, 10, MOD_STEEL_BASE | MOD_DIAGONAL | MOD_REVERSE,         500,    0 },
+    { PAT_VALLEY_STEP, 12, MOD_STEEL_BASE | MOD_REVERSE,                        400,    0 },
+    { PAT_WALLS_LOW,   10, MOD_DIAGONAL | MOD_RANDOM,                           450, 7000 },
+    { PAT_SLOPE_LEFT,  12, MOD_STEEL_BASE | MOD_RANDOM,                         380, 6500 },
+    { PAT_WALLS_HIGH,  12, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL,      350,    0 },
+    { PAT_TOWERS,      14, MOD_STEEL_BASE | MOD_REVERSE | MOD_RANDOM,           320, 6000 },
+    { PAT_VALLEY_STEP, 12, MOD_STEEL_BASE | MOD_DIAGONAL | MOD_REVERSE,         300,    0 },
+    { PAT_SLOPE_RIGHT, 12, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL | MOD_RANDOM,
+                                                                                270, 5500 },
+    { PAT_FORTRESS,    14, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_REVERSE | MOD_RANDOM,
+                                                                                240, 5000 },
+    { PAT_FORTRESS,    16, MOD_STEEL_BASE | MOD_STEEL_DROP | MOD_DIAGONAL | MOD_REVERSE | MOD_RANDOM,
+                                                                                210, 4500 }
+};
+
+#define LEVEL_COUNT (sizeof(s_levels) / sizeof(s_levels[0]))
+
+enum { ST_READY, ST_INTRO, ST_FALL, ST_FLASH, ST_CASCADE, ST_ROUND_WIN, ST_PAUSE, ST_OVER, ST_COMPLETE };
 
 /* 16x16 Block Symbol Bitmaps (1 bit per pixel: 1 = black ink outline/icon) */
 static const uint16_t s_sym_bmp[6][16] = {
@@ -114,7 +181,45 @@ static uint32_t s_best = 3000U, s_best_saved = 3000U;
 static uint8_t  s_round;
 static int16_t  s_lines_left;
 static uint8_t  s_speed_lvl;
-static uint8_t  s_credits = 2U;
+static uint16_t s_round_pieces;
+static uint16_t s_match_lines;
+static uint32_t s_match_pts;
+static uint32_t s_spawn_elapsed;
+
+static const LevelConfig *level_config(void)
+{
+    return &s_levels[s_round];
+}
+
+static const char *round_rule_hint(void)
+{
+    uint8_t m = level_config()->modifiers;
+    uint8_t cnt = 0;
+    if (m & MOD_DIAGONAL) cnt++;
+    if (m & MOD_REVERSE)  cnt++;
+    if (m & MOD_RANDOM)   cnt++;
+    if (m & (MOD_STEEL_BASE | MOD_STEEL_DROP)) cnt++;
+
+    if (cnt >= 2U) return "COMBO RULES";
+    if (m & MOD_DIAGONAL)   return "DIAG ONLY!";
+    if (m & MOD_REVERSE)    return "REVERSE L/R";
+    if (m & MOD_RANDOM)     return "RANDOM BLK";
+    if (m & MOD_STEEL_DROP) return "STEEL DROP";
+    if (m & MOD_STEEL_BASE) return "STEEL BASE";
+    if (level_config()->pattern == PAT_SLOPE_RIGHT || level_config()->pattern == PAT_SLOPE_LEFT)
+        return "SLOPE WELL";
+    if (level_config()->pattern != PAT_NONE) return "VALLEY WELL";
+    return "ALL LINES";
+}
+
+static uint32_t fall_interval(void)
+{
+    uint32_t base = level_config()->fall_ms;
+    uint32_t reduction = (uint32_t)(s_round_pieces / 3U) * 10U;
+    uint32_t limit = base / 3U;
+    if (reduction > limit) reduction = limit;
+    return base - reduction;
+}
 
 static void sound(const SDK_Note_t *notes, uint32_t n)
 {
@@ -244,8 +349,22 @@ static void update_next_panel(void)
     }
 }
 
+static void update_rules_panel(void)
+{
+    uint8_t modifiers = level_config()->modifiers;
+    sys_lcd_fill_rect(234, 93, 68, 18, COLOR_BLACK);
+    sys_draw_text(234, 93, (modifiers & MOD_DIAGONAL) ? "DIAG" : "ALL", COLOR_YELLOW, COLOR_BLACK, 1);
+    if (modifiers & MOD_REVERSE)
+        sys_draw_text(276, 93, "REV", COLOR_CYAN, COLOR_BLACK, 1);
+    if (modifiers & (MOD_STEEL_BASE | MOD_STEEL_DROP))
+        sys_draw_text(234, 103, "STEEL", COLOR_WHITE, COLOR_BLACK, 1);
+    if (modifiers & MOD_RANDOM)
+        sys_draw_text(276, 103, "RND", COLOR_MAGENTA, COLOR_BLACK, 1);
+}
+
 static void update_speed_panel(void)
 {
+    s_speed_lvl = (uint8_t)(1U + (650U - fall_interval()) / 65U);
     sys_lcd_fill_rect(236, 40, 64, 14, COLOR_BLACK);
     uint8_t bars = (uint8_t)((s_speed_lvl > 8U) ? 8U : s_speed_lvl);
     for (uint8_t i = 0; i < bars; i++)
@@ -306,8 +425,8 @@ static void draw_static_layout(void)
     sys_draw_text(242, 28, "SPEED", COLOR_WHITE, COLOR_BLACK, 1);
 
     draw_ui_box(226, 74, 84, 42);
-    sys_draw_text(238, 84, "CREDIT", COLOR_WHITE, COLOR_BLACK, 1);
-    draw_num_padded(258, 96, s_credits, 2, COLOR_WHITE);
+    sys_draw_text(242, 82, "RULES", COLOR_WHITE, COLOR_BLACK, 1);
+    update_rules_panel();
 
     draw_ui_box(226, 124, 84, 92);
     sys_draw_text(238, 132, "BLOCKS", COLOR_WHITE, COLOR_BLACK, 1);
@@ -408,6 +527,10 @@ static void roll_next_piece(void)
     {
         s_next[i] = (uint8_t)(1U + sys_random_range(SYM_COUNT));
     }
+    if ((level_config()->modifiers & MOD_STEEL_DROP) && sys_random_range(6U) == 0U)
+    {
+        s_next[sys_random_range(3U)] = SYM_STEEL;
+    }
 }
 
 static bool spawn_piece(uint32_t now)
@@ -444,9 +567,54 @@ static uint8_t active_block_count(void)
     return n;
 }
 
+static bool spawn_random_block(void)
+{
+    uint8_t first_col = (uint8_t)sys_random_range(COLS);
+    for (uint8_t offset = 0; offset < COLS; offset++)
+    {
+        uint8_t col = (uint8_t)((first_col + offset) % COLS);
+        int8_t row = 0;
+        while (row < ROWS && s_grid[row][col] == SYM_EMPTY) row++;
+        row--;
+        if (row <= 0) continue;
+
+        bool blocked = false;
+        for (uint8_t block = 0; block < 3U; block++)
+        {
+            if (s_bactive[block] && s_bx[block] == col && s_by[block] >= row)
+            {
+                blocked = true;
+                break;
+            }
+        }
+        if (blocked) continue;
+        s_grid[row][col] = (uint8_t)(1U + sys_random_range(SYM_COUNT));
+        update_blocks_stats();
+        sound(s_snd_lock, 1);
+        return true;
+    }
+    return false;
+}
+
+static void update_random_spawn(uint32_t elapsed)
+{
+    uint32_t interval = level_config()->spawn_ms;
+    if (s_state != ST_FALL || !(level_config()->modifiers & MOD_RANDOM) || interval == 0U) return;
+    if (elapsed >= interval - s_spawn_elapsed)
+    {
+        s_spawn_elapsed = 0;
+        (void)spawn_random_block();
+    }
+    else
+    {
+        s_spawn_elapsed += elapsed;
+    }
+}
+
 /* Move all currently falling (un-landed) blocks Left (-1) or Right (+1) if clear */
 static bool try_move_active_horiz(int8_t dx)
 {
+    if (level_config()->modifiers & MOD_REVERSE) dx = (int8_t)-dx;
     for (uint8_t i = 0; i < 3U; i++)
     {
         if (!s_bactive[i]) continue;
@@ -579,9 +747,11 @@ static uint16_t find_matches(uint16_t *out_lines)
 {
     sdk_memset(s_mark, 0, sizeof(s_mark));
     uint16_t lines_found = 0;
+    uint32_t pts_found = 0;
 
     static const int8_t dr[4] = { 0, 1, 1,  1 };
     static const int8_t dc[4] = { 1, 0, 1, -1 };
+    static const uint16_t base_pts[4] = { 500U, 200U, 1000U, 1000U };
 
     for (uint8_t r = 0; r < ROWS; r++)
     {
@@ -592,6 +762,7 @@ static uint16_t find_matches(uint16_t *out_lines)
 
             for (uint8_t d = 0; d < 4U; d++)
             {
+                if ((level_config()->modifiers & MOD_DIAGONAL) && d < 2U) continue;
                 int8_t pr = (int8_t)(r - dr[d]);
                 int8_t pc = (int8_t)(c - dc[d]);
                 if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS && s_grid[pr][pc] == sym)
@@ -613,7 +784,9 @@ static uint16_t find_matches(uint16_t *out_lines)
 
                 if (len >= 3U)
                 {
-                    lines_found++;
+                    uint16_t k_len = (uint16_t)(len - 2U);
+                    lines_found += k_len;
+                    pts_found   += (uint32_t)base_pts[d] * k_len;
                     for (uint8_t k = 0; k < len; k++)
                     {
                         s_mark[r + dr[d] * k][c + dc[d] * k] = 1U;
@@ -631,7 +804,8 @@ static uint16_t find_matches(uint16_t *out_lines)
             if (s_mark[r][c] != 0U) marked_cells++;
         }
     }
-    *out_lines = lines_found;
+    *out_lines  = lines_found;
+    s_match_pts = pts_found;
     return marked_cells;
 }
 
@@ -658,61 +832,68 @@ static bool apply_column_gravity(void)
     return moved;
 }
 
-static void setup_round(uint32_t now)
+static void fill_round(void)
 {
     sdk_memset(s_grid, 0, sizeof(s_grid));
-    s_lines_left = (int16_t)(12 + s_round * 4);
-    s_speed_lvl  = (uint8_t)(1U + s_round / 2U);
-    if (s_speed_lvl > 8U) s_speed_lvl = 8U;
+    const LevelConfig *cfg = level_config();
+    const uint8_t *heights = s_pat_heights[cfg->pattern];
 
-    if (s_round >= 1U)
+    /* Fill bottom-up according to the column height profile without pre-made 3-in-a-row matches */
+    for (int8_t row = ROWS - 1; row >= 0; row--)
     {
-        s_grid[ROWS - 1][0]        = SYM_STEEL;
-        s_grid[ROWS - 1][COLS - 1] = SYM_STEEL;
-
-        uint8_t stack_h = (uint8_t)((s_round < 5U) ? (s_round + 1U) : 6U);
-        for (uint8_t r = ROWS - 2; r >= ROWS - 1 - stack_h; r--)
+        for (uint8_t col = 0; col < COLS; col++)
         {
-            s_grid[r][0]        = (uint8_t)(1U + ((r + s_round) % SYM_COUNT));
-            s_grid[r][COLS - 1] = (uint8_t)(1U + ((r + s_round + 2U) % SYM_COUNT));
+            uint8_t col_h = heights[col];
+            if ((uint8_t)(ROWS - 1 - row) >= col_h) continue;
+
+            uint8_t symbol = (uint8_t)(1U + sys_random_range(SYM_COUNT));
+            for (uint8_t attempt = 0; attempt < SYM_COUNT; attempt++)
+            {
+                bool match = (col >= 2U && s_grid[row][col - 1U] == symbol && s_grid[row][col - 2U] == symbol)
+                    || (row + 2 < ROWS && s_grid[row + 1][col] == symbol && s_grid[row + 2][col] == symbol)
+                    || (row + 2 < ROWS && col >= 2U && s_grid[row + 1][col - 1U] == symbol && s_grid[row + 2][col - 2U] == symbol)
+                    || (row + 2 < ROWS && col + 2U < COLS && s_grid[row + 1][col + 1U] == symbol && s_grid[row + 2][col + 2U] == symbol);
+                if (!match) break;
+                symbol = (uint8_t)(1U + (symbol % SYM_COUNT));
+            }
+            s_grid[row][col] = symbol;
         }
     }
+
+    if (cfg->modifiers & MOD_STEEL_BASE)
+    {
+        uint8_t first_col = (uint8_t)sys_random_range(COLS);
+        uint8_t placed = 0;
+        for (uint8_t i = 0; i < COLS && placed < 3U; i++)
+        {
+            uint8_t c = (uint8_t)((first_col + i * 2U + (i & 1U)) % COLS);
+            uint8_t h = heights[c];
+            if (h > 0U)
+            {
+                uint8_t depth = (uint8_t)(placed % h);
+                s_grid[ROWS - 1U - depth][c] = SYM_STEEL;
+                placed++;
+            }
+        }
+    }
+}
+
+static void setup_round(uint32_t now)
+{
+    fill_round();
+    s_lines_left = level_config()->lines;
+    s_round_pieces = 0;
+    s_match_lines = 0;
+    s_match_pts = 0;
+    s_spawn_elapsed = 0;
 
     roll_next_piece();
     (void)spawn_piece(now);
     update_round_panel();
     update_speed_panel();
     update_blocks_stats();
+    update_rules_panel();
     sdk_memset(s_shown, 0xFFU, sizeof(s_shown));
-}
-
-/* Relaxed speed curve: Level 1 starts at a comfortable 650 ms per row! */
-static uint32_t fall_interval(void)
-{
-    uint32_t dec = (uint32_t)(s_speed_lvl - 1U) * 60U;
-    return (dec >= 470U) ? 180U : (650U - dec);
-}
-
-static void on_all_blocks_landed(uint32_t now)
-{
-    (void)apply_column_gravity();
-    update_blocks_stats();
-
-    s_chain_mult = 1U;
-    uint16_t lines = 0;
-    if (find_matches(&lines) > 0U)
-    {
-        s_state = ST_FLASH;
-        s_state_tick = now;
-        sound(s_snd_match, 5);
-    }
-    else if (!spawn_piece(now))
-    {
-        s_state = ST_OVER;
-        s_state_tick = now;
-        save_best();
-        sound(s_snd_over, 5);
-    }
 }
 
 static void show_well_banner(const char *l1, const char *l2, uint16_t col)
@@ -722,6 +903,51 @@ static void show_well_banner(const char *l1, const char *l2, uint16_t col)
     sys_draw_text(WELL_X + 14, 106, l1, col, COLOR_BLACK, 1);
     sys_draw_text(WELL_X + 14, 122, l2, COLOR_WHITE, COLOR_BLACK, 1);
     sdk_memset(s_shown, 0xFFU, sizeof(s_shown));
+}
+
+static void finish_resolution(uint32_t now)
+{
+    s_state_tick = now;
+    if (s_lines_left <= 0)
+    {
+        s_state = ST_ROUND_WIN;
+        sound(s_snd_round, 7);
+        show_well_banner("ROUND CLEAR", "CLEAR+SPACE", COLOR_NEON_GREEN);
+    }
+    else if (spawn_piece(now))
+    {
+        s_state = ST_FALL;
+    }
+    else
+    {
+        s_state = ST_OVER;
+        save_best();
+        sound(s_snd_over, 5);
+        show_well_banner("GAME OVER", "A: RETRY", COLOR_RED);
+    }
+}
+
+static void on_all_blocks_landed(uint32_t now)
+{
+    if (s_round_pieces < UINT16_MAX) s_round_pieces++;
+    s_score += 50U;
+    if (s_score > s_best) s_best = s_score;
+    update_score_panel();
+    update_speed_panel();
+    (void)apply_column_gravity();
+    update_blocks_stats();
+
+    s_chain_mult = 1U;
+    if (find_matches(&s_match_lines) > 0U)
+    {
+        s_state = ST_FLASH;
+        s_state_tick = now;
+        sound(s_snd_match, 5);
+    }
+    else
+    {
+        finish_resolution(now);
+    }
 }
 
 void app_main(void)
@@ -736,12 +962,15 @@ void app_main(void)
     draw_static_layout();
     setup_round(sys_get_tick());
     render_well(sys_get_tick());
-    show_well_banner("STACK UP!", "A: START", COLOR_YELLOW);
+    show_well_banner("STACK UP!", "L/R:RND A:GO", COLOR_YELLOW);
     sdk_input_init(&in);
+    uint32_t previous_tick = sys_get_tick();
 
     for (;;)
     {
         uint32_t now = sys_get_tick();
+        uint32_t elapsed = now - previous_tick;
+        previous_tick = now;
         sdk_input_update(&in, sys_get_keys(), now);
 
         if (in.pressed & KEY_EXIT)
@@ -753,12 +982,37 @@ void app_main(void)
         switch (s_state)
         {
             case ST_READY:
-                if (in.pressed & (KEY_A | KEY_UP))
+                if (in.pressed & (KEY_LEFT | KEY_RIGHT))
+                {
+                    if (in.pressed & KEY_LEFT)
+                    {
+                        s_round = (uint8_t)((s_round == 0U) ? (LEVEL_COUNT - 1U) : (s_round - 1U));
+                    }
+                    else
+                    {
+                        s_round = (uint8_t)((s_round + 1U) % LEVEL_COUNT);
+                    }
+                    sound(s_snd_move, 1);
+                    setup_round(now);
+                    render_well(now);
+                    char title[12] = "ROUND ";
+                    sdk_uint_to_str((uint32_t)s_round + 1U, &title[6], 2);
+                    show_well_banner(title, round_rule_hint(), COLOR_YELLOW);
+                }
+                else if (in.pressed & (KEY_A | KEY_UP))
                 {
                     s_state = ST_FALL;
                     s_fall_tick = now;
                     sdk_memset(s_shown, 0xFFU, sizeof(s_shown));
                     render_well(now);
+                }
+                break;
+
+            case ST_INTRO:
+                if ((now - s_state_tick) >= 1200U)
+                {
+                    s_state = ST_FALL;
+                    s_fall_tick = now;
                 }
                 break;
 
@@ -770,6 +1024,8 @@ void app_main(void)
                     show_well_banner("PAUSED", "A: RESUME", COLOR_YELLOW);
                     break;
                 }
+
+                update_random_spawn(elapsed);
 
                 /* Move all still-falling blocks Left / Right */
                 if ((in.repeat & KEY_LEFT) && try_move_active_horiz(-1))
@@ -806,7 +1062,7 @@ void app_main(void)
                     break;
                 }
 
-                /* Gravity & Soft Drop (75 ms soft drop, 650 ms base speed on Round 1) */
+                /* Gravity & Soft Drop */
                 uint32_t delay = (in.held & KEY_DOWN) ? 75U : fall_interval();
                 if ((now - s_fall_tick) >= delay)
                 {
@@ -831,7 +1087,6 @@ void app_main(void)
             case ST_FLASH:
                 if ((now - s_state_tick) >= CLEAR_FLASH_MS)
                 {
-                    uint16_t cleared = 0;
                     for (uint8_t r = 0; r < ROWS; r++)
                     {
                         for (uint8_t c = 0; c < COLS; c++)
@@ -839,14 +1094,13 @@ void app_main(void)
                             if (s_mark[r][c] != 0U)
                             {
                                 s_grid[r][c] = SYM_EMPTY;
-                                cleared++;
                             }
                         }
                     }
 
-                    s_score += (uint32_t)cleared * 50U * s_chain_mult;
+                    s_score += s_match_pts * (uint32_t)s_chain_mult;
                     if (s_score > s_best) s_best = s_score;
-                    s_lines_left = (int16_t)(s_lines_left - (int16_t)(cleared / 3U));
+                    s_lines_left = (int16_t)(s_lines_left - (int16_t)s_match_lines);
                     if (s_lines_left < 0) s_lines_left = 0;
 
                     update_score_panel();
@@ -864,32 +1118,16 @@ void app_main(void)
                     (void)apply_column_gravity();
                     update_blocks_stats();
 
-                    uint16_t lines = 0;
-                    if (find_matches(&lines) > 0U)
+                    if (find_matches(&s_match_lines) > 0U)
                     {
-                        s_chain_mult++;
+                        if (s_chain_mult < 3U) s_chain_mult++;
                         s_state = ST_FLASH;
                         s_state_tick = now;
                         sound(s_snd_match, 5);
                     }
-                    else if (s_lines_left <= 0)
-                    {
-                        s_state = ST_ROUND_WIN;
-                        s_state_tick = now;
-                        sound(s_snd_round, 7);
-                        show_well_banner("ROUND CLEAR", "BONUS +1000", COLOR_NEON_GREEN);
-                    }
-                    else if (spawn_piece(now))
-                    {
-                        s_state = ST_FALL;
-                    }
                     else
                     {
-                        s_state = ST_OVER;
-                        s_state_tick = now;
-                        save_best();
-                        sound(s_snd_over, 5);
-                        show_well_banner("GAME OVER", "A: RETRY", COLOR_RED);
+                        finish_resolution(now);
                     }
                 }
                 break;
@@ -897,12 +1135,34 @@ void app_main(void)
             case ST_ROUND_WIN:
                 if ((now - s_state_tick) >= 1400U)
                 {
-                    s_round++;
-                    s_score += 1000U;
+                    uint32_t free_cells = 0;
+                    for (uint8_t r = 0; r < ROWS; r++)
+                    {
+                        for (uint8_t c = 0; c < COLS; c++)
+                        {
+                            if (s_grid[r][c] == SYM_EMPTY) free_cells++;
+                        }
+                    }
+                    s_score += 500U * ((uint32_t)s_round + 1U) + free_cells * 25U;
                     if (s_score > s_best) s_best = s_score;
                     update_score_panel();
-                    setup_round(now);
-                    s_state = ST_FALL;
+                    save_best();
+                    s_state_tick = now;
+                    if (s_round + 1U >= LEVEL_COUNT)
+                    {
+                        s_state = ST_COMPLETE;
+                        show_well_banner("WELL DONE!", "22 CLEARED", COLOR_NEON_GREEN);
+                    }
+                    else
+                    {
+                        s_round++;
+                        setup_round(now);
+                        s_state = ST_INTRO;
+                        render_well(now);
+                        char title[12] = "ROUND ";
+                        sdk_uint_to_str((uint32_t)s_round + 1U, &title[6], 2);
+                        show_well_banner(title, round_rule_hint(), COLOR_YELLOW);
+                    }
                 }
                 break;
 
@@ -915,6 +1175,7 @@ void app_main(void)
                 }
                 break;
 
+            case ST_COMPLETE:
             case ST_OVER:
                 if ((in.pressed & (KEY_A | KEY_UP)) && ((now - s_state_tick) > 600U))
                 {
