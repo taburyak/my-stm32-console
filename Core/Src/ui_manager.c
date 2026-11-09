@@ -13,17 +13,46 @@
 #include "app_loader.h"
 #include "uart_loader.h"
 #include "temp_sensor.h"
+#include "XPT2046_touch.h"
+#include "ili9341_simple.h"
+#include "lv_port_console.h"
 
-extern RTC_HandleTypeDef hrtc;
+extern RTC_HandleTypeDef  hrtc;
+extern IWDG_HandleTypeDef hiwdg;
+extern DMA_HandleTypeDef  hdma_memtomem_dma2_stream0;
 
-/* EEPROM Settings Magic & Address */
-#define EEPROM_CFG_ADDR   0x00U
-#define EEPROM_CFG_MAGIC  0xA5U
+/* EEPROM Settings Magic & Address (0x00..0x7F reserved for OS; 0x80..0xFF for SDK apps) */
+#define EEPROM_CFG_ADDR      0x00U
+#define EEPROM_CFG_MAGIC_V1  0xA5U
+#define EEPROM_CFG_MAGIC_V2  0xA6U
+#define THEME_COUNT          4U
 
 typedef struct {
-    uint8_t magic;
-    uint8_t sound_muted;
+    uint8_t  magic;          /* EEPROM_CFG_MAGIC_V2 */
+    uint8_t  sound_muted;    /* 0 = sound on, 1 = muted */
+    uint8_t  theme_id;       /* 0..3 UI color theme */
+    uint8_t  stick_deadzone; /* Analog stick deadzone (0..48, default 8) */
+    uint16_t touch_min_x;    /* XPT2046 raw calibration bounds */
+    uint16_t touch_max_x;
+    uint16_t touch_min_y;
+    uint16_t touch_max_y;
 } System_Config_t;
+
+typedef struct {
+    const char *name;
+    uint32_t    ws_bg;
+    uint32_t    bar_bg;
+    uint32_t    title_col;
+} UI_Theme_t;
+
+static const UI_Theme_t s_themes[THEME_COUNT] = {
+    { "Cyber Blue",  0x1B2234U, 0x12161FU, 0x00E5FFU },
+    { "Emerald",     0x0E241BU, 0x081510U, 0x00FF66U },
+    { "Retro Amber", 0x261B0EU, 0x160F07U, 0xFFAE00U },
+    { "Synthwave",   0x231432U, 0x130A1CU, 0xFF40FFU }
+};
+
+static uint8_t s_theme_id = 0U;
 
 /* ==========================================================================
  * Static UI Widgets & State
@@ -49,10 +78,12 @@ static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
 #define EXT_TEXT_PREVIEW_BUF  ((char *)MM_EXT_TEXT_PREVIEW)
 #define EXT_TEXT_PREVIEW_SIZE MM_EXT_TEXT_PREVIEW_SIZE
 
-/* Settings Screen RTC adjustment state */
+/* Settings Screen RTC adjustment & calibration state */
 static uint8_t edit_hours   = 12;
 static uint8_t edit_minutes = 0;
 static lv_obj_t * lbl_time_set = NULL;
+static lv_obj_t * lbl_dz_val   = NULL;
+static lv_obj_t * lbl_thm_val  = NULL;
 
 /* Wallpaper selected from the image viewer, persisted on the SD card */
 #define WALLPAPER_CFG_PATH  "system/wallpaper.cfg"
@@ -92,24 +123,59 @@ static void Populate_Games_Grid(void);
  * EEPROM Settings Load / Save
  * ========================================================================== */
 
+static void Apply_Current_Theme(void)
+{
+    const UI_Theme_t *t = &s_themes[s_theme_id % THEME_COUNT];
+    if (status_bar != NULL)
+    {
+        lv_obj_set_style_bg_color(status_bar, lv_color_hex(t->bar_bg), 0);
+    }
+    if (lbl_screen_title != NULL)
+    {
+        lv_obj_set_style_text_color(lbl_screen_title, lv_color_hex(t->title_col), 0);
+    }
+    if (workspace_cont != NULL)
+    {
+        lv_obj_set_style_bg_color(workspace_cont, lv_color_hex(t->ws_bg), 0);
+    }
+}
+
 static void Settings_LoadFromEEPROM(void)
 {
     System_Config_t cfg = {0};
     if (AT24Cxx_Read(EEPROM_CFG_ADDR, &cfg, sizeof(cfg)) == HAL_OK)
     {
-        if (cfg.magic == EEPROM_CFG_MAGIC)
+        if (cfg.magic == EEPROM_CFG_MAGIC_V2)
         {
             Beeper_SetMuted(cfg.sound_muted != 0U);
-            printf("[CFG] Loaded from EEPROM: Sound Muted = %u\r\n", cfg.sound_muted);
+            s_theme_id = (cfg.theme_id < THEME_COUNT) ? cfg.theme_id : 0U;
+            USBHostManager_SetStickDeadzone((cfg.stick_deadzone <= 48U) ? cfg.stick_deadzone : 8U);
+            XPT2046_TouchSetCalibration(cfg.touch_min_x, cfg.touch_max_x, cfg.touch_min_y, cfg.touch_max_y);
+            printf("[CFG] Loaded EEPROM v2: muted=%u theme=%u dz=%u touch=[%u..%u, %u..%u]\r\n",
+                   cfg.sound_muted, s_theme_id, cfg.stick_deadzone,
+                   cfg.touch_min_x, cfg.touch_max_x, cfg.touch_min_y, cfg.touch_max_y);
+        }
+        else if (cfg.magic == EEPROM_CFG_MAGIC_V1)
+        {
+            Beeper_SetMuted(cfg.sound_muted != 0U);
         }
     }
 }
 
 static void Settings_SaveToEEPROM(void)
 {
+    uint16_t min_x = 0U, max_x = 0U, min_y = 0U, max_y = 0U;
+    XPT2046_TouchGetCalibration(&min_x, &max_x, &min_y, &max_y);
+
     System_Config_t cfg = {
-        .magic       = EEPROM_CFG_MAGIC,
-        .sound_muted = Beeper_IsMuted() ? 1U : 0U
+        .magic          = EEPROM_CFG_MAGIC_V2,
+        .sound_muted    = Beeper_IsMuted() ? 1U : 0U,
+        .theme_id       = s_theme_id,
+        .stick_deadzone = USBHostManager_GetStickDeadzone(),
+        .touch_min_x    = min_x,
+        .touch_max_x    = max_x,
+        .touch_min_y    = min_y,
+        .touch_max_y    = max_y
     };
     (void)AT24Cxx_Write(EEPROM_CFG_ADDR, &cfg, sizeof(cfg));
 }
@@ -402,7 +468,7 @@ void UIManager_Init(void)
     lv_obj_set_style_radius(workspace_cont, 0, 0);
     lv_obj_set_style_border_width(workspace_cont, 0, 0);
     lv_obj_set_style_pad_all(workspace_cont, 0, 0);
-    lv_obj_set_style_bg_color(workspace_cont, lv_color_hex(0x1B2234), 0);
+    Apply_Current_Theme();
 
     /* 3. Show Home Screen by default */
     UIManager_ShowScreen(UI_SCREEN_HOME);
@@ -471,6 +537,8 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     file_list_obj  = NULL;
     games_grid_obj = NULL;
     lbl_time_set   = NULL;
+    lbl_dz_val     = NULL;
+    lbl_thm_val    = NULL;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -1277,30 +1345,200 @@ static void Build_Games_Screen(void)
 }
 
 /* ==========================================================================
- * 5. Settings Screen (RTC Time Setup + Audio Mute in EEPROM)
+ * 5. Settings Screen (RTC, Audio, Theme, Stick Deadzone & 4-Point Touch Calibration)
  * ========================================================================== */
 
-static void rtc_adjust_btn_cb(lv_event_t * e)
+static void draw_calib_crosshair(uint16_t cx, uint16_t cy, uint16_t color)
 {
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    lcdSetWindow((uint16_t)(cx - 10U), cy, (uint16_t)(cx + 10U), cy);
+    for (uint8_t i = 0U; i < 21U; i++) LCD_DataWrite(color);
+
+    lcdSetWindow(cx, (uint16_t)(cy - 10U), cx, (uint16_t)(cy + 10U));
+    for (uint8_t i = 0U; i < 21U; i++) LCD_DataWrite(color);
+
+    lcdSetWindow((uint16_t)(cx - 2U), (uint16_t)(cy - 2U), (uint16_t)(cx + 2U), (uint16_t)(cy + 2U));
+    for (uint8_t i = 0U; i < 25U; i++) LCD_DataWrite(color);
+}
+
+static bool Run_Touch_Calibration_Wizard(void)
+{
+    static const uint16_t pts[4][2] = {
+        { 20U,  20U  }, /* 0: Top-Left     */
+        { 300U, 20U  }, /* 1: Top-Right    */
+        { 300U, 220U }, /* 2: Bottom-Right */
+        { 20U,  220U }  /* 3: Bottom-Left  */
+    };
+    static const char * const pt_names[4] = {
+        "STEP 1/4: TOUCH TOP-LEFT",
+        "STEP 2/4: TOUCH TOP-RIGHT",
+        "STEP 3/4: TOUCH BOTTOM-RIGHT",
+        "STEP 4/4: TOUCH BOTTOM-LEFT"
+    };
+
+    LVGL_Port_WaitFlushIdle();
+    lcdSetWindow(0U, 0U, 319U, 239U);
+    lcdFillConstantDMA(&hdma_memtomem_dma2_stream0, 0x0862U, 320UL * 240UL);
+
+    App_DrawTextParams_t txt = {
+        .x = 34U, .y = 92U, .str = "XPT2046 TOUCH CALIBRATION",
+        .fg_color = 0x07FFU, .bg_color = 0x0862U, .scale = 1U
+    };
+    AppLoader_DrawText_Privileged(&txt);
+
+    txt.x = 46U; txt.y = 132U; txt.str = "ESC / GAMEPAD B: CANCEL";
+    txt.fg_color = 0xFD20U;
+    AppLoader_DrawText_Privileged(&txt);
+
+    uint16_t rx[4] = {0};
+    uint16_t ry[4] = {0};
+
+    /* Wait until touch & exit keys are released before starting */
+    while (XPT2046_TouchPressed() || (AppLoader_ReadInputMask_Privileged() & APP_KEY_EXIT) != 0U)
     {
-        intptr_t action = (intptr_t)lv_event_get_user_data(e);
-        Beeper_Click();
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        osDelay(15U);
+    }
 
-        if (action == 1)      edit_hours = (edit_hours + 1U) % 24U;
-        else if (action == 2) edit_hours = (edit_hours == 0U) ? 23U : (edit_hours - 1U);
-        else if (action == 3) edit_minutes = (edit_minutes + 1U) % 60U;
-        else if (action == 4) edit_minutes = (edit_minutes == 0U) ? 59U : (edit_minutes - 1U);
-        else if (action == 5)
+    for (uint8_t step = 0U; step < 4U; step++)
+    {
+        txt.x = 34U; txt.y = 112U; txt.str = "                            ";
+        AppLoader_DrawText_Privileged(&txt);
+        txt.str = pt_names[step];
+        txt.fg_color = 0x07E0U;
+        AppLoader_DrawText_Privileged(&txt);
+
+        draw_calib_crosshair(pts[step][0], pts[step][1], 0xFFFFU);
+
+        /* Wait for stable touch sample or cancel */
+        for (;;)
         {
-            RTC_SetTimeManual(edit_hours, edit_minutes);
-            Beeper_BootMelody();
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            if ((AppLoader_ReadInputMask_Privileged() & APP_KEY_EXIT) != 0U)
+            {
+                return false;
+            }
+            if (XPT2046_TouchPressed())
+            {
+                osDelay(35U);
+                if (XPT2046_TouchGetRawCoordinates(&rx[step], &ry[step]))
+                {
+                    Beeper_Click();
+                    break;
+                }
+            }
+            osDelay(15U);
         }
 
-        if (lbl_time_set != NULL)
+        draw_calib_crosshair(pts[step][0], pts[step][1], 0x0862U);
+
+        /* Wait for finger release before next corner */
+        while (XPT2046_TouchPressed())
         {
-            lv_label_set_text_fmt(lbl_time_set, "Set RTC: %02u : %02u", edit_hours, edit_minutes);
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            osDelay(15U);
         }
+        osDelay(120U);
+    }
+
+    /* Compute extrapolated full-screen [0..320, 0..240] raw bounds from the 20 px inset targets */
+    int32_t raw_left   = ((int32_t)rx[0] + (int32_t)rx[3]) / 2;
+    int32_t raw_right  = ((int32_t)rx[1] + (int32_t)rx[2]) / 2;
+    int32_t raw_top    = ((int32_t)ry[0] + (int32_t)ry[1]) / 2;
+    int32_t raw_bottom = ((int32_t)ry[2] + (int32_t)ry[3]) / 2;
+
+    if (raw_left > raw_right)
+    {
+        int32_t t = raw_left; raw_left = raw_right; raw_right = t;
+    }
+    if (raw_bottom > raw_top)
+    {
+        int32_t t = raw_bottom; raw_bottom = raw_top; raw_top = t;
+    }
+
+    int32_t span_x = raw_right - raw_left;   /* across 280 px */
+    int32_t span_y = raw_top   - raw_bottom; /* across 200 px (Y is inverted in Landscape) */
+
+    if (span_x < 4000 || span_y < 4000)
+    {
+        Beeper_ErrorAlert();
+        return false;
+    }
+
+    int32_t min_x = raw_left   - (span_x * 20) / 280;
+    int32_t max_x = raw_right  + (span_x * 20) / 280;
+    int32_t min_y = raw_bottom - (span_y * 20) / 200;
+    int32_t max_y = raw_top    + (span_y * 20) / 200;
+
+    if (min_x < 200)   min_x = 200;
+    if (max_x > 32500) max_x = 32500;
+    if (min_y < 200)   min_y = 200;
+    if (max_y > 32500) max_y = 32500;
+
+    XPT2046_TouchSetCalibration((uint16_t)min_x, (uint16_t)max_x, (uint16_t)min_y, (uint16_t)max_y);
+    Settings_SaveToEEPROM();
+    Beeper_BootMelody();
+    return true;
+}
+
+static void settings_action_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+
+    intptr_t action = (intptr_t)lv_event_get_user_data(e);
+    Beeper_Click();
+
+    if (action == 1)      edit_hours = (edit_hours + 1U) % 24U;
+    else if (action == 2) edit_hours = (edit_hours == 0U) ? 23U : (edit_hours - 1U);
+    else if (action == 3) edit_minutes = (edit_minutes + 1U) % 60U;
+    else if (action == 4) edit_minutes = (edit_minutes == 0U) ? 59U : (edit_minutes - 1U);
+    else if (action == 5)
+    {
+        RTC_SetTimeManual(edit_hours, edit_minutes);
+        Beeper_BootMelody();
+    }
+    else if (action == 6) /* Cycle Deadzone: 4 -> 8 -> 12 -> 16 -> 24 -> 32 */
+    {
+        static const uint8_t dz_steps[] = { 4U, 8U, 12U, 16U, 24U, 32U };
+        uint8_t cur = USBHostManager_GetStickDeadzone();
+        uint8_t next = dz_steps[0];
+        for (size_t i = 0; i < sizeof(dz_steps); i++)
+        {
+            if (dz_steps[i] > cur)
+            {
+                next = dz_steps[i];
+                break;
+            }
+        }
+        USBHostManager_SetStickDeadzone(next);
+        Settings_SaveToEEPROM();
+        if (lbl_dz_val != NULL)
+        {
+            lv_label_set_text_fmt(lbl_dz_val, "DZ: %u", (unsigned int)next);
+        }
+    }
+    else if (action == 7) /* Cycle UI Theme */
+    {
+        s_theme_id = (uint8_t)((s_theme_id + 1U) % THEME_COUNT);
+        Apply_Current_Theme();
+        Settings_SaveToEEPROM();
+        if (lbl_thm_val != NULL)
+        {
+            lv_label_set_text_fmt(lbl_thm_val, "Theme: %s", s_themes[s_theme_id].name);
+        }
+    }
+    else if (action == 8) /* 4-Point Touch Calibration Wizard */
+    {
+        (void)Run_Touch_Calibration_Wizard();
+        s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
+        return;
+    }
+
+    if (lbl_time_set != NULL)
+    {
+        lv_label_set_text_fmt(lbl_time_set, "RTC: %02u:%02u", edit_hours, edit_minutes);
     }
 }
 
@@ -1319,17 +1557,17 @@ static void sound_switch_event_cb(lv_event_t * e)
     }
 }
 
-static lv_obj_t* Create_Setting_Btn(lv_obj_t *parent, int16_t x, int16_t y, int16_t w,
+static lv_obj_t* Create_Setting_Btn(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, int16_t h,
                                     const char *txt, intptr_t action)
 {
     lv_obj_t * btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, w, 32);
+    lv_obj_set_size(btn, w, h);
     lv_obj_set_pos(btn, x, y);
     lv_obj_t * lbl = lv_label_create(btn);
     lv_label_set_text(lbl, txt);
     lv_obj_center(lbl);
 
-    lv_obj_add_event_cb(btn, rtc_adjust_btn_cb, LV_EVENT_CLICKED, (void *)action);
+    lv_obj_add_event_cb(btn, settings_action_btn_cb, LV_EVENT_CLICKED, (void *)action);
     lv_obj_add_event_cb(btn, global_key_event_cb, LV_EVENT_KEY, NULL);
 
     lv_group_t * grp = lv_group_get_default();
@@ -1342,26 +1580,26 @@ static void Build_Settings_Screen(void)
     uint8_t sec_dummy = 0;
     RTC_GetDateTime(&edit_hours, &edit_minutes, &sec_dummy);
 
+    /* Row 1: RTC Clock adjustment */
     lbl_time_set = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(lbl_time_set, lv_color_hex(0x00FF66), 0);
-    lv_obj_align(lbl_time_set, LV_ALIGN_TOP_MID, 0, 8);
-    lv_label_set_text_fmt(lbl_time_set, "Set RTC: %02u : %02u", edit_hours, edit_minutes);
+    lv_obj_set_pos(lbl_time_set, 12, 12);
+    lv_label_set_text_fmt(lbl_time_set, "RTC: %02u:%02u", edit_hours, edit_minutes);
 
-    Create_Setting_Btn(workspace_cont, 20,  34, 60, "Hr +", 1);
-    Create_Setting_Btn(workspace_cont, 90,  34, 60, "Hr -", 2);
-    Create_Setting_Btn(workspace_cont, 170, 34, 60, "Min +", 3);
-    Create_Setting_Btn(workspace_cont, 240, 34, 60, "Min -", 4);
+    Create_Setting_Btn(workspace_cont, 98,  6, 44, 28, "H+", 1);
+    Create_Setting_Btn(workspace_cont, 146, 6, 44, 28, "H-", 2);
+    Create_Setting_Btn(workspace_cont, 194, 6, 44, 28, "M+", 3);
+    Create_Setting_Btn(workspace_cont, 242, 6, 66, 28, LV_SYMBOL_OK " Set", 5);
 
-    Create_Setting_Btn(workspace_cont, 80, 74, 160, LV_SYMBOL_OK " Save Time", 5);
-
-    /* Audio Mute Switch (Persisted in AT24C02 EEPROM) */
+    /* Row 2: Audio Mute + Stick Deadzone */
     lv_obj_t * snd_lbl = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(snd_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_pos(snd_lbl, 45, 122);
-    lv_label_set_text(snd_lbl, LV_SYMBOL_AUDIO " Beeper Sound:");
+    lv_obj_set_pos(snd_lbl, 12, 48);
+    lv_label_set_text(snd_lbl, LV_SYMBOL_AUDIO " Sound:");
 
     lv_obj_t * snd_sw = lv_switch_create(workspace_cont);
-    lv_obj_set_pos(snd_sw, 200, 118);
+    lv_obj_set_size(snd_sw, 46, 24);
+    lv_obj_set_pos(snd_sw, 88, 45);
     if (!Beeper_IsMuted())
     {
         lv_obj_add_state(snd_sw, LV_STATE_CHECKED);
@@ -1372,10 +1610,28 @@ static void Build_Settings_Screen(void)
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL) lv_group_add_obj(grp, snd_sw);
 
-    /* Back to Home button */
+    lv_obj_t * btn_dz = Create_Setting_Btn(workspace_cont, 152, 42, 156, 30, "", 6);
+    lbl_dz_val = lv_obj_get_child(btn_dz, 0);
+    lv_label_set_text_fmt(lbl_dz_val, "Stick DZ: %u", (unsigned int)USBHostManager_GetStickDeadzone());
+
+    /* Row 3: Theme selector */
+    lv_obj_t * btn_thm = Create_Setting_Btn(workspace_cont, 12, 80, 296, 30, "", 7);
+    lbl_thm_val = lv_obj_get_child(btn_thm, 0);
+    lv_label_set_text_fmt(lbl_thm_val, "Theme: %s", s_themes[s_theme_id % THEME_COUNT].name);
+
+    /* Row 4: 4-Point XPT2046 Touchscreen Calibration */
+    uint16_t min_x = 0U, max_x = 0U, min_y = 0U, max_y = 0U;
+    XPT2046_TouchGetCalibration(&min_x, &max_x, &min_y, &max_y);
+    lv_obj_t * btn_cal = Create_Setting_Btn(workspace_cont, 12, 118, 296, 32, "", 8);
+    lv_obj_set_style_bg_color(btn_cal, lv_color_hex(0x00695C), 0);
+    lv_label_set_text_fmt(lv_obj_get_child(btn_cal, 0),
+                          LV_SYMBOL_PLUS " Calibrate Touch [%u..%u]",
+                          (unsigned int)min_x, (unsigned int)max_x);
+
+    /* Row 5: Back to Home button */
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
-    lv_obj_set_size(btn_back, 120, 32);
-    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_size(btn_back, 136, 32);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -6);
     lv_obj_t * lbl_b = lv_label_create(btn_back);
     lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
     lv_obj_center(lbl_b);

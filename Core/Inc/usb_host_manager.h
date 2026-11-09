@@ -106,6 +106,9 @@ bool USBHostManager_GetMouseState(USB_MouseEvent_t *state);
 bool USBHostManager_GetGamepadState(USB_GamepadState_t *state);
 uint32_t USBHostManager_GetKeyboardGameMask(void);
 
+void    USBHostManager_SetStickDeadzone(uint8_t deadzone);
+uint8_t USBHostManager_GetStickDeadzone(void);
+
 #ifdef __cplusplus
 }
 #endif

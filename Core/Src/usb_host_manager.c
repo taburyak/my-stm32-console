@@ -349,13 +349,26 @@ static void Parse_Mouse_Report(uint8_t const *buf, uint16_t len)
     g_usb_dbg.mouse_btns = b0 & 0x07U;
 }
 
+static uint8_t s_stick_deadzone = 8U;
+
+void USBHostManager_SetStickDeadzone(uint8_t deadzone)
+{
+    if (deadzone > 64U) deadzone = 64U;
+    s_stick_deadzone = deadzone;
+}
+
+uint8_t USBHostManager_GetStickDeadzone(void)
+{
+    return s_stick_deadzone;
+}
+
 static int8_t Axis_U8_To_I8(uint8_t raw)
 {
     int16_t centered = (int16_t)raw - 128;
     if (centered < -127) centered = -127;
     if (centered >  127) centered =  127;
-    /* Small deadzone around neutral 0x7F/0x80 */
-    if (centered >= -4 && centered <= 4) centered = 0;
+    int16_t dz = (int16_t)s_stick_deadzone;
+    if (centered >= -dz && centered <= dz) centered = 0;
     return (int8_t)centered;
 }
 
