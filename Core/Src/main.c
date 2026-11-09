@@ -1197,8 +1197,7 @@ void StartDefaultTask(void *argument)
     {
       /* External app just exited! Restore LVGL screen redraw */
       was_app_running = false;
-      UIManager_ShowScreen(UI_SCREEN_GAMES);
-      lv_obj_invalidate(lv_scr_act());
+      UIManager_OnAppExit();
 
       AppLoader_FaultInfo_t fault;
       if (AppLoader_TakeFaultInfo(&fault))

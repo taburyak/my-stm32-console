@@ -206,17 +206,38 @@ static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     if (USBHostManager_GetKeyEvent(&kbd_evt) && kbd_evt.is_pressed)
     {
         uint32_t lv_key = 0;
+        lv_group_t * grp = lv_group_get_default();
+        lv_obj_t * focused = (grp != NULL) ? lv_group_get_focused(grp) : NULL;
+        bool in_textarea = (focused != NULL) && lv_obj_check_type(focused, &lv_textarea_class);
 
         switch (kbd_evt.scancode)
         {
             case 0x52: /* Up Arrow */
+                lv_key = in_textarea ? LV_KEY_UP : LV_KEY_PREV;
+                break;
+
             case 0x50: /* Left Arrow */
-                lv_key = LV_KEY_PREV;
+                lv_key = in_textarea ? LV_KEY_LEFT : LV_KEY_PREV;
                 break;
 
             case 0x51: /* Down Arrow */
+                lv_key = in_textarea ? LV_KEY_DOWN : LV_KEY_NEXT;
+                break;
+
             case 0x4F: /* Right Arrow */
-                lv_key = LV_KEY_NEXT;
+                lv_key = in_textarea ? LV_KEY_RIGHT : LV_KEY_NEXT;
+                break;
+
+            case 0x4C: /* Delete */
+                lv_key = LV_KEY_DEL;
+                break;
+
+            case 0x4A: /* Home */
+                lv_key = LV_KEY_HOME;
+                break;
+
+            case 0x4D: /* End */
+                lv_key = LV_KEY_END;
                 break;
 
             case 0x28: /* Enter */

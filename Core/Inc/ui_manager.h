@@ -43,6 +43,11 @@ void UIManager_ShowScreen(UI_Screen_t screen);
  */
 void UIManager_OnDirReady(void);
 
+/**
+ * @brief Restore UI screen after a sandboxed app/script exits
+ */
+void UIManager_OnAppExit(void);
+
 #ifdef __cplusplus
 }
 #endif
