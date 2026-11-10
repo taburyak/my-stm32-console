@@ -43,6 +43,7 @@
 #include "app_loader.h"
 #include "uart_loader.h"
 #include "temp_sensor.h"
+#include "esp_companion.h"
 #include "ccmram.h"
 /* USER CODE END Includes */
 
@@ -83,7 +84,10 @@ SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim5;
 
+UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_uart4_rx;
+DMA_HandleTypeDef hdma_uart4_tx;
 
 HCD_HandleTypeDef hhcd_USB_OTG_FS;
 
@@ -135,6 +139,7 @@ static void MX_RTC_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_UART4_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -216,6 +221,7 @@ int main(void)
   MX_IWDG_Init();
   MX_TIM5_Init();
   MX_ADC1_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -659,6 +665,39 @@ static void MX_TIM5_Init(void)
 }
 
 /**
+  * @brief UART4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART4_Init(void)
+{
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 115200;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -736,6 +775,7 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* Configure DMA request hdma_memtomem_dma2_stream0 on DMA2_Stream0 */
   hdma_memtomem_dma2_stream0.Instance = DMA2_Stream0;
@@ -757,6 +797,12 @@ static void MX_DMA_Init(void)
   }
 
   /* DMA interrupt init */
+  /* DMA1_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream2_IRQn);
+  /* DMA1_Stream4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
@@ -1155,6 +1201,9 @@ void StartDefaultTask(void *argument)
   UIManager_Init();
   UARTLoader_Init();
 
+  /* 8.5. Initialize ESP32-C6 Companion Link on UART4 */
+  ESPCompanion_Init();
+
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;
 
@@ -1188,6 +1237,7 @@ void StartDefaultTask(void *argument)
           printf("[SHOT] Saved in-game screenshot: %s\r\n", shot_path);
         }
       }
+      ESPCompanion_Poll();
       AppLoader_Service();
       osDelay(20);
       continue;
@@ -1246,6 +1296,9 @@ void StartDefaultTask(void *argument)
       }
       continue;
     }
+
+    /* 3.5. Service ESP32-C6 Companion Co-Processor */
+    ESPCompanion_Poll();
 
     /* 4. Update Top Status Bar (RTC Clock & USB/SD indicators) */
     UIManager_Update();

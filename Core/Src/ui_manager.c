@@ -13,6 +13,7 @@
 #include "app_loader.h"
 #include "uart_loader.h"
 #include "temp_sensor.h"
+#include "esp_companion.h"
 #include "XPT2046_touch.h"
 #include "ili9341_simple.h"
 #include "lv_port_console.h"
@@ -193,6 +194,25 @@ static void Settings_SaveToEEPROM(void)
         .touch_max_y    = max_y
     };
     (void)AT24Cxx_Write(EEPROM_CFG_ADDR, &cfg, sizeof(cfg));
+}
+
+uint8_t UIManager_GetThemeId(void)
+{
+    return s_theme_id;
+}
+
+void UIManager_SetThemeId(uint8_t id)
+{
+    if (id < THEME_COUNT && id != s_theme_id)
+    {
+        s_theme_id = id;
+        Apply_Current_Theme();
+        Settings_SaveToEEPROM();
+        if (lbl_thm_val != NULL)
+        {
+            lv_label_set_text_fmt(lbl_thm_val, "Theme: %s", s_themes[s_theme_id].name);
+        }
+    }
 }
 
 /* ==========================================================================
@@ -467,8 +487,8 @@ void UIManager_Init(void)
 
     lbl_status_icons = lv_label_create(status_bar);
     lv_label_set_recolor(lbl_status_icons, true);
-    lv_obj_align(lbl_status_icons, LV_ALIGN_CENTER, 10, 0);
-    lv_label_set_text(lbl_status_icons, "#555555 SD K M G#");
+    lv_obj_align(lbl_status_icons, LV_ALIGN_CENTER, 4, 0);
+    lv_label_set_text(lbl_status_icons, "#555555 SD K M G W#");
 
     lbl_clock = lv_label_create(status_bar);
     lv_obj_set_style_text_color(lbl_clock, lv_color_hex(0xFFFFFF), 0);
@@ -539,9 +559,10 @@ void UIManager_Update(void)
     const char *c_kbd = USBHostManager_IsKeyboardReady()? "#00E5FF K#"  : "#555555 K#";
     const char *c_mse = USBHostManager_IsMouseReady()   ? "#00E5FF M#"  : "#555555 M#";
     const char *c_pad = USBHostManager_IsGamepadReady() ? "#FFAE00 G#"  : "#555555 G#";
+    const char *c_esp = ESPCompanion_IsConnected()       ? "#00E5FF W#"  : "#555555 W#";
     const char *c_hot = TempSensor_IsOverheated()       ? " #FF2222 HOT!#" : "";
 
-    lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s%s", c_sd, c_kbd, c_mse, c_pad, c_hot);
+    lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s %s%s", c_sd, c_kbd, c_mse, c_pad, c_esp, c_hot);
 }
 
 void UIManager_OnAppExit(void)
@@ -3187,23 +3208,24 @@ static void Build_SysInfo_Screen(void)
         snprintf(ext_str, sizeof(ext_str), "N/A");
     }
 
+    const char *esp_status = ESPCompanion_IsConnected() ? "ONLINE" : "OFFLINE";
+
     if (rep->sram_ok)
     {
         lv_label_set_text_fmt(info_lbl,
             "OS FW v%s | SDK API v%u (168 MHz)\n"
             "CPU: %lu%% | Heap: %lu KB | CCM: %s\n"
             "Temp MCU: %ld.%ld C | DS18B20: %s\n"
-            "SRAM: %lu KB [D:OK A:OK P:OK] %lu ms\n"
-            "SRAM Stress: %lu runs / %lu errs\n"
-            "SD: %lu/%lu MB | W25Q: 0x%06X",
+            "SRAM: %lu KB | SD: %lu/%lu MB\n"
+            "ESP32-C6: %s (TX:%lu RX:%lu)\n"
+            "W25Q: 0x%06X | Stress: %lu/%lu",
             CONSOLE_FW_VERSION_STR, (unsigned int)SDK_API_VERSION,
             (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
             rep->ccmram_ok ? "OK" : "ERR",
             (long)(mcu_dc / 10), (long)((mcu_dc >= 0 ? mcu_dc : -mcu_dc) % 10), ext_str,
-            (unsigned long)rep->sram_size_kb, (unsigned long)rep->sram_test_ms,
-            (unsigned long)rep->sram_stress_runs, (unsigned long)rep->sram_stress_errs,
-            (unsigned long)free_mb, (unsigned long)total_mb,
-            (unsigned int)rep->flash_id);
+            (unsigned long)rep->sram_size_kb, (unsigned long)free_mb, (unsigned long)total_mb,
+            esp_status, (unsigned long)ESPCompanion_GetTxPackets(), (unsigned long)ESPCompanion_GetRxPackets(),
+            (unsigned int)rep->flash_id, (unsigned long)rep->sram_stress_runs, (unsigned long)rep->sram_stress_errs);
     }
     else
     {

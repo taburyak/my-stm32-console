@@ -129,6 +129,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/script_engine.c
     Core/Src/uart_loader.c
     Core/Src/temp_sensor.c
+    Core/Src/esp_companion.c
 )
 
 # Add include paths

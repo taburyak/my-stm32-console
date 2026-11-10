@@ -48,6 +48,12 @@ void UIManager_OnDirReady(void);
  */
 void UIManager_OnAppExit(void);
 
+/**
+ * @brief Get and set current UI theme index (0..3)
+ */
+uint8_t UIManager_GetThemeId(void);
+void UIManager_SetThemeId(uint8_t id);
+
 #ifdef __cplusplus
 }
 #endif
