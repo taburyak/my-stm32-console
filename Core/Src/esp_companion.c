@@ -33,24 +33,24 @@ static void Process_Incoming_Line(const char *line)
         return;
     }
 
-    /* Heartbeat frame: ESP32C6:HB or ESP32:HB */
-    if (strstr(line, "ESP32C6:HB") != NULL || strstr(line, "ESP32:HB") != NULL)
+    /* Remote theme control from ESP32 BOOT button: ESP32:SET_THM=<idx> */
+    const char *thm_ptr = strstr(line, "THM=");
+    if (thm_ptr != NULL)
     {
+        int thm_val = atoi(thm_ptr + 4);
+        if (thm_val >= 0 && thm_val < 4)
+        {
+            UIManager_SetThemeId((uint8_t)thm_val);
+        }
         s_is_connected = true;
         s_last_rx_tick = HAL_GetTick();
         s_rx_packets++;
         return;
     }
 
-    /* Remote theme control from ESP32 BOOT button: ESP32:SET_THM=<idx> */
-    const char *thm_ptr = strstr(line, "ESP32:SET_THM=");
-    if (thm_ptr != NULL)
+    /* Heartbeat frame: ESP32C6:HB */
+    if (strstr(line, "ESP") != NULL || strstr(line, ":HB") != NULL || strstr(line, "C6:") != NULL)
     {
-        int thm_val = atoi(thm_ptr + 14);
-        if (thm_val >= 0 && thm_val < 4)
-        {
-            UIManager_SetThemeId((uint8_t)thm_val);
-        }
         s_is_connected = true;
         s_last_rx_tick = HAL_GetTick();
         s_rx_packets++;
@@ -68,8 +68,25 @@ void ESPCompanion_Init(void)
     s_line_len     = 0U;
     memset(s_rx_dma_buf, 0, sizeof(s_rx_dma_buf));
 
+    /* Ensure PA1 (UART4_RX) has GPIO_NOPULL as per CubeMX default */
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_1;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
     if (huart4.Instance != NULL && huart4.hdmarx != NULL)
     {
+        /* Clear any initial ORE/FE/NE flags left from boot/connecting wires */
+        volatile uint32_t sr = huart4.Instance->SR;
+        volatile uint32_t dr = huart4.Instance->DR;
+        (void)sr;
+        (void)dr;
+        huart4.ErrorCode = HAL_UART_ERROR_NONE;
+        huart4.RxState = HAL_UART_STATE_READY;
+
         (void)HAL_UART_Receive_DMA(&huart4, s_rx_dma_buf, sizeof(s_rx_dma_buf));
     }
 }
@@ -79,6 +96,16 @@ void ESPCompanion_Poll(void)
     if (huart4.Instance == NULL || huart4.hdmarx == NULL)
     {
         return;
+    }
+
+    /* Auto-recovery: if overrun occurred, read DR and re-enable DMAR */
+    if ((huart4.Instance->SR & USART_SR_ORE) != 0U)
+    {
+        volatile uint32_t sr = huart4.Instance->SR;
+        volatile uint32_t dr = huart4.Instance->DR;
+        (void)sr;
+        (void)dr;
+        huart4.Instance->CR3 |= USART_CR3_DMAR;
     }
 
     /* 1. Read newly received bytes from circular DMA buffer */
@@ -93,7 +120,8 @@ void ESPCompanion_Poll(void)
 
     while (s_rx_read_ptr != dma_head)
     {
-        char c = (char)s_rx_dma_buf[s_rx_read_ptr];
+        /* Mask bit 7 (7-bit ASCII) to tolerate stop-bit edge slew on jumper wires */
+        char c = (char)(s_rx_dma_buf[s_rx_read_ptr] & 0x7FU);
         s_rx_read_ptr = (s_rx_read_ptr + 1U) % sizeof(s_rx_dma_buf);
 
         if (c == '\n' || c == '\r')
@@ -105,8 +133,12 @@ void ESPCompanion_Poll(void)
                 s_line_len = 0U;
             }
         }
-        else if (s_line_len < (sizeof(s_line_buf) - 1U))
+        else if ((uint8_t)c >= 0x20U && (uint8_t)c <= 0x7EU)
         {
+            if (s_line_len >= (sizeof(s_line_buf) - 1U))
+            {
+                s_line_len = 0U;
+            }
             s_line_buf[s_line_len++] = c;
         }
     }
@@ -140,20 +172,10 @@ void ESPCompanion_Poll(void)
 
         if (len > 0)
         {
-            /* If TX DMA is ready, transmit asynchronously; otherwise fallback to polling */
-            if (huart4.gState == HAL_UART_STATE_READY)
+            huart4.gState = HAL_UART_STATE_READY;
+            if (HAL_UART_Transmit(&huart4, (uint8_t *)s_tx_buf, (uint16_t)len, 10U) == HAL_OK)
             {
-                if (HAL_UART_Transmit_DMA(&huart4, (uint8_t *)s_tx_buf, (uint16_t)len) == HAL_OK)
-                {
-                    s_tx_packets++;
-                }
-            }
-            else if (huart4.gState != HAL_UART_STATE_BUSY_TX)
-            {
-                if (HAL_UART_Transmit(&huart4, (uint8_t *)s_tx_buf, (uint16_t)len, 20U) == HAL_OK)
-                {
-                    s_tx_packets++;
-                }
+                s_tx_packets++;
             }
         }
     }
@@ -172,4 +194,18 @@ uint32_t ESPCompanion_GetRxPackets(void)
 uint32_t ESPCompanion_GetTxPackets(void)
 {
     return s_tx_packets;
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == UART4)
+    {
+        volatile uint32_t sr = huart->Instance->SR;
+        volatile uint32_t dr = huart->Instance->DR;
+        (void)sr;
+        (void)dr;
+        huart->ErrorCode = HAL_UART_ERROR_NONE;
+        huart->RxState = HAL_UART_STATE_READY;
+        (void)HAL_UART_Receive_DMA(huart, s_rx_dma_buf, sizeof(s_rx_dma_buf));
+    }
 }

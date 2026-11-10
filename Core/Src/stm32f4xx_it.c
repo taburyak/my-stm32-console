@@ -341,11 +341,25 @@ void SDIO_IRQHandler(void)
 void UART4_IRQHandler(void)
 {
   /* USER CODE BEGIN UART4_IRQn 0 */
-
+  /* Clear error flags (PE, FE, NE, ORE) by reading SR and DR without letting HAL abort Rx */
+  volatile uint32_t isrflags = huart4.Instance->SR;
+  if ((isrflags & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) != 0U)
+  {
+    volatile uint32_t dummy = huart4.Instance->DR;
+    (void)dummy;
+    huart4.ErrorCode = HAL_UART_ERROR_NONE;
+    huart4.RxState = HAL_UART_STATE_BUSY_RX;
+    huart4.Instance->CR3 |= USART_CR3_DMAR;
+  }
   /* USER CODE END UART4_IRQn 0 */
   HAL_UART_IRQHandler(&huart4);
   /* USER CODE BEGIN UART4_IRQn 1 */
-
+  /* If HAL disabled DMAR, restore circular DMA reception */
+  if ((huart4.Instance->CR3 & USART_CR3_DMAR) == 0U)
+  {
+    huart4.RxState = HAL_UART_STATE_BUSY_RX;
+    huart4.Instance->CR3 |= USART_CR3_DMAR;
+  }
   /* USER CODE END UART4_IRQn 1 */
 }
 
