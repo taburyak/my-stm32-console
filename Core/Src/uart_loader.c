@@ -1,4 +1,5 @@
 #include "uart_loader.h"
+#include "stm32f4xx_ll_usart.h"
 #include "app_loader.h"
 #include "memory_map.h"
 #include "ili9341_simple.h"
@@ -61,19 +62,20 @@ static volatile bool    s_screenshot_pending = false;
 
 static void uart_clear_errors(void)
 {
-    volatile uint32_t sr = USART3->SR;
-    if ((sr & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) != 0U)
+    if (LL_USART_IsActiveFlag_ORE(USART3) ||
+        LL_USART_IsActiveFlag_NE(USART3)  ||
+        LL_USART_IsActiveFlag_FE(USART3)  ||
+        LL_USART_IsActiveFlag_PE(USART3))
     {
-        volatile uint32_t dr = USART3->DR;
-        (void)dr;
+        LL_USART_ClearFlag_ORE(USART3);
     }
 }
 
 static void uart_putc(uint8_t b)
 {
-    while ((USART3->SR & USART_SR_TXE) == 0U) {}
-    USART3->DR = b;
-    while ((USART3->SR & USART_SR_TC) == 0U) {}
+    while (!LL_USART_IsActiveFlag_TXE(USART3)) {}
+    LL_USART_TransmitData8(USART3, b);
+    while (!LL_USART_IsActiveFlag_TC(USART3)) {}
 }
 
 static void uart_puts_raw(const char *s)
@@ -89,16 +91,16 @@ static bool uart_getc_timeout(uint8_t *out, uint32_t timeout_ms)
     uint32_t t0 = HAL_GetTick();
     for (;;)
     {
-        uint32_t sr = USART3->SR;
-        if ((sr & USART_SR_RXNE) != 0U)
+        if (LL_USART_IsActiveFlag_RXNE(USART3))
         {
-            *out = (uint8_t)(USART3->DR & 0xFFU);
+            *out = LL_USART_ReceiveData8(USART3);
             return true;
         }
-        if ((sr & (USART_SR_ORE | USART_SR_FE | USART_SR_NE)) != 0U)
+        if (LL_USART_IsActiveFlag_ORE(USART3) ||
+            LL_USART_IsActiveFlag_FE(USART3)  ||
+            LL_USART_IsActiveFlag_NE(USART3))
         {
-            volatile uint32_t dummy = USART3->DR;
-            (void)dummy;
+            LL_USART_ClearFlag_ORE(USART3);
         }
         if ((HAL_GetTick() - t0) >= timeout_ms)
         {

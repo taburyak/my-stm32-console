@@ -18,7 +18,8 @@ typedef enum {
     UI_SCREEN_FILES,         /* SD Card File & Directory Explorer (+ BMP & TXT viewer) */
     UI_SCREEN_GAMES,         /* Games launcher: built-in ROM game + games/<name>.bin icon tiles */
     UI_SCREEN_SETTINGS,      /* RTC Clock, Audio Mute & EEPROM Settings */
-    UI_SCREEN_SYSINFO        /* Hardware POST & Memory Diagnostics */
+    UI_SCREEN_SYSINFO,       /* Hardware POST & Memory Diagnostics */
+    UI_SCREEN_WIFI           /* Wi-Fi Setup & Network Status */
 } UI_Screen_t;
 
 /**
@@ -53,6 +54,17 @@ void UIManager_OnAppExit(void);
  */
 uint8_t UIManager_GetThemeId(void);
 void UIManager_SetThemeId(uint8_t id);
+
+/**
+ * @brief Set full hardware RTC date and time (e.g. from NTP sync)
+ */
+void UIManager_SetDateTime(uint16_t year, uint8_t month, uint8_t date, uint8_t weekday,
+                           uint8_t hours, uint8_t minutes, uint8_t seconds);
+
+/**
+ * @brief Open interactive Wi-Fi setup dialog
+ */
+void UIManager_OpenWifiSetup(void);
 
 #ifdef __cplusplus
 }

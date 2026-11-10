@@ -26,6 +26,55 @@ void ESPCompanion_Poll(void);
 bool ESPCompanion_IsConnected(void);
 
 /**
+ * @brief Returns true if ESP32-C6 is connected to a Wi-Fi AP and has an IP
+ */
+bool ESPCompanion_IsWifiConnected(void);
+
+/**
+ * @brief Returns Wi-Fi connection status:
+ *        1 = Connected (AP assigned IP)
+ *        2 = Connecting / Reconnecting in progress
+ *        0 = Disconnected / Idle
+ *       -1 = Authentication / connection failed
+ */
+int8_t ESPCompanion_GetWifiStatus(void);
+
+/**
+ * @brief Returns the ESP32-C6 Wi-Fi IP address string (e.g. "192.168.1.45" or "0.0.0.0")
+ */
+const char *ESPCompanion_GetWifiIp(void);
+
+/**
+ * @brief Returns the connected Wi-Fi SSID
+ */
+const char *ESPCompanion_GetWifiSsid(void);
+
+/**
+ * @brief Returns RSSI signal strength in dBm (e.g. -65)
+ */
+int8_t ESPCompanion_GetWifiRssi(void);
+
+/**
+ * @brief Send Wi-Fi credentials to ESP32-C6 (which stores them in NVS and connects)
+ */
+bool ESPCompanion_SendWifiCredentials(const char *ssid, const char *pass);
+
+/**
+ * @brief Load Wi-Fi credentials from SD:/system/wifi.cfg and send to ESP32-C6
+ */
+bool ESPCompanion_LoadAndSendWifiFromSD(void);
+
+/**
+ * @brief Save Wi-Fi credentials to SD:/system/wifi.cfg
+ */
+bool ESPCompanion_SaveWifiToSD(const char *ssid, const char *pass);
+
+/**
+ * @brief Read Wi-Fi credentials from SD:/system/wifi.cfg into caller buffers
+ */
+bool ESPCompanion_ReadWifiFromSD(char *ssid_out, size_t ssid_max, char *pass_out, size_t pass_max);
+
+/**
  * @brief Diagnostic packet counters
  */
 uint32_t ESPCompanion_GetRxPackets(void);

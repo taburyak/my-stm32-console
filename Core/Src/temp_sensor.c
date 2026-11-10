@@ -1,5 +1,6 @@
 #include "temp_sensor.h"
 #include "main.h"
+#include "stm32f4xx_ll_adc.h"
 #include "ds18b20.h"
 #include "beeper.h"
 #include "cmsis_os2.h"
@@ -42,8 +43,9 @@ static uint16_t adc1_read_channel(uint32_t channel)
 
 int32_t TempSensor_ReadMcuDeciC(void)
 {
-    /* Ensure TSVREFE bit in ADC->CCR is enabled */
-    ADC->CCR |= ADC_CCR_TSVREFE;
+    /* Enable internal temperature sensor & VREFINT path via LL API */
+    LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(hadc1.Instance),
+                                   LL_ADC_PATH_INTERNAL_TEMPSENSOR | LL_ADC_PATH_INTERNAL_VREFINT);
 
     /* Average 4 samples of VREFINT (1.21V typical on STM32F407) and TEMPSENSOR */
     uint32_t sum_vref = 0U;
@@ -81,7 +83,8 @@ int32_t TempSensor_ReadMcuDeciC(void)
 
 bool TempSensor_Init(void)
 {
-    ADC->CCR |= ADC_CCR_TSVREFE;
+    LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(hadc1.Instance),
+                                   LL_ADC_PATH_INTERNAL_TEMPSENSOR | LL_ADC_PATH_INTERNAL_VREFINT);
     (void)TempSensor_ReadMcuDeciC();
 
     s_ext_detected = Ds18b20_Init();

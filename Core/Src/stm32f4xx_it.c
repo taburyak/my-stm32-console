@@ -22,6 +22,7 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stm32f4xx_ll_usart.h"
 #include "tusb.h"
 #include "status_led.h"
 #include "beeper.h"
@@ -287,17 +288,18 @@ void TIM4_IRQHandler(void)
 void USART3_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_IRQn 0 */
-  uint32_t sr = USART3->SR;
-  if ((sr & USART_SR_RXNE) != 0U)
+  if (LL_USART_IsActiveFlag_RXNE(USART3))
   {
-    uint8_t b = (uint8_t)(USART3->DR & 0xFFU);
+    uint8_t b = LL_USART_ReceiveData8(USART3);
     UARTLoader_OnRxByte(b);
     return;
   }
-  if ((sr & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) != 0U)
+  if (LL_USART_IsActiveFlag_ORE(USART3) ||
+      LL_USART_IsActiveFlag_NE(USART3)  ||
+      LL_USART_IsActiveFlag_FE(USART3)  ||
+      LL_USART_IsActiveFlag_PE(USART3))
   {
-    volatile uint32_t dummy = USART3->DR;
-    (void)dummy;
+    LL_USART_ClearFlag_ORE(USART3);
     return;
   }
   /* USER CODE END USART3_IRQn 0 */
@@ -341,24 +343,25 @@ void SDIO_IRQHandler(void)
 void UART4_IRQHandler(void)
 {
   /* USER CODE BEGIN UART4_IRQn 0 */
-  /* Clear error flags (PE, FE, NE, ORE) by reading SR and DR without letting HAL abort Rx */
-  volatile uint32_t isrflags = huart4.Instance->SR;
-  if ((isrflags & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) != 0U)
+  /* Clear error flags (PE, FE, NE, ORE) via LL API without letting HAL abort circular DMA Rx */
+  if (LL_USART_IsActiveFlag_ORE(huart4.Instance) ||
+      LL_USART_IsActiveFlag_NE(huart4.Instance)  ||
+      LL_USART_IsActiveFlag_FE(huart4.Instance)  ||
+      LL_USART_IsActiveFlag_PE(huart4.Instance))
   {
-    volatile uint32_t dummy = huart4.Instance->DR;
-    (void)dummy;
+    LL_USART_ClearFlag_ORE(huart4.Instance);
     huart4.ErrorCode = HAL_UART_ERROR_NONE;
-    huart4.RxState = HAL_UART_STATE_BUSY_RX;
-    huart4.Instance->CR3 |= USART_CR3_DMAR;
+    huart4.RxState   = HAL_UART_STATE_BUSY_RX;
+    LL_USART_EnableDMAReq_RX(huart4.Instance);
   }
   /* USER CODE END UART4_IRQn 0 */
   HAL_UART_IRQHandler(&huart4);
   /* USER CODE BEGIN UART4_IRQn 1 */
-  /* If HAL disabled DMAR, restore circular DMA reception */
-  if ((huart4.Instance->CR3 & USART_CR3_DMAR) == 0U)
+  /* Ensure circular DMA reception remains enabled */
+  if (!LL_USART_IsEnabledDMAReq_RX(huart4.Instance))
   {
     huart4.RxState = HAL_UART_STATE_BUSY_RX;
-    huart4.Instance->CR3 |= USART_CR3_DMAR;
+    LL_USART_EnableDMAReq_RX(huart4.Instance);
   }
   /* USER CODE END UART4_IRQn 1 */
 }

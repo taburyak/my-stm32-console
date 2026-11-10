@@ -1203,6 +1203,7 @@ void StartDefaultTask(void *argument)
 
   /* 8.5. Initialize ESP32-C6 Companion Link on UART4 */
   ESPCompanion_Init();
+  (void)ESPCompanion_LoadAndSendWifiFromSD();
 
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;

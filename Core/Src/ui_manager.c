@@ -78,6 +78,9 @@ static lv_obj_t * s_editor_kb       = NULL;
 static lv_obj_t * s_editor_save_lbl = NULL;
 static lv_obj_t * s_fname_status_lbl = NULL;
 static lv_obj_t * s_ext_btns[6]     = {NULL};
+static lv_obj_t * s_wifi_ssid_ta    = NULL;
+static lv_obj_t * s_wifi_pass_ta    = NULL;
+static lv_obj_t * s_wifi_stat_lbl   = NULL;
 static char       s_editor_path[STORAGE_MAX_PATH_LEN];
 static bool       s_editor_dirty    = false;
 static char       s_action_file_path[STORAGE_MAX_PATH_LEN];
@@ -132,6 +135,7 @@ static void Build_Files_Screen(void);
 static void Build_Games_Screen(void);
 static void Build_Settings_Screen(void);
 static void Build_SysInfo_Screen(void);
+static void Build_Wifi_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
 
@@ -431,6 +435,33 @@ static void RTC_SetTimeManual(uint8_t hours, uint8_t minutes)
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F4U);
 }
 
+void UIManager_SetDateTime(uint16_t year, uint8_t month, uint8_t date, uint8_t weekday,
+                           uint8_t hours, uint8_t minutes, uint8_t seconds)
+{
+    RTC_TimeTypeDef sTime = {0};
+    sTime.Hours          = hours % 24U;
+    sTime.Minutes        = minutes % 60U;
+    sTime.Seconds        = seconds % 60U;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
+    RTC_DateTypeDef sDate = {0};
+    sDate.Year           = (year >= 2000U) ? (uint8_t)(year - 2000U) : (uint8_t)(year % 100U);
+    sDate.Month          = (month >= 1U && month <= 12U) ? month : RTC_MONTH_JANUARY;
+    sDate.Date           = (date >= 1U && date <= 31U) ? date : 1U;
+    sDate.WeekDay        = (weekday >= 1U && weekday <= 7U) ? weekday : RTC_WEEKDAY_MONDAY;
+
+    HAL_PWR_EnableBkUpAccess();
+    (void)HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    (void)HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F4U);
+}
+
+void UIManager_OpenWifiSetup(void)
+{
+    s_pending_screen = (int8_t)UI_SCREEN_WIFI;
+}
+
 /* ==========================================================================
  * Global Key Event Handler (ESC / Gamepad B -> Back to Home Screen)
  * ========================================================================== */
@@ -559,10 +590,45 @@ void UIManager_Update(void)
     const char *c_kbd = USBHostManager_IsKeyboardReady()? "#00E5FF K#"  : "#555555 K#";
     const char *c_mse = USBHostManager_IsMouseReady()   ? "#00E5FF M#"  : "#555555 M#";
     const char *c_pad = USBHostManager_IsGamepadReady() ? "#FFAE00 G#"  : "#555555 G#";
-    const char *c_esp = ESPCompanion_IsConnected()       ? "#00E5FF W#"  : "#555555 W#";
+
+    const char *c_esp;
+    if (!ESPCompanion_IsConnected())
+    {
+        c_esp = "#555555 W#"; /* Gray: module offline */
+    }
+    else if (ESPCompanion_IsWifiConnected())
+    {
+        c_esp = "#00FF66 W#"; /* Bright Green: connected to Wi-Fi AP + IP assigned */
+    }
+    else if (ESPCompanion_GetWifiStatus() == 2)
+    {
+        c_esp = "#00E5FF W#"; /* Cyan: connecting in progress */
+    }
+    else
+    {
+        c_esp = "#FFAE00 W#"; /* Amber: module online on UART4, but Wi-Fi not connected */
+    }
+
     const char *c_hot = TempSensor_IsOverheated()       ? " #FF2222 HOT!#" : "";
 
     lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s %s%s", c_sd, c_kbd, c_mse, c_pad, c_esp, c_hot);
+
+    if (current_screen == UI_SCREEN_WIFI && s_wifi_stat_lbl != NULL)
+    {
+        if (ESPCompanion_IsWifiConnected())
+        {
+            lv_label_set_text_fmt(s_wifi_stat_lbl, "#00FF66 Connected:# %s (%s, %ddBm)",
+                                  ESPCompanion_GetWifiSsid(), ESPCompanion_GetWifiIp(), (int)ESPCompanion_GetWifiRssi());
+        }
+        else if (ESPCompanion_GetWifiStatus() == 2)
+        {
+            lv_label_set_text_fmt(s_wifi_stat_lbl, "#00E5FF Connecting to %s...#", ESPCompanion_GetWifiSsid());
+        }
+        else if (ESPCompanion_GetWifiStatus() == -1)
+        {
+            lv_label_set_text_fmt(s_wifi_stat_lbl, "#FF5555 Connection failed:# %s", ESPCompanion_GetWifiSsid());
+        }
+    }
 }
 
 void UIManager_OnAppExit(void)
@@ -589,6 +655,9 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_editor_kb        = NULL;
     s_editor_save_lbl  = NULL;
     s_fname_status_lbl = NULL;
+    s_wifi_ssid_ta     = NULL;
+    s_wifi_pass_ta     = NULL;
+    s_wifi_stat_lbl    = NULL;
     memset(s_ext_btns, 0, sizeof(s_ext_btns));
     games_grid_obj     = NULL;
     lbl_time_set       = NULL;
@@ -628,6 +697,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
         case UI_SCREEN_SYSINFO:
             lv_label_set_text(lbl_screen_title, "System Info");
             Build_SysInfo_Screen();
+            break;
+
+        case UI_SCREEN_WIFI:
+            lv_label_set_text(lbl_screen_title, "Wi-Fi Setup");
+            Build_Wifi_Screen();
             break;
 
         default:
@@ -2983,6 +3057,11 @@ static void settings_action_btn_cb(lv_event_t * e)
         s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
         return;
     }
+    else if (action == 9) /* Wi-Fi Setup Wizard */
+    {
+        UIManager_OpenWifiSetup();
+        return;
+    }
 
     if (lbl_time_set != NULL)
     {
@@ -3023,6 +3102,249 @@ static lv_obj_t* Create_Setting_Btn(lv_obj_t *parent, int16_t x, int16_t y, int1
     return btn;
 }
 
+/* ==========================================================================
+ * Wi-Fi Setup Dialog (Interactive SSID/Pass Entry + SD:/system/wifi.cfg)
+ * ========================================================================== */
+
+static void wifi_ta_focus_cb(lv_event_t * e)
+{
+    lv_obj_t * ta = lv_event_get_target(e);
+    if (s_editor_kb != NULL && ta != NULL)
+    {
+        lv_keyboard_set_textarea(s_editor_kb, ta);
+    }
+}
+
+static void wifi_connect_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
+        return;
+    }
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED && lv_event_get_code(e) != LV_EVENT_READY)
+    {
+        return;
+    }
+    if (s_wifi_ssid_ta == NULL || s_wifi_pass_ta == NULL)
+    {
+        return;
+    }
+
+    const char *ssid = lv_textarea_get_text(s_wifi_ssid_ta);
+    while (ssid != NULL && *ssid == ' ') ssid++;
+    const char *pass = lv_textarea_get_text(s_wifi_pass_ta);
+
+    if (ssid != NULL && ssid[0] != '\0')
+    {
+        (void)ESPCompanion_SaveWifiToSD(ssid, pass);
+        if (ESPCompanion_SendWifiCredentials(ssid, pass))
+        {
+            if (s_wifi_stat_lbl != NULL)
+            {
+                lv_label_set_text_fmt(s_wifi_stat_lbl, "#00E5FF Connecting to %s...#", ssid);
+            }
+            Beeper_BootMelody();
+        }
+        else
+        {
+            if (s_wifi_stat_lbl != NULL)
+            {
+                lv_label_set_text(s_wifi_stat_lbl, "#FF5555 Error: ESP32 module is offline!#");
+            }
+            Beeper_ErrorAlert();
+        }
+    }
+    else
+    {
+        if (s_wifi_stat_lbl != NULL)
+        {
+            lv_label_set_text(s_wifi_stat_lbl, "#FF5555 Error: SSID cannot be empty!#");
+        }
+        Beeper_ErrorAlert();
+    }
+}
+
+static void wifi_load_sd_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
+        return;
+    }
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+
+    char ssid[34] = {0};
+    char pass[64] = {0};
+    if (ESPCompanion_ReadWifiFromSD(ssid, sizeof(ssid), pass, sizeof(pass)))
+    {
+        if (s_wifi_ssid_ta != NULL) lv_textarea_set_text(s_wifi_ssid_ta, ssid);
+        if (s_wifi_pass_ta != NULL) lv_textarea_set_text(s_wifi_pass_ta, pass);
+        if (s_wifi_stat_lbl != NULL)
+        {
+            lv_label_set_text_fmt(s_wifi_stat_lbl, "#90A4AE Loaded from SD: %s#", ssid);
+        }
+        Beeper_Beep(15);
+    }
+    else
+    {
+        if (s_wifi_stat_lbl != NULL)
+        {
+            lv_label_set_text(s_wifi_stat_lbl, "#FF5555 SD:/system/wifi.cfg not found!#");
+        }
+        Beeper_ErrorAlert();
+    }
+}
+
+static void wifi_back_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED ||
+        (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC))
+    {
+        Beeper_Click();
+        s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
+    }
+}
+
+static void Build_Wifi_Screen(void)
+{
+    uint32_t accent_hex = s_themes[s_theme_id % THEME_COUNT].title_col;
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL) lv_group_remove_all_objs(grp);
+
+    /* Row 0: Top Bar with Back, Title, Load SD, and Connect */
+    lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_back, 54, 24);
+    lv_obj_set_pos(btn_back, 6, 4);
+    lv_obj_t * lbl_b = lv_label_create(btn_back);
+    lv_label_set_text(lbl_b, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(lbl_b);
+    lv_obj_add_event_cb(btn_back, wifi_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_back, wifi_back_btn_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t * title_lbl = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(title_lbl, lv_color_hex(accent_hex), 0);
+    lv_obj_set_pos(title_lbl, 66, 8);
+    lv_label_set_text(title_lbl, "Wi-Fi Setup");
+
+    lv_obj_t * btn_sd = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_sd, 74, 24);
+    lv_obj_set_pos(btn_sd, 146, 4);
+    lv_obj_set_style_bg_color(btn_sd, lv_color_hex(0x37474F), 0);
+    lv_obj_t * lbl_sd = lv_label_create(btn_sd);
+    lv_label_set_text(lbl_sd, LV_SYMBOL_SD_CARD " Load");
+    lv_obj_center(lbl_sd);
+    lv_obj_add_event_cb(btn_sd, wifi_load_sd_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_sd, wifi_load_sd_btn_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t * btn_conn = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_conn, 88, 24);
+    lv_obj_set_pos(btn_conn, 226, 4);
+    lv_obj_set_style_bg_color(btn_conn, lv_color_hex(0x00A859), 0);
+    lv_obj_t * lbl_c = lv_label_create(btn_conn);
+    lv_label_set_text(lbl_c, LV_SYMBOL_OK " Connect");
+    lv_obj_center(lbl_c);
+    lv_obj_add_event_cb(btn_conn, wifi_connect_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_conn, wifi_connect_btn_cb, LV_EVENT_KEY, NULL);
+
+    /* Status Banner */
+    s_wifi_stat_lbl = lv_label_create(workspace_cont);
+    lv_label_set_recolor(s_wifi_stat_lbl, true);
+    lv_obj_set_pos(s_wifi_stat_lbl, 8, 30);
+    lv_obj_set_width(s_wifi_stat_lbl, 304);
+    lv_label_set_long_mode(s_wifi_stat_lbl, LV_LABEL_LONG_DOT);
+
+    if (ESPCompanion_IsWifiConnected())
+    {
+        lv_label_set_text_fmt(s_wifi_stat_lbl, "#00FF66 Connected:# %s (%s, %ddBm)",
+                              ESPCompanion_GetWifiSsid(), ESPCompanion_GetWifiIp(), (int)ESPCompanion_GetWifiRssi());
+    }
+    else if (ESPCompanion_GetWifiStatus() == 2)
+    {
+        lv_label_set_text_fmt(s_wifi_stat_lbl, "#00E5FF Connecting to %s...#", ESPCompanion_GetWifiSsid());
+    }
+    else if (ESPCompanion_GetWifiStatus() == -1)
+    {
+        lv_label_set_text_fmt(s_wifi_stat_lbl, "#FF5555 Connection failed:# %s", ESPCompanion_GetWifiSsid());
+    }
+    else
+    {
+        lv_label_set_text(s_wifi_stat_lbl, "#90A4AE Enter credentials or load from SD card:#");
+    }
+
+    /* Input: SSID */
+    lv_obj_t * lbl_s = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl_s, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_pos(lbl_s, 8, 50);
+    lv_label_set_text(lbl_s, "SSID:");
+
+    s_wifi_ssid_ta = lv_textarea_create(workspace_cont);
+    lv_obj_set_size(s_wifi_ssid_ta, 240, 26);
+    lv_obj_set_pos(s_wifi_ssid_ta, 70, 46);
+    lv_textarea_set_one_line(s_wifi_ssid_ta, true);
+    lv_textarea_set_max_length(s_wifi_ssid_ta, 32U);
+    lv_obj_set_style_pad_all(s_wifi_ssid_ta, 4, 0);
+    lv_obj_set_style_bg_color(s_wifi_ssid_ta, lv_color_hex(0x0E131D), 0);
+    lv_obj_set_style_text_color(s_wifi_ssid_ta, lv_color_hex(0xE8F0FE), 0);
+    Style_Editor_Cursor(s_wifi_ssid_ta, accent_hex);
+
+    /* Input: Password */
+    lv_obj_t * lbl_p = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl_p, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_pos(lbl_p, 8, 78);
+    lv_label_set_text(lbl_p, "Pass:");
+
+    s_wifi_pass_ta = lv_textarea_create(workspace_cont);
+    lv_obj_set_size(s_wifi_pass_ta, 240, 26);
+    lv_obj_set_pos(s_wifi_pass_ta, 70, 74);
+    lv_textarea_set_one_line(s_wifi_pass_ta, true);
+    lv_textarea_set_max_length(s_wifi_pass_ta, 63U);
+    lv_obj_set_style_pad_all(s_wifi_pass_ta, 4, 0);
+    lv_obj_set_style_bg_color(s_wifi_pass_ta, lv_color_hex(0x0E131D), 0);
+    lv_obj_set_style_text_color(s_wifi_pass_ta, lv_color_hex(0xE8F0FE), 0);
+    Style_Editor_Cursor(s_wifi_pass_ta, accent_hex);
+
+    /* Prepopulate from SD card or current connected SSID */
+    char init_ssid[34] = {0};
+    char init_pass[64] = {0};
+    if (ESPCompanion_ReadWifiFromSD(init_ssid, sizeof(init_ssid), init_pass, sizeof(init_pass)))
+    {
+        lv_textarea_set_text(s_wifi_ssid_ta, init_ssid);
+        lv_textarea_set_text(s_wifi_pass_ta, init_pass);
+    }
+    else if (ESPCompanion_GetWifiSsid()[0] != '\0' && strcmp(ESPCompanion_GetWifiSsid(), "none") != 0)
+    {
+        lv_textarea_set_text(s_wifi_ssid_ta, ESPCompanion_GetWifiSsid());
+    }
+
+    lv_obj_add_event_cb(s_wifi_ssid_ta, wifi_ta_focus_cb, LV_EVENT_FOCUSED, NULL);
+    lv_obj_add_event_cb(s_wifi_ssid_ta, wifi_connect_btn_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(s_wifi_pass_ta, wifi_ta_focus_cb, LV_EVENT_FOCUSED, NULL);
+    lv_obj_add_event_cb(s_wifi_pass_ta, wifi_connect_btn_cb, LV_EVENT_READY, NULL);
+
+    /* Touch Keyboard (bottom) */
+    s_editor_kb = lv_keyboard_create(workspace_cont);
+    lv_obj_set_size(s_editor_kb, 312, 104);
+    lv_obj_align(s_editor_kb, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_keyboard_set_textarea(s_editor_kb, s_wifi_ssid_ta);
+
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, s_wifi_ssid_ta);
+        lv_group_add_obj(grp, s_wifi_pass_ta);
+        lv_group_add_obj(grp, btn_back);
+        lv_group_add_obj(grp, btn_sd);
+        lv_group_add_obj(grp, btn_conn);
+        lv_group_focus_obj(s_wifi_ssid_ta);
+    }
+}
+
 static void Build_Settings_Screen(void)
 {
     uint8_t sec_dummy = 0;
@@ -3031,23 +3353,23 @@ static void Build_Settings_Screen(void)
     /* Row 1: RTC Clock adjustment */
     lbl_time_set = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(lbl_time_set, lv_color_hex(0x00FF66), 0);
-    lv_obj_set_pos(lbl_time_set, 12, 12);
+    lv_obj_set_pos(lbl_time_set, 12, 10);
     lv_label_set_text_fmt(lbl_time_set, "RTC: %02u:%02u", edit_hours, edit_minutes);
 
-    Create_Setting_Btn(workspace_cont, 98,  6, 44, 28, "H+", 1);
-    Create_Setting_Btn(workspace_cont, 146, 6, 44, 28, "H-", 2);
-    Create_Setting_Btn(workspace_cont, 194, 6, 44, 28, "M+", 3);
-    Create_Setting_Btn(workspace_cont, 242, 6, 66, 28, LV_SYMBOL_OK " Set", 5);
+    Create_Setting_Btn(workspace_cont, 98,  6, 44, 26, "H+", 1);
+    Create_Setting_Btn(workspace_cont, 146, 6, 44, 26, "H-", 2);
+    Create_Setting_Btn(workspace_cont, 194, 6, 44, 26, "M+", 3);
+    Create_Setting_Btn(workspace_cont, 242, 6, 66, 26, LV_SYMBOL_OK " Set", 5);
 
     /* Row 2: Audio Mute + Stick Deadzone */
     lv_obj_t * snd_lbl = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(snd_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_pos(snd_lbl, 12, 48);
+    lv_obj_set_pos(snd_lbl, 12, 42);
     lv_label_set_text(snd_lbl, LV_SYMBOL_AUDIO " Sound:");
 
     lv_obj_t * snd_sw = lv_switch_create(workspace_cont);
-    lv_obj_set_size(snd_sw, 46, 24);
-    lv_obj_set_pos(snd_sw, 88, 45);
+    lv_obj_set_size(snd_sw, 44, 22);
+    lv_obj_set_pos(snd_sw, 88, 39);
     if (!Beeper_IsMuted())
     {
         lv_obj_add_state(snd_sw, LV_STATE_CHECKED);
@@ -3058,28 +3380,48 @@ static void Build_Settings_Screen(void)
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL) lv_group_add_obj(grp, snd_sw);
 
-    lv_obj_t * btn_dz = Create_Setting_Btn(workspace_cont, 152, 42, 156, 30, "", 6);
+    lv_obj_t * btn_dz = Create_Setting_Btn(workspace_cont, 146, 36, 162, 28, "", 6);
     lbl_dz_val = lv_obj_get_child(btn_dz, 0);
     lv_label_set_text_fmt(lbl_dz_val, "Stick DZ: %u", (unsigned int)USBHostManager_GetStickDeadzone());
 
     /* Row 3: Theme selector */
-    lv_obj_t * btn_thm = Create_Setting_Btn(workspace_cont, 12, 80, 296, 30, "", 7);
+    lv_obj_t * btn_thm = Create_Setting_Btn(workspace_cont, 12, 68, 296, 28, "", 7);
     lbl_thm_val = lv_obj_get_child(btn_thm, 0);
     lv_label_set_text_fmt(lbl_thm_val, "Theme: %s", s_themes[s_theme_id % THEME_COUNT].name);
 
-    /* Row 4: 4-Point XPT2046 Touchscreen Calibration */
+    /* Row 4: Wi-Fi Setup / Network Connection */
+    lv_obj_t * btn_wifi = Create_Setting_Btn(workspace_cont, 12, 100, 296, 28, "", 9);
+    lv_obj_t * lbl_wf = lv_obj_get_child(btn_wifi, 0);
+    if (ESPCompanion_IsWifiConnected())
+    {
+        lv_obj_set_style_bg_color(btn_wifi, lv_color_hex(0x004D40), 0);
+        lv_label_set_text_fmt(lbl_wf, LV_SYMBOL_WIFI " Wi-Fi: %s (%s)",
+                              ESPCompanion_GetWifiSsid(), ESPCompanion_GetWifiIp());
+    }
+    else if (ESPCompanion_IsConnected())
+    {
+        lv_obj_set_style_bg_color(btn_wifi, lv_color_hex(0x37474F), 0);
+        lv_label_set_text(lbl_wf, LV_SYMBOL_WIFI " Wi-Fi: Setup / Connect...");
+    }
+    else
+    {
+        lv_obj_set_style_bg_color(btn_wifi, lv_color_hex(0x263238), 0);
+        lv_label_set_text(lbl_wf, LV_SYMBOL_WIFI " Wi-Fi: Module Offline (Setup)");
+    }
+
+    /* Row 5: 4-Point XPT2046 Touchscreen Calibration */
     uint16_t min_x = 0U, max_x = 0U, min_y = 0U, max_y = 0U;
     XPT2046_TouchGetCalibration(&min_x, &max_x, &min_y, &max_y);
-    lv_obj_t * btn_cal = Create_Setting_Btn(workspace_cont, 12, 118, 296, 32, "", 8);
+    lv_obj_t * btn_cal = Create_Setting_Btn(workspace_cont, 12, 132, 296, 28, "", 8);
     lv_obj_set_style_bg_color(btn_cal, lv_color_hex(0x00695C), 0);
     lv_label_set_text_fmt(lv_obj_get_child(btn_cal, 0),
                           LV_SYMBOL_PLUS " Calibrate Touch [%u..%u]",
                           (unsigned int)min_x, (unsigned int)max_x);
 
-    /* Row 5: Back to Home button */
+    /* Row 6: Back to Home button */
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
-    lv_obj_set_size(btn_back, 136, 32);
-    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_size(btn_back, 136, 28);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -4);
     lv_obj_t * lbl_b = lv_label_create(btn_back);
     lv_label_set_text(lbl_b, LV_SYMBOL_HOME " Home");
     lv_obj_center(lbl_b);
@@ -3208,7 +3550,23 @@ static void Build_SysInfo_Screen(void)
         snprintf(ext_str, sizeof(ext_str), "N/A");
     }
 
-    const char *esp_status = ESPCompanion_IsConnected() ? "ONLINE" : "OFFLINE";
+    char esp_status[40];
+    if (!ESPCompanion_IsConnected())
+    {
+        snprintf(esp_status, sizeof(esp_status), "OFFLINE");
+    }
+    else if (ESPCompanion_IsWifiConnected())
+    {
+        snprintf(esp_status, sizeof(esp_status), "WiFi: %s (%s)", ESPCompanion_GetWifiSsid(), ESPCompanion_GetWifiIp());
+    }
+    else if (ESPCompanion_GetWifiStatus() == 2)
+    {
+        snprintf(esp_status, sizeof(esp_status), "Connecting: %s", ESPCompanion_GetWifiSsid());
+    }
+    else
+    {
+        snprintf(esp_status, sizeof(esp_status), "ONLINE (No Wi-Fi)");
+    }
 
     if (rep->sram_ok)
     {
@@ -3217,14 +3575,14 @@ static void Build_SysInfo_Screen(void)
             "CPU: %lu%% | Heap: %lu KB | CCM: %s\n"
             "Temp MCU: %ld.%ld C | DS18B20: %s\n"
             "SRAM: %lu KB | SD: %lu/%lu MB\n"
-            "ESP32-C6: %s (TX:%lu RX:%lu)\n"
+            "ESP32-C6: %s\n"
             "W25Q: 0x%06X | Stress: %lu/%lu",
             CONSOLE_FW_VERSION_STR, (unsigned int)SDK_API_VERSION,
             (unsigned long)cpu_load, (unsigned long)(free_heap / 1024),
             rep->ccmram_ok ? "OK" : "ERR",
             (long)(mcu_dc / 10), (long)((mcu_dc >= 0 ? mcu_dc : -mcu_dc) % 10), ext_str,
             (unsigned long)rep->sram_size_kb, (unsigned long)free_mb, (unsigned long)total_mb,
-            esp_status, (unsigned long)ESPCompanion_GetTxPackets(), (unsigned long)ESPCompanion_GetRxPackets(),
+            esp_status,
             (unsigned int)rep->flash_id, (unsigned long)rep->sram_stress_runs, (unsigned long)rep->sram_stress_errs);
     }
     else
