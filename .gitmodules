@@ -1,0 +1,3 @@
+[submodule "Libs/esp32_companion"]
+	path = Libs/esp32_companion
+	url = https://github.com/taburyak/stm32-console-esp32-c6.git

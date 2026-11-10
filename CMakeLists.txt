@@ -55,6 +55,10 @@ console_sdk_app(invaders  "${CMAKE_SOURCE_DIR}/sdk_apps/invaders.c")
 console_sdk_app(flappy    "${CMAKE_SOURCE_DIR}/sdk_apps/flappy.c")
 console_sdk_app(pacman    "${CMAKE_SOURCE_DIR}/sdk_apps/pacman.c")
 console_sdk_app(loderunner "${CMAKE_SOURCE_DIR}/sdk_apps/loderunner.c")
+console_sdk_app(arkanoid_deluxe "${CMAKE_SOURCE_DIR}/sdk_apps/arkanoid_deluxe.c")
+console_sdk_app(stack_up "${CMAKE_SOURCE_DIR}/sdk_apps/stack_up.c")
+console_sdk_app(sram_test "${CMAKE_SOURCE_DIR}/sdk_apps/sram_test.c")
+
 
 # Built-in (ROM) SDK app: arkanoid.bin is embedded into Flash
 set(ROM_APPS_DIR      "${CMAKE_BINARY_DIR}/rom_apps")
@@ -94,6 +98,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/XPT2046/XPT2046_touch.c
     Libs/AT24XXX/AT24Cxx.c
     Libs/W25QXX/w25qxx.c
+    Libs/DS18B20/onewire.c
+    Libs/DS18B20/ds18b20.c
     FATFS/App/fatfs.c
     FATFS/Target/sd_diskio.c
     FATFS/Target/bsp_driver_sd.c
@@ -121,6 +127,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_storage.c
     Core/Src/app_services.c
     Core/Src/script_engine.c
+    Core/Src/uart_loader.c
+    Core/Src/temp_sensor.c
 )
 
 # Add include paths
@@ -130,6 +138,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/XPT2046
     Libs/AT24XXX
     Libs/W25QXX
+    Libs/DS18B20
     FATFS/App
     FATFS/Target
     Libs/lvgl

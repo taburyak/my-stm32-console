@@ -2,6 +2,7 @@
 #include "status_led.h"
 #include "beeper.h"
 #include "app_loader.h"
+#include "uart_loader.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -284,6 +285,12 @@ static void Parse_Keyboard_Report(uint8_t const *buf, uint16_t len)
 
             enqueue_key(scancode, ascii, true);
             enqueue_app_key(scancode, ascii, true, kbd_report->modifier);
+
+            /* PrintScreen (0x46) or F12 (0x45) triggers a screenshot to SD:/screenshots/ */
+            if (scancode == 0x46U || scancode == 0x45U)
+            {
+                Screenshot_Request();
+            }
         }
     }
 
@@ -342,13 +349,26 @@ static void Parse_Mouse_Report(uint8_t const *buf, uint16_t len)
     g_usb_dbg.mouse_btns = b0 & 0x07U;
 }
 
+static uint8_t s_stick_deadzone = 8U;
+
+void USBHostManager_SetStickDeadzone(uint8_t deadzone)
+{
+    if (deadzone > 64U) deadzone = 64U;
+    s_stick_deadzone = deadzone;
+}
+
+uint8_t USBHostManager_GetStickDeadzone(void)
+{
+    return s_stick_deadzone;
+}
+
 static int8_t Axis_U8_To_I8(uint8_t raw)
 {
     int16_t centered = (int16_t)raw - 128;
     if (centered < -127) centered = -127;
     if (centered >  127) centered =  127;
-    /* Small deadzone around neutral 0x7F/0x80 */
-    if (centered >= -4 && centered <= 4) centered = 0;
+    int16_t dz = (int16_t)s_stick_deadzone;
+    if (centered >= -dz && centered <= dz) centered = 0;
     return (int8_t)centered;
 }
 
@@ -395,6 +415,12 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
     bool right = (hat == 1U || hat == 2U || hat == 3U);
     bool down  = (hat == 3U || hat == 4U || hat == 5U);
     bool left  = (hat == 5U || hat == 6U || hat == 7U);
+
+    /* Gamepad combo: Select + R1 triggers a screenshot */
+    if (btn_select && btn_r1 && !(current_gamepad_state.btn_select && current_gamepad_state.btn_r1))
+    {
+        Screenshot_Request();
+    }
 
     /* Edge detection: push LVGL navigation keys on press (ignored if Sandbox app is active) */
     if (up && !current_gamepad_state.dpad_up)       enqueue_key(0x52, 0, true);    /* Up Arrow */

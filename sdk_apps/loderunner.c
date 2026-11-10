@@ -1,10 +1,17 @@
 #include "console_sdk.h"
 
 /* =========================================================================
- * Cyber Lode Runner (SDK app)
- * 28x16 tile arena (11x13 px tiles), 4 multi-story levels, brick digging
- * left/right, timed hole regeneration, rope traversal, smart guards that
- * fall into pits and climb out, hidden escape ladder on collecting all gold!
+ * Cyber Lode Runner Deluxe (SDK app)
+ * Authentic classic Lode Runner mechanics:
+ *  - 8 multi-story puzzle levels (including deep pyramid digging & trapdoors)
+ *  - False / Fake Bricks ('X'): look identical to normal bricks ('#'),
+ *    but actors fall right through them!
+ *  - Gold-carrying Guards: guards pick up gold chests (helmet turns GOLD!),
+ *    and drop the stolen gold back above the pit when trapped in a hole!
+ *  - Smart Floor-Scanning AI: guards search their floor for the nearest
+ *    ladder or drop-off leading to the player's elevation, and never stack.
+ *  - Directional & state sprites: Run Left/Right, Climb Ladder, Hang on Rope,
+ *    and animated Laser Digging beam!
  *
  * Controls:
  *  - D-Pad / Arrows: Move / Climb ladder / Traverse rope / Drop from rope
@@ -24,17 +31,17 @@
 #define MAP_X           6       /* (320 - 28*11) / 2 = 6 */
 #define MAP_Y           22      /* 22 + 16*13 = 230 */
 
-#define MAX_GUARDS      3
-#define MAX_HOLES       12
+#define MAX_GUARDS      4
+#define MAX_HOLES       14
 #define HOLE_OPEN_MS    6800U
 #define HOLE_WARN_MS    1500U
 #define TRAP_TIME_MS    3400U
-#define LEVEL_COUNT     4U
+#define LEVEL_COUNT     8U
 
 #define BG              COLOR_BLACK
 #define COLOR_BRICK     0xC200U /* Terra-cotta red brick */
 #define COLOR_MORTAR    0x6100U
-#define COLOR_SOLID     0x7BEF  /* Concrete steel grey */
+#define COLOR_SOLID     0x7BEFU /* Concrete steel grey */
 #define COLOR_LADDER    COLOR_CYAN
 #define COLOR_ROPE      COLOR_AMBER
 #define COLOR_GOLD      COLOR_YELLOW
@@ -47,7 +54,20 @@ enum {
     T_ROPE   = 4,
     T_GOLD   = 5,
     T_HLAD   = 6,   /* Hidden escape ladder until all gold collected */
-    T_HOLE   = 7    /* Dug brick pit */
+    T_HOLE   = 7,   /* Dug brick pit */
+    T_FAKE   = 8    /* False brick: looks like T_BRICK, but actors fall through! */
+};
+
+enum {
+    POSE_RUN_R1 = 0,
+    POSE_RUN_R2 = 1,
+    POSE_RUN_L1 = 2,
+    POSE_RUN_L2 = 3,
+    POSE_CLIMB1 = 4,
+    POSE_CLIMB2 = 5,
+    POSE_ROPE1  = 6,
+    POSE_ROPE2  = 7,
+    POSE_COUNT  = 8
 };
 
 enum { ST_READY, ST_PLAY, ST_DYING, ST_PAUSE, ST_OVER };
@@ -62,16 +82,18 @@ typedef struct {
 typedef struct {
     int16_t  px, py;
     int16_t  prev_px, prev_py;
-    int8_t   facing;      /* -1 left, +1 right */
+    int8_t   facing;        /* -1 left, +1 right */
     uint8_t  anim;
     bool     in_pit;
+    bool     has_gold;      /* Carrying a stolen gold chest! */
+    uint16_t gold_timer;    /* Steps left before dropping gold randomly */
     uint32_t release_tick;
     bool     active;
 } Guard_t;
 
-/* 4 Classic Lode Runner Multi-Story Levels (28x16)
+/* 8 Classic Lode Runner Multi-Story Levels (28x16)
  * '#' brick, '@' solid, 'H' ladder, '-' rope, '$' gold, '^' hidden exit ladder,
- * 'P' player start, 'G' guard start */
+ * 'X' false brick (trapdoor), 'P' player start, 'G' guard start */
 static const char *const s_levels[LEVEL_COUNT][MAP_H] = {
     /* Level 1: Classic Terraces */
     {
@@ -111,7 +133,7 @@ static const char *const s_levels[LEVEL_COUNT][MAP_H] = {
         "############################",
         "@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
     },
-    /* Level 3: TheTwin Towers */
+    /* Level 3: The Twin Towers */
     {
         "             ^              ",
         "   $   G     ^     G   $    ",
@@ -148,16 +170,93 @@ static const char *const s_levels[LEVEL_COUNT][MAP_H] = {
         "   $    H    P    H    $    ",
         "############################",
         "@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+    },
+    /* Level 5: False Floor Chambers (with 'X' trapdoor bricks!) */
+    {
+        "             ^              ",
+        "  $          ^          $   ",
+        "####XX#######H#######XX#####",
+        "   #  #      H      #  #    ",
+        "   #$ #  G   H   G  # $#    ",
+        "######H#############H#######",
+        "      H   -------   H       ",
+        "  $   H             H   $   ",
+        "###H#####XX#####XX#####H####",
+        "   H    #  #   #  #    H    ",
+        "   H    #$ # G # $#    H    ",
+        "########H#########H#########",
+        "        H         H         ",
+        "  $     H    P    H     $   ",
+        "############################",
+        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+    },
+    /* Level 6: Deep Pyramid Excavation (requires stair-step digging!) */
+    {
+        "                          ^ ",
+        "   $         G            ^ ",
+        "#######H#############H######",
+        "       H             H      ",
+        "  G    H    #####    H   G  ",
+        "####H####  ###$###  ####H###",
+        "    H     ###$#$###     H   ",
+        "    H    ###########    H   ",
+        "#######H#############H######",
+        "       H  ---------  H      ",
+        "  $    H      $      H   $  ",
+        "####H###################H###",
+        "    H                   H   ",
+        "    H         P         H   ",
+        "############################",
+        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+    },
+    /* Level 7: The Suspension Bridges */
+    {
+        "             ^              ",
+        " $           ^            $ ",
+        "###H###################H####",
+        "   H   -----   -----   H    ",
+        "   H         $         H    ",
+        "   H  G  #########  G  H    ",
+        "#######H###########H########",
+        "       H   -----   H        ",
+        "  $    H     $     H    $   ",
+        "####H#####       #####H#####",
+        "    H  G  #######  G  H     ",
+        "    H  $           $  H     ",
+        "########H#########H#########",
+        "        H    P    H         ",
+        "############################",
+        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+    },
+    /* Level 8: The Cyber Vault (Master Challenge) */
+    {
+        "             ^              ",
+        "  $    G     ^     G    $   ",
+        "#####H#######H#######H######",
+        "     H  ---  H  ---  H      ",
+        "     H   $   H   $   H      ",
+        "########XX#######XX#########",
+        "       #  #     #  #        ",
+        "  G    #$ # --- # $#    G   ",
+        "####H######## ########H#####",
+        "    H    ###$#$###    H     ",
+        "    H   ###########   H     ",
+        "#######H###########H########",
+        "       H           H        ",
+        "  $    H     P     H    $   ",
+        "############################",
+        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
     }
 };
 
-/* 11x13 Runner / Guard Sprite Templates (2 animation frames) */
-static const char *const s_actor_art[2][TH] = {
+/* Base 11x13 Sprite Templates: Run1, Run2, Climb, Rope */
+static const char *const s_base_art[4][TH] = {
+    /* 0: Run Stride 1 (Right-facing) */
     {
         "...HHHHH...",
         "..HHHHHHH..",
-        "...FFFFF...",
-        "...FWWWF...",
+        "...FFWWF...",
+        "...FFWWF...",
         "....FFF....",
         "..BBBBBBB..",
         ".BB.BBB.BB.",
@@ -168,11 +267,12 @@ static const char *const s_actor_art[2][TH] = {
         ".LL.....LL.",
         ".L.......L."
     },
+    /* 1: Run Stride 2 (Right-facing) */
     {
         "...HHHHH...",
         "..HHHHHHH..",
-        "...FFFFF...",
-        "...FWWWF...",
+        "...FFWWF...",
+        "...FFWWF...",
         "....FFF....",
         "...BBBBB...",
         "..BBBBBBB..",
@@ -181,7 +281,39 @@ static const char *const s_actor_art[2][TH] = {
         "..LL...LL..",
         "...L...L...",
         "..LL..LL...",
-        ".......... "
+        "..........."
+    },
+    /* 2: Ladder Climb (Arms & legs alternating) */
+    {
+        ".B.HHHHH...",
+        ".BBHHHHHH..",
+        "..BFFWWF...",
+        "...FFFFF...",
+        "..BBBBBBB..",
+        "..BBBBBBB.B",
+        "...BBBBBBBB",
+        "....BBB....",
+        "..LLL.LLL..",
+        "..LL...LL..",
+        "..LL...LL..",
+        ".......LL..",
+        "..........."
+    },
+    /* 3: Rope Hang (Arms raised holding bar at y=1..2) */
+    {
+        ".LL.....LL.",
+        ".BB.HHH.BB.",
+        "..BHHHHHB..",
+        "...FFWWF...",
+        "....FFF....",
+        "..BBBBBBB..",
+        "...BBBBB...",
+        "....BBB....",
+        "...LL.LL...",
+        "..LL...LL..",
+        "..LL...LL..",
+        "...........",
+        "..........."
     }
 };
 
@@ -192,11 +324,13 @@ static const SDK_Note_t s_snd_trap[]  = { { 1, 20 } };
 static const SDK_Note_t s_snd_die[]   = { { 1, 120 }, { 0, 60 }, { 1, 140 }, { 0, 60 }, { 1, 260 } };
 static const SDK_Note_t s_snd_win[]   = { { 1, 50 }, { 0, 30 }, { 1, 50 }, { 0, 30 }, { 1, 50 }, { 0, 30 }, { 1, 180 } };
 
-static SDK_EXT_BSS uint16_t s_spr_player[2][TW * TH];
-static SDK_EXT_BSS uint16_t s_spr_guard[2][TW * TH];
+static SDK_EXT_BSS uint16_t s_spr_player[POSE_COUNT][TW * TH];
+static SDK_EXT_BSS uint16_t s_spr_guard[POSE_COUNT][TW * TH];
+static SDK_EXT_BSS uint16_t s_spr_guard_gold[POSE_COUNT][TW * TH];
 static SDK_EXT_BSS uint16_t s_spr_tile[TW * TH];
 
 static uint8_t  s_map[MAP_H][MAP_W];
+static uint8_t  s_orig_map[MAP_H][MAP_W];
 static Hole_t   s_holes[MAX_HOLES];
 static Guard_t  s_guards[MAX_GUARDS];
 static uint8_t  s_guard_count;
@@ -227,13 +361,15 @@ static int16_t iabs16(int16_t v)
 
 /* ---------------------------------------------------------------- sprites */
 
-static void build_actor_sprite(uint16_t *dst, uint8_t frame, uint16_t helmet, uint16_t suit, uint16_t boots)
+static void build_pose_sprite(uint16_t *dst, uint8_t base_idx, bool mirror_x,
+                              uint16_t helmet, uint16_t suit, uint16_t boots)
 {
     for (uint8_t y = 0; y < TH; y++)
     {
         for (uint8_t x = 0; x < TW; x++)
         {
-            char ch = s_actor_art[frame][y][x];
+            uint8_t sx = mirror_x ? (uint8_t)(TW - 1U - x) : x;
+            char ch = s_base_art[base_idx][y][sx];
             uint16_t c = BG;
             if (ch == 'H')      c = helmet;
             else if (ch == 'F') c = COLOR_AMBER;
@@ -245,13 +381,26 @@ static void build_actor_sprite(uint16_t *dst, uint8_t frame, uint16_t helmet, ui
     }
 }
 
+static void build_actor_set(uint16_t out[POSE_COUNT][TW * TH], uint16_t helmet, uint16_t suit, uint16_t boots)
+{
+    build_pose_sprite(out[POSE_RUN_R1], 0, false, helmet, suit, boots);
+    build_pose_sprite(out[POSE_RUN_R2], 1, false, helmet, suit, boots);
+    build_pose_sprite(out[POSE_RUN_L1], 0, true,  helmet, suit, boots);
+    build_pose_sprite(out[POSE_RUN_L2], 1, true,  helmet, suit, boots);
+    build_pose_sprite(out[POSE_CLIMB1], 2, false, helmet, suit, boots);
+    build_pose_sprite(out[POSE_CLIMB2], 2, true,  helmet, suit, boots);
+    build_pose_sprite(out[POSE_ROPE1],  3, false, helmet, suit, boots);
+    build_pose_sprite(out[POSE_ROPE2],  3, true,  helmet, suit, boots);
+}
+
 static void build_sprites(void)
 {
-    for (uint8_t f = 0; f < 2U; f++)
-    {
-        build_actor_sprite(s_spr_player[f], f, COLOR_WHITE,   COLOR_CYAN, COLOR_NEON_GREEN);
-        build_actor_sprite(s_spr_guard[f],  f, COLOR_MAGENTA, COLOR_RED,  COLOR_AMBER);
-    }
+    /* Player: White Helmet, Cyan Suit, Neon Green Boots */
+    build_actor_set(s_spr_player,     COLOR_WHITE,   COLOR_CYAN, COLOR_NEON_GREEN);
+    /* Normal Guard: Magenta Helmet, Red Suit, Amber Boots */
+    build_actor_set(s_spr_guard,      COLOR_MAGENTA, COLOR_RED,  COLOR_AMBER);
+    /* Guard Carrying Gold: Flashing Gold Helmet & Gold Boots! */
+    build_actor_set(s_spr_guard_gold, COLOR_YELLOW,  COLOR_RED,  COLOR_YELLOW);
 }
 
 /* ---------------------------------------------------------------- drawing */
@@ -285,7 +434,8 @@ static void draw_tile(int8_t tx, int8_t ty)
 
     for (uint8_t i = 0; i < TW * TH; i++) s_spr_tile[i] = BG;
 
-    if (t == T_BRICK)
+    /* Note: T_FAKE looks 100% identical to T_BRICK to fool the player! */
+    if ((t == T_BRICK) || (t == T_FAKE))
     {
         for (uint8_t y = 0; y < TH; y++)
         {
@@ -338,11 +488,10 @@ static void draw_tile(int8_t tx, int8_t ty)
                 s_spr_tile[y * TW + x] = rim ? COLOR_AMBER : COLOR_GOLD;
             }
         }
-        s_spr_tile[8 * TW + 5] = COLOR_WHITE; /* Keyhole sparkle */
+        s_spr_tile[8 * TW + 5] = COLOR_WHITE;
     }
     else if (t == T_HOLE)
     {
-        /* Faint broken brick debris on sides */
         s_spr_tile[2 * TW + 0] = COLOR_MORTAR;
         s_spr_tile[9 * TW + TW - 1] = COLOR_MORTAR;
     }
@@ -378,6 +527,27 @@ static void draw_full_map(void)
     }
 }
 
+static uint8_t select_actor_pose(int16_t px, int16_t py, int8_t facing, uint8_t anim)
+{
+    int8_t cx = (int8_t)((px + TW / 2) / TW);
+    int8_t cy = (int8_t)((py + TH / 2) / TH);
+    uint8_t step = (uint8_t)((anim >> 2) & 1U);
+
+    if (s_map[cy][cx] == T_LADDER)
+    {
+        return (uint8_t)(POSE_CLIMB1 + step);
+    }
+    if ((py % TH) == 0 && s_map[py / TH][cx] == T_ROPE)
+    {
+        return (uint8_t)(POSE_ROPE1 + step);
+    }
+    if (facing < 0)
+    {
+        return (uint8_t)(POSE_RUN_L1 + step);
+    }
+    return (uint8_t)(POSE_RUN_R1 + step);
+}
+
 static void render_actors(void)
 {
     restore_under(s_prev_px, s_prev_py);
@@ -387,8 +557,8 @@ static void render_actors(void)
     }
 
     /* Draw Player */
-    sys_draw_sprite((uint16_t)(MAP_X + s_px), (uint16_t)(MAP_Y + s_py), TW, TH,
-                    s_spr_player[(s_anim >> 2) & 1U]);
+    uint8_t p_pose = select_actor_pose(s_px, s_py, s_facing, s_anim);
+    sys_draw_sprite((uint16_t)(MAP_X + s_px), (uint16_t)(MAP_Y + s_py), TW, TH, s_spr_player[p_pose]);
     s_prev_px = s_px;
     s_prev_py = s_py;
 
@@ -397,8 +567,9 @@ static void render_actors(void)
     {
         Guard_t *g = &s_guards[i];
         if (!g->active) continue;
-        sys_draw_sprite((uint16_t)(MAP_X + g->px), (uint16_t)(MAP_Y + g->py), TW, TH,
-                        s_spr_guard[(g->anim >> 2) & 1U]);
+        uint8_t g_pose = select_actor_pose(g->px, g->py, g->facing, g->anim);
+        const uint16_t *spr = g->has_gold ? s_spr_guard_gold[g_pose] : s_spr_guard[g_pose];
+        sys_draw_sprite((uint16_t)(MAP_X + g->px), (uint16_t)(MAP_Y + g->py), TW, TH, spr);
         g->prev_px = g->px;
         g->prev_py = g->py;
     }
@@ -455,6 +626,7 @@ static void load_level(void)
             char ch = rows[y][x];
             s_map[y][x] = T_EMPTY;
             if (ch == '#')      s_map[y][x] = T_BRICK;
+            else if (ch == 'X') s_map[y][x] = T_FAKE;
             else if (ch == '@') s_map[y][x] = T_SOLID;
             else if (ch == 'H') s_map[y][x] = T_LADDER;
             else if (ch == '-') s_map[y][x] = T_ROPE;
@@ -476,12 +648,15 @@ static void load_level(void)
                 Guard_t *g = &s_guards[s_guard_count++];
                 g->px = (int16_t)(x * TW);
                 g->py = (int16_t)(y * TH);
-                g->prev_px = -1;
-                g->facing = -1;
-                g->anim = 0;
-                g->in_pit = false;
-                g->active = true;
+                g->prev_px    = -1;
+                g->facing     = -1;
+                g->anim       = 0;
+                g->in_pit     = false;
+                g->has_gold   = false;
+                g->gold_timer = 0;
+                g->active     = true;
             }
+            s_orig_map[y][x] = (s_map[y][x] == T_GOLD) ? T_EMPTY : s_map[y][x];
         }
     }
 
@@ -506,6 +681,7 @@ static uint8_t tile_at(int8_t tx, int8_t ty)
     return s_map[ty][tx];
 }
 
+/* Note: T_FAKE is NOT solid, so actors fall or walk right through it! */
 static bool is_solid(int8_t tx, int8_t ty)
 {
     uint8_t t = tile_at(tx, ty);
@@ -520,6 +696,21 @@ static bool guard_standing_at(int8_t tx, int8_t ty)
         int8_t gx = (int8_t)((s_guards[i].px + TW / 2) / TW);
         int8_t gy = (int8_t)((s_guards[i].py + TH / 2) / TH);
         if ((gx == tx) && (gy == ty)) return true;
+    }
+    return false;
+}
+
+/* Checks if another guard (excluding `self_idx`) is already occupying the target pixel box */
+static bool other_guard_near(uint8_t self_idx, int16_t nx, int16_t ny)
+{
+    for (uint8_t i = 0; i < s_guard_count; i++)
+    {
+        if ((i == self_idx) || !s_guards[i].active) continue;
+        if ((iabs16((int16_t)(s_guards[i].px - nx)) < TW - 2) &&
+            (iabs16((int16_t)(s_guards[i].py - ny)) < TH - 2))
+        {
+            return true;
+        }
     }
     return false;
 }
@@ -558,7 +749,10 @@ static void try_dig(int8_t dir, uint32_t now)
 
     /* Must not have solid brick/concrete/ladder blocking the laser above the target brick */
     uint8_t above = tile_at(tx, cy);
-    if ((above != T_EMPTY) && (above != T_HLAD) && (above != T_GOLD) && (above != T_HOLE)) return;
+    if ((above != T_EMPTY) && (above != T_HLAD) && (above != T_GOLD) && (above != T_HOLE) && (above != T_FAKE))
+    {
+        return;
+    }
     if (tile_at(tx, ty) != T_BRICK) return;
 
     for (uint8_t i = 0; i < MAX_HOLES; i++)
@@ -572,11 +766,13 @@ static void try_dig(int8_t dir, uint32_t now)
             s_holes[i].last_vis   = 0;
 
             s_map[ty][tx] = T_HOLE;
-            /* Snap player neatly to tile center when digging */
-            s_px = (int16_t)(cx * TW);
+            s_px     = (int16_t)(cx * TW);
+            s_facing = dir;
             draw_tile(tx, ty);
 
-            /* Brief laser beam flash */
+            /* Diagonal laser beam effect from player hand to target brick */
+            sys_lcd_fill_rect((uint16_t)(MAP_X + tx * TW + 2), (uint16_t)(MAP_Y + cy * TH + 6),
+                              7, 2, COLOR_CYAN);
             sys_lcd_fill_rect((uint16_t)(MAP_X + tx * TW + 3), (uint16_t)(MAP_Y + ty * TH),
                               5, TH, COLOR_AMBER);
             sound(s_snd_dig, 3);
@@ -605,7 +801,6 @@ static void reveal_escape_ladder(void)
 
 static void check_gold_pickup(void)
 {
-    /* Check all tiles overlapped by player's bounding box (with 2px inner margin) */
     int8_t x0 = (int8_t)((s_px + 2) / TW);
     int8_t x1 = (int8_t)((s_px + TW - 3) / TW);
     int8_t y0 = (int8_t)((s_py + 2) / TH);
@@ -617,9 +812,9 @@ static void check_gold_pickup(void)
         {
             if (tile_at(tx, ty) == T_GOLD)
             {
-                s_map[ty][tx] = T_EMPTY;
+                s_map[ty][tx] = s_orig_map[ty][tx];
                 draw_tile(tx, ty);
-                s_gold_left--;
+                if (s_gold_left > 0U) s_gold_left--;
                 add_score(250U);
                 sound(s_snd_gold, 3);
                 if (s_gold_left == 0U)
@@ -631,12 +826,55 @@ static void check_gold_pickup(void)
     }
 }
 
+/* Drops stolen gold from a guard at or near tile (gx, gy) */
+static void guard_drop_gold(Guard_t *g, int8_t gx, int8_t gy)
+{
+    if (!g->has_gold) return;
+
+    /* Try to place gold at (gx, gy) if empty */
+    if ((gy >= 0) && (gy < MAP_H) && (gx >= 0) && (gx < MAP_W) && (s_map[gy][gx] == T_EMPTY))
+    {
+        s_map[gy][gx] = T_GOLD;
+        draw_tile(gx, gy);
+        g->has_gold = false;
+        return;
+    }
+
+    /* Otherwise find any empty floor spot on the map */
+    for (int8_t y = 1; y < MAP_H - 1; y++)
+    {
+        for (int8_t x = 1; x < MAP_W - 1; x++)
+        {
+            if ((s_map[y][x] == T_EMPTY) && is_solid(x, (int8_t)(y + 1)))
+            {
+                s_map[y][x] = T_GOLD;
+                draw_tile(x, y);
+                g->has_gold = false;
+                return;
+            }
+        }
+    }
+
+    /* Fallback: if no empty tile exists anywhere, award gold to player */
+    g->has_gold = false;
+    if (s_gold_left > 0U) s_gold_left--;
+    draw_hud();
+    if (s_gold_left == 0U) reveal_escape_ladder();
+}
+
 static void update_holes(uint32_t now)
 {
     for (uint8_t i = 0; i < MAX_HOLES; i++)
     {
         Hole_t *h = &s_holes[i];
         if (!h->active) continue;
+
+        /* Clean up laser flash in tile above the hole after 120 ms */
+        int32_t elapsed = (int32_t)(now - (h->close_tick - HOLE_OPEN_MS));
+        if ((elapsed >= 120) && (elapsed < 160) && (h->ty > 0U))
+        {
+            draw_tile((int8_t)h->tx, (int8_t)(h->ty - 1U));
+        }
 
         int32_t rem = (int32_t)(h->close_tick - now);
         if (rem <= 0)
@@ -655,7 +893,7 @@ static void update_holes(uint32_t now)
                 sound(s_snd_die, 5);
             }
 
-            /* Check if any guard is crushed -> respawn guard at top of screen! */
+            /* Check if any guard is crushed -> drop any stolen gold & respawn at top! */
             for (uint8_t k = 0; k < s_guard_count; k++)
             {
                 Guard_t *g = &s_guards[k];
@@ -663,8 +901,12 @@ static void update_holes(uint32_t now)
                 int8_t gy = (int8_t)((g->py + TH / 2) / TH);
                 if ((gx == (int8_t)h->tx) && (gy == (int8_t)h->ty))
                 {
+                    if (g->has_gold)
+                    {
+                        guard_drop_gold(g, gx, (int8_t)(gy - 1));
+                    }
                     restore_under(g->prev_px, g->prev_py);
-                    g->px = (int16_t)(((h->tx + 5U) % (MAP_W - 2U) + 1U) * TW);
+                    g->px = (int16_t)(((h->tx + 5U + k * 4U) % (MAP_W - 2U) + 1U) * TW);
                     g->py = TH;
                     g->prev_px = -1;
                     g->in_pit = false;
@@ -712,7 +954,6 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
 
         if (dx != 0)
         {
-            /* Snap Y to tile grid when turning horizontally from a ladder */
             if ((s_py % TH) != 0)
             {
                 int8_t near_y = (int8_t)((s_py + TH / 2) / TH);
@@ -742,7 +983,6 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
 
         if (in->held & KEY_UP)
         {
-            /* Can climb up as long as feet or body are on a ladder */
             if ((tile_at(cx, top_cy) == T_LADDER) || (tile_at(cx, foot_cy) == T_LADDER))
             {
                 int16_t ny = (int16_t)(s_py - 1);
@@ -757,7 +997,6 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
         else if (in->held & KEY_DOWN)
         {
             uint8_t below = tile_at(cx, (int8_t)((s_py + TH) / TH));
-            /* Drop off rope or climb down ladder */
             if ((below != T_BRICK) && (below != T_SOLID))
             {
                 s_px = (int16_t)(cx * TW);
@@ -772,14 +1011,62 @@ static void step_player(const SDK_Input_t *in, uint32_t now)
         if (in->pressed & KEY_A) try_dig(s_facing, now);
     }
 
-    /* 5. Collect Gold on touch (works while climbing ladders, falling, or running!) */
+    /* 5. Collect Gold on touch */
     check_gold_pickup();
+}
+
+/* Scans guard's current floor left & right to find the best horizontal direction
+ * towards a ladder (or drop-off) when the player is on a different elevation */
+static int8_t choose_guard_horiz_dir(int8_t gx, int8_t gy, int8_t player_tx, int8_t player_ty, int8_t cur_facing)
+{
+    if (player_ty == gy)
+    {
+        return (player_tx < gx) ? -1 : ((player_tx > gx) ? 1 : cur_facing);
+    }
+
+    int8_t best_dir  = 0;
+    int8_t best_dist = 99;
+
+    for (int8_t dir = -1; dir <= 1; dir += 2)
+    {
+        for (int8_t step = 1; step < MAP_W; step++)
+        {
+            int8_t tx = (int8_t)(gx + dir * step);
+            if ((tx < 0) || (tx >= MAP_W) || is_solid(tx, gy)) break;
+
+            bool can_up   = (tile_at(tx, gy) == T_LADDER);
+            uint8_t below = tile_at(tx, (int8_t)(gy + 1));
+            bool can_down = (below == T_LADDER) || (below == T_EMPTY) || (below == T_ROPE) || (below == T_FAKE);
+
+            if (((player_ty < gy) && can_up) || ((player_ty > gy) && can_down))
+            {
+                if (step < best_dist)
+                {
+                    best_dist = step;
+                    best_dir  = dir;
+                }
+                break;
+            }
+
+            /* Stop scanning if floor ends without a drop-down desire */
+            if (!is_solid(tx, (int8_t)(gy + 1)) && (below != T_LADDER) && (tile_at(tx, gy) != T_ROPE))
+            {
+                break;
+            }
+        }
+    }
+
+    if (best_dir != 0) return best_dir;
+    return (player_tx < gx) ? -1 : ((player_tx > gx) ? 1 : cur_facing);
 }
 
 static void step_guards(uint32_t now, uint32_t frame)
 {
     /* Guards move on every 2nd frame (~50% speed of player) for fair classic gameplay */
     if ((frame & 1U) == 0U) return;
+
+    int8_t player_tx = (int8_t)((s_px + TW / 2) / TW);
+    int8_t player_ty = (int8_t)((s_py + TH / 2) / TH);
 
     for (uint8_t i = 0; i < s_guard_count; i++)
     {
@@ -789,38 +1076,68 @@ static void step_guards(uint32_t now, uint32_t frame)
         int8_t gx = (int8_t)((g->px + TW / 2) / TW);
         int8_t gy = (int8_t)(g->py / TH);
 
-        /* Handle Guard trapped in dug pit */
+        /* 1. Handle Guard trapped in dug pit */
         if (g->in_pit)
         {
             if ((int32_t)(now - g->release_tick) >= 0)
             {
-                /* Climb out of pit */
                 g->py--;
-                if (g->py <= (gy * TH))
+                g->anim++;
+                /* Climb all the way up onto the floor above the pit */
+                int8_t pit_ty = (int8_t)((g->py + TH) / TH);
+                if (g->py <= (int16_t)((pit_ty - 1) * TH))
                 {
-                    g->py = (int16_t)(gy * TH);
+                    g->py = (int16_t)((pit_ty - 1) * TH);
                     g->in_pit = false;
+                    g->facing = (s_px < g->px) ? -1 : 1;
+                    g->px = (int16_t)(g->px + g->facing * 2);
                 }
             }
             continue;
         }
 
-        /* Gravity for Guard */
+        /* 2. Gravity for Guard */
         if (!has_support(g->px, g->py))
         {
             g->px = (int16_t)(gx * TW);
             g->py++;
+            g->anim++;
             if (((g->py % TH) == 0) && (tile_at(gx, (int8_t)(g->py / TH)) == T_HOLE))
             {
                 g->in_pit = true;
                 g->release_tick = now + TRAP_TIME_MS;
+                /* Classic rule: trapped guard immediately drops stolen gold above the pit! */
+                if (g->has_gold)
+                {
+                    guard_drop_gold(g, gx, (int8_t)((g->py / TH) - 1));
+                }
                 add_score(75U);
                 sound(s_snd_trap, 1);
             }
             continue;
         }
 
-        /* AI Chase Logic: try vertical first if on ladder and player is on different floor */
+        /* 3. Guard Gold Pickup & Timed Drop */
+        if (((g->px % TW) == 0) && ((g->py % TH) == 0))
+        {
+            if (!g->has_gold && (tile_at(gx, gy) == T_GOLD))
+            {
+                s_map[gy][gx] = s_orig_map[gy][gx];
+                draw_tile(gx, gy);
+                g->has_gold   = true;
+                g->gold_timer = (uint16_t)(140U + sys_random_range(120U));
+            }
+            else if (g->has_gold)
+            {
+                if (g->gold_timer > 0U) g->gold_timer--;
+                if ((g->gold_timer == 0U) && (tile_at(gx, gy) == T_EMPTY) && is_solid(gx, (int8_t)(gy + 1)))
+                {
+                    guard_drop_gold(g, gx, gy);
+                }
+            }
+        }
+
+        /* 4. AI Vertical Ladder Climbing */
         bool moved = false;
         if ((iabs16((int16_t)(s_py - g->py)) >= TH / 2) &&
             ((tile_at(gx, gy) == T_LADDER) || (tile_at(gx, (int8_t)(gy + 1)) == T_LADDER)))
@@ -829,7 +1146,9 @@ static void step_guards(uint32_t now, uint32_t frame)
             int16_t ny = (int16_t)(g->py + dy);
             int8_t check_ty = (dy < 0) ? (int8_t)(ny / TH) : (int8_t)((ny + TH - 1) / TH);
             if ((ny >= 0) && !is_solid(gx, check_ty) &&
-                ((dy < 0 && tile_at(gx, gy) == T_LADDER) || (dy > 0 && tile_at(gx, check_ty) == T_LADDER)))
+                !other_guard_near(i, (int16_t)(gx * TW), ny) &&
+                ((dy < 0 && (tile_at(gx, gy) == T_LADDER || tile_at(gx, (int8_t)((g->py + TH - 1) / TH)) == T_LADDER)) ||
+                 (dy > 0 && (tile_at(gx, check_ty) == T_LADDER || !is_solid(gx, check_ty)))))
             {
                 g->px = (int16_t)(gx * TW);
                 g->py = ny;
@@ -838,20 +1157,26 @@ static void step_guards(uint32_t now, uint32_t frame)
             }
         }
 
-        /* Horizontal chase towards player */
+        /* 5. Smart Horizontal Pathfinding */
         if (!moved)
         {
             g->py = (int16_t)(((g->py + TH / 2) / TH) * TH);
             gy = (int8_t)(g->py / TH);
 
-            int8_t dx = (s_px < g->px) ? -1 : ((s_px > g->px) ? 1 : g->facing);
+            if ((g->px % TW) == 0)
+            {
+                g->facing = choose_guard_horiz_dir(gx, gy, player_tx, player_ty, g->facing);
+            }
+
+            int8_t dx = g->facing;
             int16_t nx = (int16_t)(g->px + dx);
             int8_t check_tx = (dx < 0) ? (int8_t)(nx / TW) : (int8_t)((nx + TW - 1) / TW);
 
-            if ((nx >= 0) && (nx <= (MAP_W - 1) * TW) && !is_solid(check_tx, gy))
+            if ((nx >= 0) && (nx <= (MAP_W - 1) * TW) &&
+                !is_solid(check_tx, gy) &&
+                !other_guard_near(i, nx, g->py))
             {
                 g->px = nx;
-                g->facing = dx;
                 g->anim++;
             }
             else
@@ -860,7 +1185,7 @@ static void step_guards(uint32_t now, uint32_t frame)
             }
         }
 
-        /* Check if Guard catches Player */
+        /* 6. Check if Guard catches Player */
         if ((iabs16((int16_t)(g->px - s_px)) <= 6) &&
             (iabs16((int16_t)(g->py - s_py)) <= 7))
         {

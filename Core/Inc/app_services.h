@@ -15,6 +15,7 @@ int32_t  AppSvc_GpioGetCaps(SDK_GpioCaps_t *dst);
 int32_t  AppSvc_GpioConfig(uint32_t pin, uint32_t mode);
 int32_t  AppSvc_GpioWrite(uint32_t pin, uint32_t value);
 int32_t  AppSvc_GpioRead(uint32_t pin);
+int32_t  AppSvc_GetTempDeci(uint32_t source); /* syscall gate */
 
 /* Returns sound and user pins to a safe state after the app ends */
 void AppSvc_ResetHardware(void);

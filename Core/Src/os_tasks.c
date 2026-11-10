@@ -10,6 +10,7 @@
 #include "sdcard_fatfs.h"
 #include "fatfs.h"
 #include "app_loader.h"
+#include "uart_loader.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -150,6 +151,10 @@ static void InputAudioTask(void *argument)
                         {
                             AppLoader_RequestExit();
                         }
+                    }
+                    else if (btn_msg.id == BUTTON_KEY2)
+                    {
+                        Screenshot_Request();
                     }
                     else
                     {

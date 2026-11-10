@@ -1,4 +1,5 @@
 #include "system_post.h"
+#include "memory_map.h"
 #include "ili9341_simple.h"
 #include "fatfs.h"
 #include "AT24Cxx.h"
@@ -7,17 +8,38 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SRAM_BASE_ADDR    0x68000000U
-#define SRAM_SIZE_BYTES   (1024 * 1024) /* 1 MB */
+#define SRAM_BASE_ADDR        MM_EXT_BASE
+#define SRAM_SIZE_BYTES       MM_EXT_SIZE
+#define SRAM_ADDR_BITS        19U /* A0..A18 = 512K x 16-bit (1 MB) */
+#define SRAM_ADDR_PROBES      (SRAM_ADDR_BITS + 1U)
 
 static POST_Report_t post_report = {0};
 
 /* Dedicated CCM test word: the rest of CCM holds live task stacks and the RTOS heap */
 CCMRAM_BUF static volatile uint32_t s_ccm_test_word;
 
-/* External function prototype from display driver */
+/* External handles & prototypes */
+extern IWDG_HandleTypeDef hiwdg;
 extern uint16_t lcdReadID(void);
 extern char SDPath[4];
+
+static void Record_SRAM_Failure(uint32_t addr, uint32_t expected, uint32_t actual)
+{
+    if (post_report.sram_fail_addr == 0U)
+    {
+        post_report.sram_fail_addr = addr;
+        post_report.sram_fail_exp  = expected;
+        post_report.sram_fail_got  = actual;
+    }
+}
+
+static inline uint32_t Prbs32_Step(uint32_t x)
+{
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
+}
 
 /**
  * @brief Non-destructive fast memory test for CCM RAM
@@ -45,49 +67,237 @@ static bool Test_CCMRAM(void)
 }
 
 /**
- * @brief Non-destructive full address-line (A0..A18) & anti-aliasing test for 1 MB FSMC SRAM
+ * @brief Stage 1: Non-destructive D0..D15 walking 1/0 + NBL0/NBL1 byte-lane strobe test
  */
-static bool Test_SRAM(void)
+static bool Test_SRAM_DataBus(void)
 {
-    volatile uint16_t *base   = (volatile uint16_t *)SRAM_BASE_ADDR;         /* 0x68000000 (A18 = 0) */
-    volatile uint16_t *upper  = (volatile uint16_t *)(SRAM_BASE_ADDR + 0x80000U); /* 0x68080000 (A18 = 1) */
-    volatile uint16_t *end    = (volatile uint16_t *)(SRAM_BASE_ADDR + SRAM_SIZE_BYTES - 2U);
+    volatile uint16_t *p0 = (volatile uint16_t *)SRAM_BASE_ADDR;
+    volatile uint16_t *p1 = (volatile uint16_t *)(SRAM_BASE_ADDR + 2UL);
 
-    /* Save original values */
-    uint16_t orig_base  = *base;
-    uint16_t orig_upper = *upper;
-    uint16_t orig_end   = *end;
+    uint16_t orig0 = *p0;
+    uint16_t orig1 = *p1;
     bool pass = true;
 
-    /* Simultaneous write to verify A18 (512 KB boundary) does not alias! */
-    *base  = 0xCAFEU;
-    *upper = 0xBEEFU;
-    *end   = 0x1234U;
-    __DSB();
-
-    if (*base != 0xCAFEU || *upper != 0xBEEFU || *end != 0x1234U)
+    for (uint32_t bit = 0U; bit < 16U; bit++)
     {
-        pass = false;
+        uint16_t pat = (uint16_t)(1U << bit);
+        uint16_t inv = (uint16_t)~pat;
+
+        /* Drive opposite polarity on adjacent address to discharge FSMC bus capacitance */
+        *p0 = pat;
+        *p1 = inv;
+        __DSB();
+
+        uint16_t r0 = *p0;
+        uint16_t r1 = *p1;
+        if (r0 != pat)
+        {
+            Record_SRAM_Failure((uint32_t)p0, pat, r0);
+            pass = false;
+            break;
+        }
+        if (r1 != inv)
+        {
+            Record_SRAM_Failure((uint32_t)p1, inv, r1);
+            pass = false;
+            break;
+        }
+
+        /* Walking-0 pass */
+        *p0 = inv;
+        *p1 = pat;
+        __DSB();
+
+        r0 = *p0;
+        r1 = *p1;
+        if (r0 != inv)
+        {
+            Record_SRAM_Failure((uint32_t)p0, inv, r0);
+            pass = false;
+            break;
+        }
+        if (r1 != pat)
+        {
+            Record_SRAM_Failure((uint32_t)p1, pat, r1);
+            pass = false;
+            break;
+        }
     }
 
-    /* Invert patterns */
-    *base  = 0x55AAU;
-    *upper = 0xAA55U;
-    *end   = 0x4321U;
-    __DSB();
-
-    if (*base != 0x55AAU || *upper != 0xAA55U || *end != 0x4321U)
+    /* Verify NBL0 (PE0) and NBL1 (PE1) individual byte-write strobes */
+    if (pass)
     {
-        pass = false;
+        volatile uint8_t *b0 = (volatile uint8_t *)p0;
+        *p0 = 0xA55AU;
+        __DSB();
+
+        b0[0] = 0x3CU;
+        __DSB();
+        uint16_t r_low = *p0;
+        if (r_low != 0xA53CU)
+        {
+            Record_SRAM_Failure((uint32_t)p0, 0xA53CU, r_low);
+            pass = false;
+        }
+
+        b0[1] = 0x96U;
+        __DSB();
+        uint16_t r_high = *p0;
+        if (r_high != 0x963CU)
+        {
+            Record_SRAM_Failure((uint32_t)p0, 0x963CU, r_high);
+            pass = false;
+        }
     }
 
-    /* Restore original values */
-    *base  = orig_base;
-    *upper = orig_upper;
-    *end   = orig_end;
+    *p0 = orig0;
+    *p1 = orig1;
+    __DSB();
+    return pass;
+}
+
+/**
+ * @brief Stage 2: Non-destructive A0..A18 address walking-1 & anti-aliasing test across 1 MB
+ */
+static bool Test_SRAM_AddrBus(void)
+{
+    volatile uint16_t *base = (volatile uint16_t *)SRAM_BASE_ADDR;
+    uint16_t saved[SRAM_ADDR_PROBES];
+    bool pass = true;
+
+    for (uint32_t i = 0U; i < SRAM_ADDR_PROBES; i++)
+    {
+        uint32_t hw_off = (i == 0U) ? 0UL : (1UL << (i - 1U));
+        saved[i] = base[hw_off];
+    }
+
+    for (uint32_t i = 0U; i < SRAM_ADDR_PROBES; i++)
+    {
+        uint32_t hw_off = (i == 0U) ? 0UL : (1UL << (i - 1U));
+        base[hw_off] = (uint16_t)(0x5A00U ^ (i * 0x0305U) ^ i);
+    }
+    __DSB();
+
+    for (uint32_t i = 0U; i < SRAM_ADDR_PROBES && pass; i++)
+    {
+        uint32_t target_off = (i == 0U) ? 0UL : (1UL << (i - 1U));
+        uint16_t sig_i = (uint16_t)(0x5A00U ^ (i * 0x0305U) ^ i);
+        uint16_t inv_i = (uint16_t)~sig_i;
+
+        base[target_off] = inv_i;
+        __DSB();
+
+        for (uint32_t j = 0U; j < SRAM_ADDR_PROBES; j++)
+        {
+            uint32_t check_off = (j == 0U) ? 0UL : (1UL << (j - 1U));
+            uint16_t expected  = (j == i) ? inv_i : (uint16_t)(0x5A00U ^ (j * 0x0305U) ^ j);
+            uint16_t actual    = base[check_off];
+            if (actual != expected)
+            {
+                Record_SRAM_Failure((uint32_t)&base[check_off], expected, actual);
+                pass = false;
+                break;
+            }
+        }
+
+        base[target_off] = sig_i;
+        __DSB();
+    }
+
+    /* Restore in reverse order in case an address pin is stuck */
+    for (int32_t i = (int32_t)SRAM_ADDR_PROBES - 1; i >= 0; i--)
+    {
+        uint32_t hw_off = (i == 0) ? 0UL : (1UL << ((uint32_t)i - 1U));
+        base[hw_off] = saved[i];
+    }
     __DSB();
 
     return pass;
+}
+
+/**
+ * @brief Stage 3: 512 KB PRBS-32 + bitwise-inverse March test on MM_EXT_APP_BASE
+ */
+static bool Test_SRAM_PRBS512K(uint32_t seed)
+{
+    volatile uint32_t *buf = (volatile uint32_t *)MM_EXT_APP_BASE;
+    const uint32_t words   = MM_EXT_APP_SIZE / sizeof(uint32_t);
+    const uint32_t init_st = (seed != 0U) ? seed : 0x13579BDFU;
+
+    (void)HAL_IWDG_Refresh(&hiwdg);
+
+    /* Pass 1: Fill with PRBS-32 ^ word_index */
+    uint32_t st = init_st;
+    for (uint32_t i = 0U; i < words; i++)
+    {
+        st = Prbs32_Step(st);
+        buf[i] = st ^ i;
+    }
+    __DSB();
+
+    /* Pass 2: Verify PRBS-32 and write bitwise complement */
+    st = init_st;
+    for (uint32_t i = 0U; i < words; i++)
+    {
+        st = Prbs32_Step(st);
+        uint32_t exp = st ^ i;
+        uint32_t got = buf[i];
+        if (got != exp)
+        {
+            Record_SRAM_Failure((uint32_t)&buf[i], exp, got);
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            return false;
+        }
+        buf[i] = ~exp;
+    }
+    __DSB();
+
+    /* Pass 3: Verify complement and clear back to zero */
+    st = init_st;
+    for (uint32_t i = 0U; i < words; i++)
+    {
+        st = Prbs32_Step(st);
+        uint32_t exp = ~(st ^ i);
+        uint32_t got = buf[i];
+        if (got != exp)
+        {
+            Record_SRAM_Failure((uint32_t)&buf[i], exp, got);
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            return false;
+        }
+        buf[i] = 0U;
+    }
+    __DSB();
+
+    (void)HAL_IWDG_Refresh(&hiwdg);
+    return true;
+}
+
+bool POST_RunSRAMFullTest(uint32_t seed)
+{
+    uint32_t t0 = HAL_GetTick();
+
+    post_report.sram_fail_addr   = 0U;
+    post_report.sram_fail_exp    = 0U;
+    post_report.sram_fail_got    = 0U;
+
+    post_report.sram_data_bus_ok = Test_SRAM_DataBus();
+    post_report.sram_addr_bus_ok = Test_SRAM_AddrBus();
+    post_report.sram_prbs_ok     = Test_SRAM_PRBS512K(seed);
+
+    post_report.sram_ok      = post_report.sram_data_bus_ok &&
+                               post_report.sram_addr_bus_ok &&
+                               post_report.sram_prbs_ok;
+    post_report.sram_size_kb = post_report.sram_ok ? 1024U : 0U;
+    post_report.sram_test_ms = HAL_GetTick() - t0;
+
+    post_report.sram_stress_runs++;
+    if (!post_report.sram_ok)
+    {
+        post_report.sram_stress_errs++;
+    }
+
+    return post_report.sram_ok;
 }
 
 /**
@@ -125,13 +335,11 @@ POST_Status_t POST_RunSelfTest(void)
     memset(&post_report, 0, sizeof(POST_Report_t));
     POST_Status_t overall_status = POST_OK;
 
-    /* 1. Test FSMC External SRAM (Non-destructive) */
-    post_report.sram_ok = Test_SRAM();
-    if (post_report.sram_ok)
-    {
-        post_report.sram_size_kb = 1024;
-    }
-    else
+    /* 1. Test FSMC External SRAM (Data bus D0..D15 + NBL0/1, Address bus A0..A18, 512 KB PRBS-32) */
+    bool sram_pass = POST_RunSRAMFullTest(0x13579BDFU);
+    post_report.sram_stress_runs = 0U;
+    post_report.sram_stress_errs = 0U;
+    if (!sram_pass)
     {
         overall_status = POST_ERR_SRAM;
     }
@@ -200,11 +408,19 @@ void POST_PrintSummary(void)
     /* SRAM status */
     if (post_report.sram_ok)
     {
-        printf("[POST][OK]   FSMC SRAM: %lu KB PASS\r\n", (unsigned long)post_report.sram_size_kb);
+        printf("[POST][OK]   FSMC SRAM: %lu KB PASS (Data:OK Addr:OK PRBS:OK, %lu ms)\r\n",
+               (unsigned long)post_report.sram_size_kb,
+               (unsigned long)post_report.sram_test_ms);
     }
     else
     {
-        printf("[POST][FAIL] FSMC SRAM: Test Failed!\r\n");
+        printf("[POST][FAIL] FSMC SRAM: FAIL (Data:%s Addr:%s PRBS:%s) @0x%08lX exp=0x%08lX got=0x%08lX\r\n",
+               post_report.sram_data_bus_ok ? "OK" : "ERR",
+               post_report.sram_addr_bus_ok ? "OK" : "ERR",
+               post_report.sram_prbs_ok     ? "OK" : "ERR",
+               (unsigned long)post_report.sram_fail_addr,
+               (unsigned long)post_report.sram_fail_exp,
+               (unsigned long)post_report.sram_fail_got);
     }
 
     /* CCM RAM status */

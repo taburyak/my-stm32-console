@@ -75,6 +75,11 @@ typedef struct {
 #define SDK_SVC_GPIO_CONFIG     46U
 #define SDK_SVC_GPIO_WRITE      47U
 #define SDK_SVC_GPIO_READ       48U
+#define SDK_SVC_TEMP_GET        49U /* blocking (kernel gate): a0=0 -> MCU temp (0.1 C), a0=1 -> Ext DS18B20 temp (0.1 C) */
+
+#define SDK_TEMP_SRC_MCU        0U
+#define SDK_TEMP_SRC_EXT        1U
+#define SDK_TEMP_INVALID        (-32768)
 
 #define SDK_SLEEP_MAX_MS        1000U
 

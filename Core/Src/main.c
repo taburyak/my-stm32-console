@@ -41,6 +41,8 @@
 #include "os_tasks.h"
 #include "ui_manager.h"
 #include "app_loader.h"
+#include "uart_loader.h"
+#include "temp_sensor.h"
 #include "ccmram.h"
 /* USER CODE END Includes */
 
@@ -63,6 +65,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 CRC_HandleTypeDef hcrc;
 
 I2C_HandleTypeDef hi2c1;
@@ -130,6 +134,7 @@ static void MX_USB_OTG_FS_HCD_Init(void);
 static void MX_RTC_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_TIM5_Init(void);
+static void MX_ADC1_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -141,13 +146,19 @@ void MPU_Config_UserSandbox(void);
 /* Redirecting `printf` for GCC and Picolibc (CMake toolchain) */
 int __io_putchar(int ch)
 {
-    HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    if (!UARTLoader_IsSessionActive())
+    {
+        HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    }
     return ch;
 }
 
 int _write(int file, char *ptr, int len)
 {
-    HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
+    if (!UARTLoader_IsSessionActive())
+    {
+        HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
+    }
     return len;
 }
 
@@ -162,7 +173,6 @@ unsigned long getRunTimeCounterValue(void)
     return (unsigned long)__HAL_TIM_GET_COUNTER(&htim5);
 }
 /* USER CODE END 0 */
-
 
 /**
   * @brief  The application entry point.
@@ -205,6 +215,7 @@ int main(void)
   MX_RTC_Init();
   MX_IWDG_Init();
   MX_TIM5_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -324,6 +335,58 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -857,8 +920,8 @@ static void MX_FSMC_Init(void)
   /* Timing */
   Timing.AddressSetupTime = 2;
   Timing.AddressHoldTime = 15;
-  Timing.DataSetupTime = 5;
-  Timing.BusTurnAroundDuration = 2;
+  Timing.DataSetupTime = 6;
+  Timing.BusTurnAroundDuration = 3;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -889,10 +952,10 @@ static void MX_FSMC_Init(void)
   hsram3.Init.WriteBurst = FSMC_WRITE_BURST_DISABLE;
   hsram3.Init.PageSize = FSMC_PAGE_SIZE_NONE;
   /* Timing */
-  Timing.AddressSetupTime = 2;
+  Timing.AddressSetupTime = 3;
   Timing.AddressHoldTime = 15;
-  Timing.DataSetupTime = 8;
-  Timing.BusTurnAroundDuration = 2;
+  Timing.DataSetupTime = 12;
+  Timing.BusTurnAroundDuration = 3;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -904,11 +967,16 @@ static void MX_FSMC_Init(void)
   }
 
   /* USER CODE BEGIN FSMC_Init 2 */
-  /* Add 2 HCLK cycles of Bus Turnaround (BUSTURN) on Bank 3 (SRAM) and Bank 4 (LCD)
-   * to prevent FSMC data bus contention when switching between LCD writes and SRAM instruction fetches! */
-  FSMC_Bank1->BTCR[5] |= (2UL << 16); /* Bank 3 BUSTURN = 2 */
-  FSMC_Bank1->BTCR[7] |= (2UL << 16); /* Bank 4 BUSTURN = 2 */
-  __DSB();
+  /* Fallback override if CubeMX .ioc timings are ever reset:
+   * - Bank 3 (IS62WV51216BLL-55, tAA=55ns): ADDSET=3, DATAST=12 (89.3ns @ 168MHz), BUSTURN=3
+   * - Bank 4 (ILI9341 LCD): ADDSET=2, DATAST=6, BUSTURN=3
+   *
+   * FSMC_Bank1->BTCR[5] = (FSMC_Bank1->BTCR[5] & ~(0xFFUL | (0xFFUL << 8) | (0x0FUL << 16))) |
+   *                       (3UL << 0) | (12UL << 8) | (3UL << 16);
+   * FSMC_Bank1->BTCR[7] = (FSMC_Bank1->BTCR[7] & ~(0xFFUL | (0xFFUL << 8) | (0x0FUL << 16))) |
+   *                       (2UL << 0) | (6UL << 8) | (3UL << 16);
+   * __DSB();
+   */
   /* USER CODE END FSMC_Init 2 */
 }
 
@@ -1080,8 +1148,12 @@ void StartDefaultTask(void *argument)
   /* 7. Spawn InputAudioTask & StorageIoTask in CCM RAM */
   OSTasks_Init();
 
-  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) */
+  /* 7.5. Initialize MCU internal temperature sensor & probe external DS18B20 on PA15 */
+  (void)TempSensor_Init();
+
+  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & UART3 Background Uploader */
   UIManager_Init();
+  UARTLoader_Init();
 
   uint32_t last_heartbeat_tick = 0;
   Gui_EventMsg_t gui_evt;
@@ -1094,10 +1166,28 @@ void StartDefaultTask(void *argument)
     /* 1. Refresh Watchdog - must be called regardless of whether an app is running */
     HAL_IWDG_Refresh(&hiwdg);
 
+    /* 1.5. Process screenshot hotkey (KEY2 long press, F12/PrtSc, or Select+R1) */
+    if (Screenshot_TakeRequest() && !AppLoader_IsRunning())
+    {
+      char shot_path[64] = {0};
+      if (Screenshot_CaptureToSD(shot_path, sizeof(shot_path)))
+      {
+        printf("[SHOT] Saved screenshot: %s\r\n", shot_path);
+      }
+    }
+
     /* 2. If an external .bin app is running in SandboxTask, yield display to it */
     if (AppLoader_IsRunning())
     {
       was_app_running = true;
+      if (Screenshot_TakeRequest())
+      {
+        char shot_path[64] = {0};
+        if (Screenshot_CaptureToSD(shot_path, sizeof(shot_path)))
+        {
+          printf("[SHOT] Saved in-game screenshot: %s\r\n", shot_path);
+        }
+      }
       AppLoader_Service();
       osDelay(20);
       continue;
@@ -1107,8 +1197,7 @@ void StartDefaultTask(void *argument)
     {
       /* External app just exited! Restore LVGL screen redraw */
       was_app_running = false;
-      UIManager_ShowScreen(UI_SCREEN_GAMES);
-      lv_obj_invalidate(lv_scr_act());
+      UIManager_OnAppExit();
 
       AppLoader_FaultInfo_t fault;
       if (AppLoader_TakeFaultInfo(&fault))
@@ -1138,15 +1227,28 @@ void StartDefaultTask(void *argument)
       }
     }
 
-    /* 2. Non-blocking Heartbeat on LD0 (1 Hz) */
+    /* 2. Non-blocking Heartbeat on LD0 (1 Hz) & periodic MCU overheat check (0.2 Hz) */
     if ((HAL_GetTick() - last_heartbeat_tick) >= 500)
     {
       last_heartbeat_tick = HAL_GetTick();
       StatusLED_Toggle(STATUS_LED_HEARTBEAT);
+      TempSensor_PeriodicMcuCheck();
     }
 
-        /* 3. Update Top Status Bar (RTC Clock & USB/SD indicators) */
-        UIManager_Update();
+    /* 3. Check for zero-touch USART3 upload trigger from PC */
+    if (UARTLoader_TakeAutoTrigger())
+    {
+      (void)UARTLoader_RunSession(true);
+      if (!AppLoader_IsRunning())
+      {
+        UIManager_ShowScreen(UI_SCREEN_GAMES);
+        lv_obj_invalidate(lv_scr_act());
+      }
+      continue;
+    }
+
+    /* 4. Update Top Status Bar (RTC Clock & USB/SD indicators) */
+    UIManager_Update();
 
         /* 4. LVGL Graphics Rendering */
         LVGL_Port_HandleFlushConfirmation();

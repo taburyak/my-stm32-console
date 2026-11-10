@@ -3,6 +3,7 @@
 #include "beeper.h"
 #include "usb_host_manager.h"
 #include "ili9341_simple.h"
+#include "temp_sensor.h"
 #include <string.h>
 
 extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
@@ -200,6 +201,20 @@ int32_t AppSvc_GpioRead(uint32_t pin)
         return r;
     }
     return (HAL_GPIO_ReadPin(s_user_gpio[pin].port, s_user_gpio[pin].pin) == GPIO_PIN_SET) ? 1 : 0;
+}
+
+int32_t AppSvc_GetTempDeci(uint32_t source)
+{
+    if (source == SDK_TEMP_SRC_MCU)
+    {
+        return TempSensor_ReadMcuDeciC();
+    }
+    if (source == SDK_TEMP_SRC_EXT)
+    {
+        int32_t ext_dc = 0;
+        return TempSensor_ReadExtDeciC(&ext_dc) ? ext_dc : SDK_TEMP_INVALID;
+    }
+    return SDK_TEMP_INVALID;
 }
 
 void AppSvc_ResetHardware(void)
