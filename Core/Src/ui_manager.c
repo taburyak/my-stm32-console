@@ -84,7 +84,7 @@ static char       s_action_file_name[STORAGE_MAX_NAME_LEN];
 static char       s_clip_path[STORAGE_MAX_PATH_LEN];
 static char       s_clip_name[STORAGE_MAX_NAME_LEN];
 static bool       s_clip_is_cut     = false;
-static bool       s_fname_is_rename = false;
+static uint8_t    s_fname_mode      = 0U;
 static uint8_t    s_selected_ext_idx = 0U;
 static char       s_orig_rename_ext[12];
 static char s_clicked_item[STORAGE_MAX_NAME_LEN];
@@ -1174,8 +1174,15 @@ static const char * const s_supported_exts[] = {
     ".bin", ".bmp", ".png", ".jpg", ".sjpg"
 };
 
+typedef enum {
+    FNAME_MODE_NEW_FILE = 0,
+    FNAME_MODE_RENAME_FILE,
+    FNAME_MODE_NEW_DIR,
+    FNAME_MODE_RENAME_DIR
+} Fname_DialogMode_t;
+
 static void Open_File_Action_Menu(const char *rel_path, const char *item_name);
-static void Open_File_Name_Dialog(bool is_rename);
+static void Open_File_Name_Dialog(Fname_DialogMode_t mode);
 static void Open_Delete_Confirm_Dialog(void);
 
 static bool Is_Supported_File_Ext(const char *filename)
@@ -1312,13 +1319,13 @@ static void fname_confirm_cb(lv_event_t * e)
     const char *raw = lv_textarea_get_text(s_editor_ta);
     while (raw != NULL && *raw == ' ') raw++;
 
-    if (raw == NULL || raw[0] == '\0')
+    if (raw == NULL || raw[0] == '\0' || strcmp(raw, ".") == 0 || strcmp(raw, "..") == 0)
     {
         Beeper_ErrorAlert();
         if (s_fname_status_lbl != NULL)
         {
             lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0xFF5555), 0);
-            lv_label_set_text(s_fname_status_lbl, "Error: Enter a file name!");
+            lv_label_set_text(s_fname_status_lbl, "Error: Enter a valid name!");
         }
         return;
     }
@@ -1336,6 +1343,103 @@ static void fname_confirm_cb(lv_event_t * e)
                 lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0xFF5555), 0);
                 lv_label_set_text(s_fname_status_lbl, "Invalid char in name!");
             }
+            return;
+        }
+    }
+
+    const char *dir = Get_Current_Rel_Dir();
+
+    /* Directory Creation or Directory Rename */
+    if (s_fname_mode == (uint8_t)FNAME_MODE_NEW_DIR ||
+        s_fname_mode == (uint8_t)FNAME_MODE_RENAME_DIR)
+    {
+        char folder_name[STORAGE_MAX_NAME_LEN];
+        snprintf(folder_name, sizeof(folder_name), "%.48s", raw);
+
+        if (s_fname_mode == (uint8_t)FNAME_MODE_NEW_DIR)
+        {
+            if (dir[0] == '\0')
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "%s", folder_name);
+            }
+            else
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.48s", dir, folder_name);
+            }
+
+            if (f_stat(s_next_path, &s_ui_fno) == FR_OK)
+            {
+                Beeper_ErrorAlert();
+                if (s_fname_status_lbl != NULL)
+                {
+                    lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0xFF5555), 0);
+                    lv_label_set_text(s_fname_status_lbl, "Folder already exists!");
+                }
+                return;
+            }
+
+            if (f_mkdir(s_next_path) != FR_OK)
+            {
+                Beeper_ErrorAlert();
+                if (s_fname_status_lbl != NULL)
+                {
+                    lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0xFF5555), 0);
+                    lv_label_set_text(s_fname_status_lbl, "SD mkdir failed!");
+                }
+                return;
+            }
+
+            Beeper_Beep(15);
+            s_pending_screen = (int8_t)UI_SCREEN_FILES;
+            return;
+        }
+        else
+        {
+            /* Rename current folder (dir is e.g. "games/sub" or "sub") */
+            char parent_rel[STORAGE_MAX_PATH_LEN];
+            strncpy(parent_rel, dir, sizeof(parent_rel) - 1U);
+            parent_rel[sizeof(parent_rel) - 1U] = '\0';
+            char *slash = strrchr(parent_rel, '/');
+            if (slash != NULL)
+            {
+                *slash = '\0';
+                snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.48s", parent_rel, folder_name);
+            }
+            else
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "%s", folder_name);
+            }
+
+            if (strcmp(dir, s_next_path) == 0)
+            {
+                Beeper_Click();
+                s_pending_screen = (int8_t)UI_SCREEN_FILES;
+                return;
+            }
+            if (f_stat(s_next_path, &s_ui_fno) == FR_OK)
+            {
+                Beeper_ErrorAlert();
+                if (s_fname_status_lbl != NULL)
+                {
+                    lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0xFF5555), 0);
+                    lv_label_set_text(s_fname_status_lbl, "Folder already exists!");
+                }
+                return;
+            }
+            if (f_rename(dir, s_next_path) != FR_OK)
+            {
+                Beeper_ErrorAlert();
+                if (s_fname_status_lbl != NULL)
+                {
+                    lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0xFF5555), 0);
+                    lv_label_set_text(s_fname_status_lbl, "SD Rename failed!");
+                }
+                return;
+            }
+
+            snprintf(g_dir_cache.path, sizeof(g_dir_cache.path), "/%.120s", s_next_path);
+            Beeper_Beep(15);
+            s_pending_screen = (int8_t)UI_SCREEN_FILES;
             return;
         }
     }
@@ -1368,7 +1472,6 @@ static void fname_confirm_cb(lv_event_t * e)
         snprintf(final_name, sizeof(final_name), "%.*s%s", (int)stem_len, raw, ext);
     }
 
-    const char *dir = Get_Current_Rel_Dir();
     if (dir[0] == '\0')
     {
         snprintf(s_next_path, sizeof(s_next_path), "%s", final_name);
@@ -1378,7 +1481,7 @@ static void fname_confirm_cb(lv_event_t * e)
         snprintf(s_next_path, sizeof(s_next_path), "%.60s/%.50s", dir, final_name);
     }
 
-    if (s_fname_is_rename)
+    if (s_fname_mode == (uint8_t)FNAME_MODE_RENAME_FILE)
     {
         if (strcmp(s_action_file_path, s_next_path) == 0)
         {
@@ -1478,13 +1581,17 @@ static void fname_confirm_cb(lv_event_t * e)
     Open_Text_Preview(s_next_path);
 }
 
-static void Open_File_Name_Dialog(bool is_rename)
+static void Open_File_Name_Dialog(Fname_DialogMode_t mode)
 {
-    s_fname_is_rename = is_rename;
+    s_fname_mode = (uint8_t)mode;
     s_orig_rename_ext[0] = '\0';
+    bool is_dir_mode = (mode == FNAME_MODE_NEW_DIR || mode == FNAME_MODE_RENAME_DIR);
+    bool is_rename   = (mode == FNAME_MODE_RENAME_FILE || mode == FNAME_MODE_RENAME_DIR);
 
     char default_stem[STORAGE_MAX_NAME_LEN];
-    if (is_rename)
+    const char *dir = Get_Current_Rel_Dir();
+
+    if (mode == FNAME_MODE_RENAME_FILE)
     {
         strncpy(default_stem, s_action_file_name, sizeof(default_stem) - 1U);
         default_stem[sizeof(default_stem) - 1U] = '\0';
@@ -1509,10 +1616,37 @@ static void Open_File_Name_Dialog(bool is_rename)
             s_selected_ext_idx = 0U;
         }
     }
+    else if (mode == FNAME_MODE_RENAME_DIR)
+    {
+        const char *leaf = strrchr(dir, '/');
+        leaf = (leaf != NULL) ? (leaf + 1) : dir;
+        strncpy(default_stem, leaf, sizeof(default_stem) - 1U);
+        default_stem[sizeof(default_stem) - 1U] = '\0';
+        s_selected_ext_idx = 0U;
+    }
+    else if (mode == FNAME_MODE_NEW_DIR)
+    {
+        s_selected_ext_idx = 0U;
+        for (uint32_t n = 1U; n <= 99U; n++)
+        {
+            snprintf(default_stem, sizeof(default_stem), "folder_%lu", (unsigned long)n);
+            if (dir[0] == '\0')
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "%s", default_stem);
+            }
+            else
+            {
+                snprintf(s_next_path, sizeof(s_next_path), "%.60s/%s", dir, default_stem);
+            }
+            if (f_stat(s_next_path, &s_ui_fno) != FR_OK)
+            {
+                break;
+            }
+        }
+    }
     else
     {
         s_selected_ext_idx = 0U; /* .c by default */
-        const char *dir = Get_Current_Rel_Dir();
         for (uint32_t n = 1U; n <= 99U; n++)
         {
             snprintf(default_stem, sizeof(default_stem), "script_%lu", (unsigned long)n);
@@ -1554,10 +1688,15 @@ static void Open_File_Name_Dialog(bool is_rename)
     lv_obj_add_event_cb(btn_back, close_preview_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(btn_back, close_preview_cb, LV_EVENT_KEY, NULL);
 
+    const char *dlg_title = "Create New File";
+    if (mode == FNAME_MODE_RENAME_FILE)     dlg_title = "Rename File";
+    else if (mode == FNAME_MODE_NEW_DIR)    dlg_title = "New Folder";
+    else if (mode == FNAME_MODE_RENAME_DIR) dlg_title = "Rename Folder";
+
     lv_obj_t *title_lbl = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(title_lbl, lv_color_hex(accent_hex), 0);
     lv_obj_set_pos(title_lbl, 70, 8);
-    lv_label_set_text(title_lbl, is_rename ? "Rename File" : "Create New File");
+    lv_label_set_text(title_lbl, dlg_title);
 
     lv_obj_t *btn_kbd = lv_btn_create(workspace_cont);
     lv_obj_set_size(btn_kbd, 42, 24);
@@ -1595,25 +1734,32 @@ static void Open_File_Name_Dialog(bool is_rename)
     lv_obj_add_event_cb(s_editor_ta, editor_ta_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(s_editor_ta, fname_confirm_cb, LV_EVENT_READY, NULL);
 
-    /* Supported Extension Selector Buttons (.c .txt .h .md .ini .cfg) */
-    for (uint8_t i = 0U; i < SUPPORTED_CREATE_EXT_COUNT; i++)
+    if (!is_dir_mode)
     {
-        lv_obj_t *ebtn = lv_btn_create(workspace_cont);
-        lv_obj_set_size(ebtn, 48, 22);
-        lv_obj_set_pos(ebtn, (int16_t)(6 + i * 51), 70);
-        lv_obj_t *elbl = lv_label_create(ebtn);
-        lv_label_set_text(elbl, s_create_exts[i]);
-        lv_obj_center(elbl);
-        lv_obj_add_event_cb(ebtn, fname_ext_btn_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
-        lv_obj_add_event_cb(ebtn, fname_ext_btn_cb, LV_EVENT_KEY, NULL);
-        s_ext_btns[i] = ebtn;
+        /* Supported Extension Selector Buttons (.c .txt .h .md .ini .cfg) */
+        for (uint8_t i = 0U; i < SUPPORTED_CREATE_EXT_COUNT; i++)
+        {
+            lv_obj_t *ebtn = lv_btn_create(workspace_cont);
+            lv_obj_set_size(ebtn, 48, 22);
+            lv_obj_set_pos(ebtn, (int16_t)(6 + i * 51), 70);
+            lv_obj_t *elbl = lv_label_create(ebtn);
+            lv_label_set_text(elbl, s_create_exts[i]);
+            lv_obj_center(elbl);
+            lv_obj_add_event_cb(ebtn, fname_ext_btn_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+            lv_obj_add_event_cb(ebtn, fname_ext_btn_cb, LV_EVENT_KEY, NULL);
+            s_ext_btns[i] = ebtn;
+        }
+        Update_Ext_Buttons_Style();
     }
-    Update_Ext_Buttons_Style();
 
     s_fname_status_lbl = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(s_fname_status_lbl, lv_color_hex(0x90A4AE), 0);
-    lv_obj_set_pos(s_fname_status_lbl, 8, 95);
-    if (s_selected_ext_idx < SUPPORTED_CREATE_EXT_COUNT)
+    lv_obj_set_pos(s_fname_status_lbl, 8, is_dir_mode ? 76 : 95);
+    if (is_dir_mode)
+    {
+        lv_label_set_text_fmt(s_fname_status_lbl, "Parent folder: %s", g_dir_cache.path);
+    }
+    else if (s_selected_ext_idx < SUPPORTED_CREATE_EXT_COUNT)
     {
         lv_label_set_text_fmt(s_fname_status_lbl, "Selected extension: %s", s_create_exts[s_selected_ext_idx]);
     }
@@ -1633,9 +1779,12 @@ static void Open_File_Name_Dialog(bool is_rename)
     {
         /* Focus order left-to-right, top-to-bottom */
         lv_group_add_obj(grp, s_editor_ta);
-        for (uint8_t i = 0U; i < SUPPORTED_CREATE_EXT_COUNT; i++)
+        if (!is_dir_mode)
         {
-            lv_group_add_obj(grp, s_ext_btns[i]);
+            for (uint8_t i = 0U; i < SUPPORTED_CREATE_EXT_COUNT; i++)
+            {
+                lv_group_add_obj(grp, s_ext_btns[i]);
+            }
         }
         lv_group_add_obj(grp, btn_back);
         lv_group_add_obj(grp, btn_kbd);
@@ -1902,7 +2051,7 @@ static void file_action_btn_cb(lv_event_t * e)
             break;
 
         case FILE_ACT_RENAME:
-            Open_File_Name_Dialog(true);
+            Open_File_Name_Dialog(FNAME_MODE_RENAME_FILE);
             break;
 
         case FILE_ACT_COPY:
@@ -2060,7 +2209,45 @@ static void file_list_btn_event_cb(lv_event_t * e)
 
         if (strcmp(s_clicked_item, "[ + New File... ]") == 0)
         {
-            Open_File_Name_Dialog(false);
+            Open_File_Name_Dialog(FNAME_MODE_NEW_FILE);
+            return;
+        }
+
+        if (strcmp(s_clicked_item, "[ + New Folder... ]") == 0)
+        {
+            Open_File_Name_Dialog(FNAME_MODE_NEW_DIR);
+            return;
+        }
+
+        if (strcmp(s_clicked_item, "[ Rename Current Folder ]") == 0)
+        {
+            Open_File_Name_Dialog(FNAME_MODE_RENAME_DIR);
+            return;
+        }
+
+        if (strcmp(s_clicked_item, "[ Delete Empty Folder ]") == 0)
+        {
+            const char *cur_rel = Get_Current_Rel_Dir();
+            if (cur_rel[0] != '\0' && f_unlink(cur_rel) == FR_OK)
+            {
+                Beeper_Beep(15);
+                strncpy(s_next_path, g_dir_cache.path, sizeof(s_next_path) - 1U);
+                s_next_path[sizeof(s_next_path) - 1U] = '\0';
+                char *last_slash = strrchr(s_next_path, '/');
+                if (last_slash == NULL || last_slash == s_next_path)
+                {
+                    OSTasks_RequestDirList("/");
+                }
+                else
+                {
+                    *last_slash = '\0';
+                    OSTasks_RequestDirList(s_next_path);
+                }
+            }
+            else
+            {
+                Beeper_ErrorAlert();
+            }
             return;
         }
 
@@ -2175,6 +2362,11 @@ static void Populate_File_List_From_Cache(void)
         lv_obj_add_event_cb(new_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
         if (grp != NULL) lv_group_add_obj(grp, new_btn);
 
+        lv_obj_t * dir_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_DIRECTORY, "[ + New Folder... ]");
+        lv_obj_add_event_cb(dir_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(dir_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
+        if (grp != NULL) lv_group_add_obj(grp, dir_btn);
+
         if (s_clip_path[0] != '\0')
         {
             char paste_label[STORAGE_MAX_NAME_LEN + 24U];
@@ -2207,6 +2399,19 @@ static void Populate_File_List_From_Cache(void)
         lv_obj_add_event_cb(up_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
         lv_obj_add_event_cb(up_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
         if (grp != NULL) lv_group_add_obj(grp, up_btn);
+
+        lv_obj_t * ren_dir_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_EDIT, "[ Rename Current Folder ]");
+        lv_obj_add_event_cb(ren_dir_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(ren_dir_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
+        if (grp != NULL) lv_group_add_obj(grp, ren_dir_btn);
+
+        if (g_dir_cache.count == 0U)
+        {
+            lv_obj_t * del_dir_btn = lv_list_add_btn(file_list_obj, LV_SYMBOL_TRASH, "[ Delete Empty Folder ]");
+            lv_obj_add_event_cb(del_dir_btn, file_list_btn_event_cb, LV_EVENT_CLICKED, NULL);
+            lv_obj_add_event_cb(del_dir_btn, file_list_btn_event_cb, LV_EVENT_KEY, NULL);
+            if (grp != NULL) lv_group_add_obj(grp, del_dir_btn);
+        }
     }
 
     for (uint32_t i = 0; i < g_dir_cache.count; i++)
