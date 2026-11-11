@@ -85,6 +85,8 @@ static lv_obj_t * s_wifi_stat_lbl   = NULL;
 static lv_obj_t * s_home_tv         = NULL;
 static lv_obj_t * s_home_tile0      = NULL;
 static lv_obj_t * s_home_tile1      = NULL;
+static lv_obj_t * s_home_p0_btns[5] = {NULL};
+static lv_obj_t * s_home_p1_btns[3] = {NULL};
 static uint8_t    s_home_active_col = 0U;
 static uint32_t   s_last_wth_tick   = 0U;
 static int8_t     s_last_esp_state  = -2;
@@ -706,6 +708,8 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_home_tv          = NULL;
     s_home_tile0       = NULL;
     s_home_tile1       = NULL;
+    memset(s_home_p0_btns, 0, sizeof(s_home_p0_btns));
+    memset(s_home_p1_btns, 0, sizeof(s_home_p1_btns));
     memset(s_ext_btns, 0, sizeof(s_ext_btns));
     games_grid_obj     = NULL;
     lbl_time_set       = NULL;
@@ -916,6 +920,46 @@ static void Create_Weather_Graphic(lv_obj_t *parent, int16_t x, int16_t y, uint8
     }
 }
 
+static void Sync_Home_Group_To_Active_Page(void)
+{
+    lv_group_t * grp = lv_group_get_default();
+    if (grp == NULL)
+    {
+        return;
+    }
+
+    lv_group_remove_all_objs(grp);
+
+    if (s_home_active_col == 0U)
+    {
+        for (uint8_t i = 0U; i < 5U; i++)
+        {
+            if (s_home_p0_btns[i] != NULL)
+            {
+                lv_group_add_obj(grp, s_home_p0_btns[i]);
+            }
+        }
+        if (s_home_p0_btns[0] != NULL)
+        {
+            lv_group_focus_obj(s_home_p0_btns[0]);
+        }
+    }
+    else
+    {
+        for (uint8_t i = 0U; i < 3U; i++)
+        {
+            if (s_home_p1_btns[i] != NULL)
+            {
+                lv_group_add_obj(grp, s_home_p1_btns[i]);
+            }
+        }
+        if (s_home_p1_btns[0] != NULL)
+        {
+            lv_group_focus_obj(s_home_p1_btns[0]);
+        }
+    }
+}
+
 static void home_tileview_changed_cb(lv_event_t * e)
 {
     lv_obj_t * tv = lv_event_get_target(e);
@@ -925,24 +969,46 @@ static void home_tileview_changed_cb(lv_event_t * e)
     {
         s_home_active_col = new_col;
         lv_label_set_text(lbl_screen_title, s_home_active_col == 0U ? "STM32 OS" : "Widgets");
+        Sync_Home_Group_To_Active_Page();
     }
 }
 
 static void home_page_switch_cb(lv_event_t * e)
 {
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED && s_home_tv != NULL)
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col == 1U)
+    {
+        s_home_active_col = 0U;
+        Beeper_Click();
+        lv_obj_set_tile_id(s_home_tv, 0, 0, LV_ANIM_ON);
+        lv_label_set_text(lbl_screen_title, "STM32 OS");
+        Sync_Home_Group_To_Active_Page();
+        return;
+    }
+    if (code == LV_EVENT_CLICKED && s_home_tv != NULL)
     {
         uint8_t target_col = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
         s_home_active_col = target_col;
         Beeper_Click();
         lv_obj_set_tile_id(s_home_tv, target_col, 0, LV_ANIM_ON);
         lv_label_set_text(lbl_screen_title, target_col == 0U ? "STM32 OS" : "Widgets");
+        Sync_Home_Group_To_Active_Page();
     }
 }
 
 static void home_icon_event_cb(lv_event_t * e)
 {
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col == 1U)
+    {
+        s_home_active_col = 0U;
+        Beeper_Click();
+        lv_obj_set_tile_id(s_home_tv, 0, 0, LV_ANIM_ON);
+        lv_label_set_text(lbl_screen_title, "STM32 OS");
+        Sync_Home_Group_To_Active_Page();
+        return;
+    }
+    if (code == LV_EVENT_CLICKED)
     {
         UI_Screen_t target = (UI_Screen_t)(uintptr_t)lv_event_get_user_data(e);
         Beeper_Click();
@@ -950,13 +1016,14 @@ static void home_icon_event_cb(lv_event_t * e)
     }
 }
 
-static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
-                                    const char *symbol, const char *title,
-                                    uint32_t accent_hex, UI_Screen_t target_screen)
+static lv_obj_t *Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
+                                         const char *symbol, const char *title,
+                                         uint32_t accent_hex, UI_Screen_t target_screen)
 {
     lv_obj_t * btn = lv_btn_create(parent);
     lv_obj_set_size(btn, 136, 82);
     lv_obj_set_pos(btn, x, y);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x252F48), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_60, 0);
@@ -973,12 +1040,9 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
     lv_obj_center(lbl);
 
     lv_obj_add_event_cb(btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)target_screen);
+    lv_obj_add_event_cb(btn, home_icon_event_cb, LV_EVENT_KEY, (void *)(uintptr_t)target_screen);
 
-    lv_group_t * grp = lv_group_get_default();
-    if (grp != NULL)
-    {
-        lv_group_add_obj(grp, btn);
-    }
+    return btn;
 }
 
 static bool Home_TryWallpaper(const char *path)
@@ -1032,20 +1096,28 @@ static void Build_Home_Screen(void)
     lv_obj_set_style_bg_opa(s_home_tile1, LV_OPA_TRANSP, 0);
 
     /* ---- Page 1 (Tile 0): 4 Main Launcher Shortcuts ---- */
-    Create_Desktop_Shortcut(s_home_tile0, 16,  10, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
-    Create_Desktop_Shortcut(s_home_tile0, 168, 10, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_GAMES);
-    Create_Desktop_Shortcut(s_home_tile0, 16,  102, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
-    Create_Desktop_Shortcut(s_home_tile0, 168, 102, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
+    s_home_p0_btns[0] = Create_Desktop_Shortcut(s_home_tile0, 16,  10, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
+    s_home_p0_btns[1] = Create_Desktop_Shortcut(s_home_tile0, 168, 10, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_GAMES);
+    s_home_p0_btns[2] = Create_Desktop_Shortcut(s_home_tile0, 16,  102, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
+    s_home_p0_btns[3] = Create_Desktop_Shortcut(s_home_tile0, 168, 102, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
 
     lv_obj_t * btn_to_p2 = lv_btn_create(s_home_tile0);
     lv_obj_set_size(btn_to_p2, 136, 20);
     lv_obj_align(btn_to_p2, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_clear_flag(btn_to_p2, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_set_style_bg_color(btn_to_p2, lv_color_hex(0x1B2234), 0);
     lv_obj_set_style_bg_opa(btn_to_p2, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(btn_to_p2, 1, 0);
+    lv_obj_set_style_border_color(btn_to_p2, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_border_color(btn_to_p2, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(btn_to_p2, 2, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(btn_to_p2, lv_color_hex(0x324164), LV_STATE_FOCUSED);
     lv_obj_t * lbl_p2 = lv_label_create(btn_to_p2);
     lv_label_set_text(lbl_p2, "Widgets  o . " LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_p2);
     lv_obj_add_event_cb(btn_to_p2, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)1U);
+    lv_obj_add_event_cb(btn_to_p2, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)1U);
+    s_home_p0_btns[4] = btn_to_p2;
 
     /* ---- Page 2 (Tile 1): Live Weather Card & Calendar Card ---- */
     const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
@@ -1056,6 +1128,7 @@ static void Build_Home_Screen(void)
     lv_obj_t * w_btn = lv_btn_create(s_home_tile1);
     lv_obj_set_size(w_btn, 144, 174);
     lv_obj_set_pos(w_btn, 12, 10);
+    lv_obj_clear_flag(w_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_set_style_radius(w_btn, 10, 0);
     lv_obj_set_style_bg_color(w_btn, lv_color_hex(esp_online ? 0x1E293B : 0x181F2C), 0);
     lv_obj_set_style_bg_opa(w_btn, LV_OPA_80, 0);
@@ -1063,7 +1136,10 @@ static void Build_Home_Screen(void)
     lv_obj_set_style_border_color(w_btn, lv_color_hex(esp_online ? 0x00E5FF : 0xFFAE00), 0);
     lv_obj_set_style_border_color(w_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(w_btn, 3, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(w_btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
     lv_obj_add_event_cb(w_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_WEATHER);
+    lv_obj_add_event_cb(w_btn, home_icon_event_cb, LV_EVENT_KEY, (void *)(uintptr_t)UI_SCREEN_WEATHER);
+    s_home_p1_btns[0] = w_btn;
 
     Create_Weather_Graphic(w_btn, 36, 4, (esp_online && wth->valid) ? wth->wmo_code : 2U, false);
 
@@ -1142,6 +1218,7 @@ static void Build_Home_Screen(void)
     lv_obj_t * c_btn = lv_btn_create(s_home_tile1);
     lv_obj_set_size(c_btn, 144, 174);
     lv_obj_set_pos(c_btn, 164, 10);
+    lv_obj_clear_flag(c_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_set_style_radius(c_btn, 10, 0);
     lv_obj_set_style_bg_color(c_btn, lv_color_hex(0x1E293B), 0);
     lv_obj_set_style_bg_opa(c_btn, LV_OPA_80, 0);
@@ -1149,7 +1226,10 @@ static void Build_Home_Screen(void)
     lv_obj_set_style_border_color(c_btn, lv_color_hex(0x00FF66), 0);
     lv_obj_set_style_border_color(c_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(c_btn, 3, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(c_btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
     lv_obj_add_event_cb(c_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_CALENDAR);
+    lv_obj_add_event_cb(c_btn, home_icon_event_cb, LV_EVENT_KEY, (void *)(uintptr_t)UI_SCREEN_CALENDAR);
+    s_home_p1_btns[1] = c_btn;
 
     uint16_t yr = 2026U;
     uint8_t  mo = 11U, dy = 11U, wd = 3U;
@@ -1182,26 +1262,27 @@ static void Build_Home_Screen(void)
     lv_obj_t * btn_to_p1 = lv_btn_create(s_home_tile1);
     lv_obj_set_size(btn_to_p1, 136, 20);
     lv_obj_align(btn_to_p1, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_clear_flag(btn_to_p1, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_set_style_bg_color(btn_to_p1, lv_color_hex(0x1B2234), 0);
     lv_obj_set_style_bg_opa(btn_to_p1, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(btn_to_p1, 1, 0);
+    lv_obj_set_style_border_color(btn_to_p1, lv_color_hex(0x00FF66), 0);
+    lv_obj_set_style_border_color(btn_to_p1, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(btn_to_p1, 2, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(btn_to_p1, lv_color_hex(0x324164), LV_STATE_FOCUSED);
     lv_obj_t * lbl_p1 = lv_label_create(btn_to_p1);
     lv_label_set_text(lbl_p1, LV_SYMBOL_LEFT " . o  Launcher");
     lv_obj_center(lbl_p1);
     lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)0U);
-
-    lv_group_t * grp = lv_group_get_default();
-    if (grp != NULL)
-    {
-        lv_group_add_obj(grp, btn_to_p2);
-        lv_group_add_obj(grp, w_btn);
-        lv_group_add_obj(grp, c_btn);
-        lv_group_add_obj(grp, btn_to_p1);
-    }
+    lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)0U);
+    s_home_p1_btns[2] = btn_to_p1;
 
     if (s_home_active_col == 1U)
     {
         lv_obj_set_tile_id(s_home_tv, 1, 0, LV_ANIM_OFF);
     }
+
+    Sync_Home_Group_To_Active_Page();
 }
 
 /* ==========================================================================
@@ -4291,8 +4372,8 @@ static void Build_Calendar_Screen(void)
     lv_obj_set_pos(cal, 72, 4);
     lv_calendar_set_today_date(cal, yr, mo, dy);
     lv_calendar_set_showed_date(cal, yr, mo);
-    lv_calendar_header_arrow_create(cal);
-    lv_obj_add_event_cb(cal, global_key_event_cb, LV_EVENT_KEY, NULL);
+    lv_obj_t * hdr = lv_calendar_header_arrow_create(cal);
+    lv_obj_add_event_cb(cal, btn_widget_back_cb, LV_EVENT_KEY, NULL);
 
     lv_obj_t * side_lbl = lv_label_create(workspace_cont);
     lv_label_set_recolor(side_lbl, true);
@@ -4311,8 +4392,33 @@ static void Build_Calendar_Screen(void)
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
     {
+        /* Keep only [< Back] and header [<] [>] month buttons in group (remove 42-cell date matrix) */
+        lv_obj_t * btnm = lv_calendar_get_btnmatrix(cal);
+        if (btnm != NULL)
+        {
+            lv_group_remove_obj(btnm);
+        }
+        lv_group_remove_all_objs(grp);
         lv_group_add_obj(grp, btn_back);
-        lv_group_add_obj(grp, cal);
+        if (hdr != NULL)
+        {
+            lv_obj_t * btn_prev = lv_obj_get_child(hdr, 0);
+            lv_obj_t * btn_next = lv_obj_get_child(hdr, 2);
+            if (btn_prev != NULL)
+            {
+                lv_obj_set_style_border_color(btn_prev, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+                lv_obj_set_style_border_width(btn_prev, 2, LV_STATE_FOCUSED);
+                lv_obj_add_event_cb(btn_prev, btn_widget_back_cb, LV_EVENT_KEY, NULL);
+                lv_group_add_obj(grp, btn_prev);
+            }
+            if (btn_next != NULL)
+            {
+                lv_obj_set_style_border_color(btn_next, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+                lv_obj_set_style_border_width(btn_next, 2, LV_STATE_FOCUSED);
+                lv_obj_add_event_cb(btn_next, btn_widget_back_cb, LV_EVENT_KEY, NULL);
+                lv_group_add_obj(grp, btn_next);
+            }
+        }
         lv_group_focus_obj(btn_back);
     }
 }

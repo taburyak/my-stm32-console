@@ -411,10 +411,10 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
     int8_t rx = (len >= 7U) ? Axis_U8_To_I8(buf[5]) : 0;
     int8_t ry = (len >= 7U) ? Axis_U8_To_I8(buf[6]) : 0;
 
-    bool up    = (hat == 0U || hat == 1U || hat == 7U);
-    bool right = (hat == 1U || hat == 2U || hat == 3U);
-    bool down  = (hat == 3U || hat == 4U || hat == 5U);
-    bool left  = (hat == 5U || hat == 6U || hat == 7U);
+    bool up    = (hat == 0U || hat == 1U || hat == 7U) || (ly < -64);
+    bool right = (hat == 1U || hat == 2U || hat == 3U) || (lx >  64);
+    bool down  = (hat == 3U || hat == 4U || hat == 5U) || (ly >  64);
+    bool left  = (hat == 5U || hat == 6U || hat == 7U) || (lx < -64);
 
     /* Gamepad combo: Select + R1 triggers a screenshot */
     if (btn_select && btn_r1 && !(current_gamepad_state.btn_select && current_gamepad_state.btn_r1))
