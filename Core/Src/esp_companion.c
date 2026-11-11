@@ -113,10 +113,12 @@ static const char *Normalize_Rel_Path(const char *p)
 
 static bool Handle_File_Rpc(const char *line)
 {
+    const char *p_cmd = NULL;
+
     /* 1. List Directory: ESP32:FS_LS,<path> */
-    if (strncmp(line, "ESP32:FS_LS,", 12) == 0)
+    if ((p_cmd = strstr(line, "FS_LS,")) != NULL)
     {
-        const char *rel = Normalize_Rel_Path(line + 12);
+        const char *rel = Normalize_Rel_Path(p_cmd + 6);
         (void)HAL_IWDG_Refresh(&hiwdg);
 
         if (f_opendir(&s_rpc_dir, rel) != FR_OK)
@@ -151,10 +153,10 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 2. Read File Chunk: ESP32:FS_RD,<path>,<offset>,<len> */
-    if (strncmp(line, "ESP32:FS_RD,", 12) == 0)
+    if ((p_cmd = strstr(line, "FS_RD,")) != NULL)
     {
         char tmp[160];
-        strncpy(tmp, line + 12, sizeof(tmp) - 1U);
+        strncpy(tmp, p_cmd + 6, sizeof(tmp) - 1U);
         tmp[sizeof(tmp) - 1U] = '\0';
 
         char *c1 = strchr(tmp, ',');
@@ -211,9 +213,9 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 3. Write / Append File Chunk: ESP32:FS_WR,<path>,<W|A>,<HEX> */
-    if (strncmp(line, "ESP32:FS_WR,", 12) == 0)
+    if ((p_cmd = strstr(line, "FS_WR,")) != NULL)
     {
-        const char *p_path = line + 12;
+        const char *p_path = p_cmd + 6;
         const char *c1 = strchr(p_path, ',');
         if (c1 == NULL) { Send_Raw_Line("STM32:FERR\n"); return true; }
         const char *c2 = strchr(c1 + 1, ',');
@@ -266,9 +268,9 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 4. Create Folder: ESP32:FS_MKDIR,<path> */
-    if (strncmp(line, "ESP32:FS_MKDIR,", 15) == 0)
+    if ((p_cmd = strstr(line, "FS_MKDIR,")) != NULL)
     {
-        const char *rel = Normalize_Rel_Path(line + 15);
+        const char *rel = Normalize_Rel_Path(p_cmd + 9);
         (void)HAL_IWDG_Refresh(&hiwdg);
         FRESULT fr = f_mkdir(rel);
         if (fr == FR_OK || fr == FR_EXIST)
@@ -284,9 +286,9 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 5. Delete File or Empty Folder: ESP32:FS_DEL,<path> */
-    if (strncmp(line, "ESP32:FS_DEL,", 13) == 0)
+    if ((p_cmd = strstr(line, "FS_DEL,")) != NULL)
     {
-        const char *rel = Normalize_Rel_Path(line + 13);
+        const char *rel = Normalize_Rel_Path(p_cmd + 7);
         (void)HAL_IWDG_Refresh(&hiwdg);
         if (f_unlink(rel) == FR_OK)
         {
@@ -301,10 +303,10 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 6. Rename File or Folder: ESP32:FS_REN,<old>,<new> */
-    if (strncmp(line, "ESP32:FS_REN,", 13) == 0)
+    if ((p_cmd = strstr(line, "FS_REN,")) != NULL)
     {
         char tmp[160];
-        strncpy(tmp, line + 13, sizeof(tmp) - 1U);
+        strncpy(tmp, p_cmd + 7, sizeof(tmp) - 1U);
         tmp[sizeof(tmp) - 1U] = '\0';
 
         char *c1 = strchr(tmp, ',');
@@ -327,9 +329,9 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 7. Launch App or C-Script on Console: ESP32:APP_RUN,<path> */
-    if (strncmp(line, "ESP32:APP_RUN,", 14) == 0)
+    if ((p_cmd = strstr(line, "APP_RUN,")) != NULL)
     {
-        const char *rel = Normalize_Rel_Path(line + 14);
+        const char *rel = Normalize_Rel_Path(p_cmd + 8);
         if (rel[0] != '\0')
         {
             strncpy(s_pending_app_run, rel, sizeof(s_pending_app_run) - 1U);
@@ -349,7 +351,7 @@ static bool Handle_File_Rpc(const char *line)
     }
 
     /* 8. Stop Running App on Console: ESP32:APP_STOP */
-    if (strncmp(line, "ESP32:APP_STOP", 14) == 0)
+    if (strstr(line, "APP_STOP") != NULL)
     {
         if (AppLoader_IsRunning())
         {
@@ -387,6 +389,8 @@ static void Process_Incoming_Line(const char *line)
         if (thm_val >= 0 && thm_val < 4)
         {
             UIManager_SetThemeId((uint8_t)thm_val);
+            snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:FOK,%d\n", thm_val);
+            Send_Raw_Line(s_tx_buf);
         }
         s_is_connected = true;
         s_last_rx_tick = HAL_GetTick();
