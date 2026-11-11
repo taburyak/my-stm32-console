@@ -280,12 +280,14 @@ void ESPCompanion_Poll(void)
         bool    ext_ok = false;
         int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
         uint32_t free_heap_kb = (uint32_t)(xPortGetFreeHeapSize() / 1024U);
+        uint32_t min_heap_kb  = (uint32_t)(xPortGetMinimumEverFreeHeapSize() / 1024U);
         uint8_t  cur_thm = UIManager_GetThemeId();
         const char *app_name = AppLoader_IsRunning() ? AppLoader_GetAppName() : "menu";
 
         int len = snprintf(s_tx_buf, sizeof(s_tx_buf),
-                           "STM32:HB,HEAP=%lu,TMCU=%ld,TEXT=%ld,THM=%u,APP=%.16s\n",
+                           "STM32:HB,HEAP=%lu,MINH=%lu,TMCU=%ld,TEXT=%ld,THM=%u,APP=%.16s\n",
                            (unsigned long)free_heap_kb,
+                           (unsigned long)min_heap_kb,
                            (long)mcu_dc,
                            ext_ok ? (long)ext_dc : -999L,
                            (unsigned int)cur_thm,

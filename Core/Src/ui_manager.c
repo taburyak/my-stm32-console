@@ -87,6 +87,7 @@ static lv_obj_t * s_home_tile0      = NULL;
 static lv_obj_t * s_home_tile1      = NULL;
 static uint8_t    s_home_active_col = 0U;
 static uint32_t   s_last_wth_tick   = 0U;
+static int8_t     s_last_esp_state  = -2;
 static char       s_editor_path[STORAGE_MAX_PATH_LEN];
 static bool       s_editor_dirty    = false;
 static char       s_action_file_path[STORAGE_MAX_PATH_LEN];
@@ -656,9 +657,14 @@ void UIManager_Update(void)
     }
 
     const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
-    if (wth->valid && wth->updated_tick != s_last_wth_tick)
+    int8_t cur_esp_state = !ESPCompanion_IsConnected() ? 0
+                         : (ESPCompanion_IsWifiConnected() ? 2 : 1);
+
+    if ((wth->valid && wth->updated_tick != s_last_wth_tick) ||
+        (cur_esp_state != s_last_esp_state))
     {
-        s_last_wth_tick = wth->updated_tick;
+        s_last_wth_tick  = wth->updated_tick;
+        s_last_esp_state = cur_esp_state;
         if (current_screen == UI_SCREEN_WEATHER)
         {
             s_pending_screen = (int8_t)UI_SCREEN_WEATHER;
@@ -1043,34 +1049,40 @@ static void Build_Home_Screen(void)
 
     /* ---- Page 2 (Tile 1): Live Weather Card & Calendar Card ---- */
     const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+    bool esp_online = ESPCompanion_IsConnected();
+    bool wifi_ok    = ESPCompanion_IsWifiConnected();
 
-    /* Left Card: Weather Station Tile */
+    /* Left Card: Weather Station / Indoor DS18B20 Tile */
     lv_obj_t * w_btn = lv_btn_create(s_home_tile1);
     lv_obj_set_size(w_btn, 144, 174);
     lv_obj_set_pos(w_btn, 12, 10);
     lv_obj_set_style_radius(w_btn, 10, 0);
-    lv_obj_set_style_bg_color(w_btn, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_bg_color(w_btn, lv_color_hex(esp_online ? 0x1E293B : 0x181F2C), 0);
     lv_obj_set_style_bg_opa(w_btn, LV_OPA_80, 0);
     lv_obj_set_style_border_width(w_btn, 2, 0);
-    lv_obj_set_style_border_color(w_btn, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_border_color(w_btn, lv_color_hex(esp_online ? 0x00E5FF : 0xFFAE00), 0);
     lv_obj_set_style_border_color(w_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(w_btn, 3, LV_STATE_FOCUSED);
     lv_obj_add_event_cb(w_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_WEATHER);
 
-    Create_Weather_Graphic(w_btn, 36, 4, wth->valid ? wth->wmo_code : 2U, false);
+    Create_Weather_Graphic(w_btn, 36, 4, (esp_online && wth->valid) ? wth->wmo_code : 2U, false);
 
     lv_obj_t * w_lbl = lv_label_create(w_btn);
     lv_label_set_recolor(w_lbl, true);
+    lv_obj_set_style_text_color(w_lbl, lv_color_hex(0xE2E8F0), 0);
     lv_obj_set_width(w_lbl, 130);
     lv_obj_set_style_text_align(w_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(w_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
 
-    if (wth->valid)
+    bool ext_ok = false;
+    int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
+
+    if (esp_online && wth->valid)
     {
         lv_label_set_text_fmt(w_lbl,
             "#00E5FF %s#\n"
             "#FFD600 %s%d.%d C#\n"
-            "%s\n"
+            "#FFFFFF %s#\n"
             "#90A4AE H:%u%% W:%u.%ukm/h#",
             wth->city,
             (wth->temp_deci < 0) ? "-" : "+",
@@ -1079,19 +1091,54 @@ static void Build_Home_Screen(void)
             (unsigned int)wth->humidity,
             (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U));
     }
+    else if (!esp_online)
+    {
+        /* Companion not connected: operate in Local DS18B20 Room Sensor mode */
+        if (ext_ok)
+        {
+            lv_label_set_text_fmt(w_lbl,
+                "#FFAE00 Room Sensor#\n"
+                "#FFD600 %s%ld.%ld C#\n"
+                "#FFFFFF Board DS18B20#\n"
+                "#90A4AE No ESP32 Module#",
+                (ext_dc < 0) ? "-" : "+",
+                (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10));
+        }
+        else
+        {
+            lv_label_set_text(w_lbl,
+                "#90A4AE Weather Offline#\n"
+                "#FFD600 --.- C#\n"
+                "#FFFFFF No ESP32 Link#\n"
+                "#90A4AE DS18B20: N/A#");
+        }
+    }
     else
     {
-        int32_t mcu_dc = TempSensor_ReadMcuDeciC();
-        lv_label_set_text_fmt(w_lbl,
-            "#00E5FF Weather#\n"
-            "#FFD600 Forecast#\n"
-            "%s\n"
-            "#90A4AE MCU: %ld.%ld C#",
-            ESPCompanion_IsWifiConnected() ? "Tap to sync" : "Wi-Fi offline",
-            (long)(mcu_dc / 10), (long)(abs(mcu_dc) % 10));
+        /* Companion online, waiting for Wi-Fi or Open-Meteo sync */
+        if (ext_ok)
+        {
+            lv_label_set_text_fmt(w_lbl,
+                "#00E5FF Weather#\n"
+                "#FFD600 Room %s%ld.%ld C#\n"
+                "#FFFFFF %s#\n"
+                "#90A4AE (Board DS18B20)#",
+                (ext_dc < 0) ? "-" : "+",
+                (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10),
+                wifi_ok ? "Syncing Meteo..." : "Wi-Fi Offline");
+        }
+        else
+        {
+            lv_label_set_text_fmt(w_lbl,
+                "#00E5FF Weather#\n"
+                "#FFD600 Forecast#\n"
+                "#FFFFFF %s#\n"
+                "#90A4AE Open Station#",
+                wifi_ok ? "Tap to sync" : "Wi-Fi offline");
+        }
     }
 
-    /* Right Card: Calendar & Date Tile */
+    /* Right Card: Calendar & Date Tile (always works via internal RTC or NTP) */
     lv_obj_t * c_btn = lv_btn_create(s_home_tile1);
     lv_obj_set_size(c_btn, 144, 174);
     lv_obj_set_pos(c_btn, 164, 10);
@@ -1117,6 +1164,7 @@ static void Build_Home_Screen(void)
 
     lv_obj_t * c_lbl = lv_label_create(c_btn);
     lv_label_set_recolor(c_lbl, true);
+    lv_obj_set_style_text_color(c_lbl, lv_color_hex(0xE2E8F0), 0);
     lv_obj_set_width(c_lbl, 130);
     lv_obj_set_style_text_align(c_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(c_lbl);
@@ -1125,10 +1173,11 @@ static void Build_Home_Screen(void)
         "#FFD600 %s#\n"
         "#FFFFFF %02u %s#\n"
         "#00E5FF %04u#\n\n"
-        "#90A4AE Open Month View#",
+        "#90A4AE %s#",
         s_wd_names[(wd <= 7U) ? wd : 1U],
         (unsigned int)dy, s_mo_names[(mo <= 12U) ? mo : 1U],
-        (unsigned int)yr);
+        (unsigned int)yr,
+        wifi_ok ? "Clock: NTP Sync" : "Clock: Int. RTC");
 
     lv_obj_t * btn_to_p1 = lv_btn_create(s_home_tile1);
     lv_obj_set_size(btn_to_p1, 136, 20);
@@ -4021,7 +4070,6 @@ static void btn_weather_refresh_cb(lv_event_t * e)
     }
 
     Beeper_Click();
-    (void)TempSensor_ReadMcuDeciC();
     int32_t ext_dc = 0;
     (void)TempSensor_ReadExtDeciC(&ext_dc);
     (void)ESPCompanion_RequestWeatherUpdate();
@@ -4043,6 +4091,8 @@ static void Build_Weather_Screen(void)
 {
     uint32_t accent_hex = s_themes[s_theme_id % THEME_COUNT].title_col;
     const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+    bool esp_online = ESPCompanion_IsConnected();
+    bool wifi_ok    = ESPCompanion_IsWifiConnected();
 
     /* Top Row: [< Back] [City & Condition] [Refresh] */
     lv_obj_t * btn_back = lv_btn_create(workspace_cont);
@@ -4057,23 +4107,27 @@ static void Build_Weather_Screen(void)
     lv_obj_t * lbl_city = lv_label_create(workspace_cont);
     lv_obj_set_style_text_color(lbl_city, lv_color_hex(accent_hex), 0);
     lv_obj_set_pos(lbl_city, 72, 8);
-    lv_obj_set_width(lbl_city, 168);
+    lv_obj_set_size(lbl_city, 168, 18);
     lv_label_set_long_mode(lbl_city, LV_LABEL_LONG_DOT);
-    if (wth->valid)
+    if (esp_online && wth->valid)
     {
-        lv_label_set_text_fmt(lbl_city, "%s - %s", wth->city, Weather_WmoDescription(wth->wmo_code));
+        lv_label_set_text_fmt(lbl_city, "%s: %s", wth->city, Weather_WmoDescription(wth->wmo_code));
+    }
+    else if (!esp_online)
+    {
+        lv_label_set_text(lbl_city, "Local Sensor (No ESP32)");
     }
     else
     {
-        lv_label_set_text(lbl_city, ESPCompanion_IsWifiConnected() ? "Syncing Open-Meteo..." : "Wi-Fi Offline");
+        lv_label_set_text(lbl_city, wifi_ok ? "Syncing Open-Meteo..." : "ESP32 Wi-Fi Offline");
     }
 
     lv_obj_t * btn_sync = lv_btn_create(workspace_cont);
     lv_obj_set_size(btn_sync, 68, 24);
     lv_obj_set_pos(btn_sync, 246, 4);
-    lv_obj_set_style_bg_color(btn_sync, lv_color_hex(0x0277BD), 0);
+    lv_obj_set_style_bg_color(btn_sync, lv_color_hex(esp_online ? 0x0277BD : 0x37474F), 0);
     lv_obj_t * lbl_s = lv_label_create(btn_sync);
-    lv_label_set_text(lbl_s, LV_SYMBOL_REFRESH " Sync");
+    lv_label_set_text(lbl_s, esp_online ? (LV_SYMBOL_REFRESH " Sync") : (LV_SYMBOL_REFRESH " Sens"));
     lv_obj_center(lbl_s);
     lv_obj_add_event_cb(btn_sync, btn_weather_refresh_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(btn_sync, btn_weather_refresh_cb, LV_EVENT_KEY, NULL);
@@ -4088,48 +4142,82 @@ static void Build_Weather_Screen(void)
     lv_obj_set_style_border_width(main_card, 1, 0);
     lv_obj_set_style_pad_all(main_card, 6, 0);
 
-    Create_Weather_Graphic(main_card, 4, 12, wth->valid ? wth->wmo_code : 2U, true);
+    Create_Weather_Graphic(main_card, 2, 14, (esp_online && wth->valid) ? wth->wmo_code : 2U, true);
 
-    int32_t mcu_dc = TempSensor_ReadMcuDeciC();
     bool    ext_ok = false;
     int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
-    char    room_str[24];
+    char    room_str[48];
     if (ext_ok)
     {
-        snprintf(room_str, sizeof(room_str), "%s%ld.%ld C",
+        snprintf(room_str, sizeof(room_str), "%s%ld.%ld C #90A4AE (Board DS18B20)#",
                  (ext_dc < 0) ? "-" : "+", (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10));
     }
     else
     {
-        snprintf(room_str, sizeof(room_str), "N/A");
+        snprintf(room_str, sizeof(room_str), "N/A #90A4AE (Board DS18B20)#");
     }
 
-    lv_obj_t * cur_lbl = lv_label_create(main_card);
-    lv_label_set_recolor(cur_lbl, true);
-    lv_obj_set_pos(cur_lbl, 76, 2);
-    if (wth->valid)
+    /* Aligned Left Column (Captions) */
+    lv_obj_t * lbl_k1 = lv_label_create(main_card);
+    lv_obj_set_style_text_color(lbl_k1, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_pos(lbl_k1, 68, 4);
+    lv_label_set_text(lbl_k1, "Outdoor:");
+
+    lv_obj_t * lbl_k2 = lv_label_create(main_card);
+    lv_obj_set_style_text_color(lbl_k2, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_pos(lbl_k2, 68, 26);
+    lv_label_set_text(lbl_k2, "Air/Wind:");
+
+    /* Horizontal divider separating Internet weather from Local onboard sensor */
+    lv_obj_t * sep = lv_obj_create(main_card);
+    lv_obj_set_size(sep, 224, 1);
+    lv_obj_set_pos(sep, 68, 49);
+    lv_obj_set_style_bg_color(sep, lv_color_hex(0x2A3950), 0);
+    lv_obj_set_style_border_width(sep, 0, 0);
+
+    lv_obj_t * lbl_k3 = lv_label_create(main_card);
+    lv_obj_set_style_text_color(lbl_k3, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_pos(lbl_k3, 68, 57);
+    lv_label_set_text(lbl_k3, "In-Room:");
+
+    /* Aligned Right Column (Values) */
+    lv_obj_t * lbl_v1 = lv_label_create(main_card);
+    lv_label_set_recolor(lbl_v1, true);
+    lv_obj_set_style_text_color(lbl_v1, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_pos(lbl_v1, 134, 4);
+
+    lv_obj_t * lbl_v2 = lv_label_create(main_card);
+    lv_label_set_recolor(lbl_v2, true);
+    lv_obj_set_style_text_color(lbl_v2, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_pos(lbl_v2, 134, 26);
+
+    lv_obj_t * lbl_v3 = lv_label_create(main_card);
+    lv_label_set_recolor(lbl_v3, true);
+    lv_obj_set_style_text_color(lbl_v3, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_pos(lbl_v3, 134, 57);
+    lv_label_set_text_fmt(lbl_v3, "#FFAE00 %s#", room_str);
+
+    if (esp_online && wth->valid)
     {
-        lv_label_set_text_fmt(cur_lbl,
-            "Outdoor: #FFD600 %s%d.%d C#  (Feels %s%d.%d C)\n"
-            "Humidity: #00E5FF %u%%#  |  Wind: #00FF66 %u.%u km/h#\n"
-            "Room (DS18B20): #FFAE00 %s#\n"
-            "Console MCU: #B388FF %ld.%ld C#",
+        lv_label_set_text_fmt(lbl_v1,
+            "#FFD600 %s%d.%d C# #B0BEC5 (Feels %s%d.%d)#",
             (wth->temp_deci < 0) ? "-" : "+", abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
-            (wth->feels_deci < 0) ? "-" : "+", abs(wth->feels_deci) / 10, abs(wth->feels_deci) % 10,
+            (wth->feels_deci < 0) ? "-" : "+", abs(wth->feels_deci) / 10, abs(wth->feels_deci) % 10);
+
+        lv_label_set_text_fmt(lbl_v2,
+            "#00E5FF %u%%#  |  #00FF66 %u.%u km/h#",
             (unsigned int)wth->humidity,
-            (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U),
-            room_str,
-            (long)(mcu_dc / 10), (long)(abs(mcu_dc) % 10));
+            (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U));
+    }
+    else if (!esp_online)
+    {
+        lv_label_set_text(lbl_v1, "#90A4AE Companion Offline#");
+        lv_label_set_text(lbl_v2, "#90A4AE Local DS18B20 Only#");
     }
     else
     {
-        lv_label_set_text_fmt(cur_lbl,
-            "Outdoor: #90A4AE Waiting for ESP32 Wi-Fi...#\n"
-            "Press [Sync] to fetch Open-Meteo\n"
-            "Room (DS18B20): #FFAE00 %s#\n"
-            "Console MCU: #B388FF %ld.%ld C#",
-            room_str,
-            (long)(mcu_dc / 10), (long)(abs(mcu_dc) % 10));
+        lv_label_set_text(lbl_v1, wifi_ok ? "#00E5FF Fetching Meteo...#" : "#90A4AE Waiting Wi-Fi...#");
+        lv_label_set_text(lbl_v2, "#90A4AE Press [Sync]#");
     }
 
     /* 3-Day Forecast Cards (Bottom Row) */
@@ -4147,15 +4235,16 @@ static void Build_Weather_Screen(void)
 
         lv_obj_t * dlbl = lv_label_create(dcard);
         lv_label_set_recolor(dlbl, true);
+        lv_obj_set_style_text_color(dlbl, lv_color_hex(0xE2E8F0), 0);
         lv_obj_set_width(dlbl, 88);
         lv_obj_set_style_text_align(dlbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_center(dlbl);
 
-        if (wth->valid)
+        if (esp_online && wth->valid)
         {
             lv_label_set_text_fmt(dlbl,
                 "#00E5FF %s#\n"
-                "%s\n"
+                "#FFFFFF %s#\n"
                 "#FF8A80 %s%d.%d# / #80D8FF %s%d.%d#",
                 s_day_titles[i],
                 Weather_WmoDescription(wth->day_wmo[i]),
@@ -4164,7 +4253,8 @@ static void Build_Weather_Screen(void)
         }
         else
         {
-            lv_label_set_text_fmt(dlbl, "#00E5FF %s#\n--\n-- / --", s_day_titles[i]);
+            lv_label_set_text_fmt(dlbl, "#00E5FF %s#\n#90A4AE %s#\n#90A4AE -- / --#",
+                                  s_day_titles[i], esp_online ? "--" : "Offline");
         }
     }
 
@@ -4206,16 +4296,17 @@ static void Build_Calendar_Screen(void)
 
     lv_obj_t * side_lbl = lv_label_create(workspace_cont);
     lv_label_set_recolor(side_lbl, true);
+    lv_obj_set_style_text_color(side_lbl, lv_color_hex(0xE2E8F0), 0);
     lv_obj_set_pos(side_lbl, 6, 38);
     lv_obj_set_width(side_lbl, 62);
     lv_label_set_text_fmt(side_lbl,
         "#00FF66 Today:#\n"
-        "%02u.%02u\n"
-        "%04u\n\n"
-        "#90A4AE NTP:#\n"
+        "#FFFFFF %02u.%02u#\n"
+        "#00E5FF %04u#\n\n"
+        "#90A4AE Source:#\n"
         "%s",
         (unsigned int)dy, (unsigned int)mo, (unsigned int)yr,
-        ESPCompanion_IsWifiConnected() ? "#00E5FF Sync#" : "#555555 Local#");
+        ESPCompanion_IsWifiConnected() ? "#00E5FF Wi-Fi\nNTP#" : "#FFD600 Int.\nRTC#");
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
