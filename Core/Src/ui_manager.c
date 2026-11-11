@@ -4146,25 +4146,25 @@ static void Build_Weather_Screen(void)
 
     bool    ext_ok = false;
     int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
-    char    room_str[48];
+    char    room_str[24];
     if (ext_ok)
     {
-        snprintf(room_str, sizeof(room_str), "%s%ld.%ld C #90A4AE (Board DS18B20)#",
+        snprintf(room_str, sizeof(room_str), "%s%ld.%ld C",
                  (ext_dc < 0) ? "-" : "+", (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10));
     }
     else
     {
-        snprintf(room_str, sizeof(room_str), "N/A #90A4AE (Board DS18B20)#");
+        snprintf(room_str, sizeof(room_str), "N/A");
     }
 
     /* Aligned Left Column (Captions) */
     lv_obj_t * lbl_k1 = lv_label_create(main_card);
-    lv_obj_set_style_text_color(lbl_k1, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_style_text_color(lbl_k1, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_pos(lbl_k1, 68, 4);
     lv_label_set_text(lbl_k1, "Outdoor:");
 
     lv_obj_t * lbl_k2 = lv_label_create(main_card);
-    lv_obj_set_style_text_color(lbl_k2, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_style_text_color(lbl_k2, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_pos(lbl_k2, 68, 26);
     lv_label_set_text(lbl_k2, "Air/Wind:");
 
@@ -4176,7 +4176,7 @@ static void Build_Weather_Screen(void)
     lv_obj_set_style_border_width(sep, 0, 0);
 
     lv_obj_t * lbl_k3 = lv_label_create(main_card);
-    lv_obj_set_style_text_color(lbl_k3, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_style_text_color(lbl_k3, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_pos(lbl_k3, 68, 57);
     lv_label_set_text(lbl_k3, "In-Room:");
 
@@ -4200,7 +4200,7 @@ static void Build_Weather_Screen(void)
     if (esp_online && wth->valid)
     {
         lv_label_set_text_fmt(lbl_v1,
-            "#FFD600 %s%d.%d C# #B0BEC5 (Feels %s%d.%d)#",
+            "#FFD600 %s%d.%d C# #FFFFFF (Feels %s%d.%d)#",
             (wth->temp_deci < 0) ? "-" : "+", abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
             (wth->feels_deci < 0) ? "-" : "+", abs(wth->feels_deci) / 10, abs(wth->feels_deci) % 10);
 
