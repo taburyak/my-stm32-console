@@ -490,6 +490,26 @@ void UIManager_OpenWifiSetup(void)
     s_pending_screen = (int8_t)UI_SCREEN_WIFI;
 }
 
+bool UIManager_SetWallpaperPath(const char *rel_path)
+{
+    if (rel_path == NULL || rel_path[0] == '\0')
+    {
+        return false;
+    }
+    const char *clean = (rel_path[0] == '/') ? (rel_path + 1) : rel_path;
+    if (!Wallpaper_SaveConfig(clean))
+    {
+        return false;
+    }
+    strncpy(s_wallpaper_path, clean, sizeof(s_wallpaper_path) - 1U);
+    s_wallpaper_path[sizeof(s_wallpaper_path) - 1U] = '\0';
+    if (current_screen == UI_SCREEN_HOME)
+    {
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+    }
+    return true;
+}
+
 /* ==========================================================================
  * Global Key Event Handler (ESC / Gamepad B -> Back to Home Screen)
  * ========================================================================== */

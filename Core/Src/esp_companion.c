@@ -13,9 +13,9 @@
 extern UART_HandleTypeDef huart6;
 extern IWDG_HandleTypeDef hiwdg;
 
-#define ESP_RX_DMA_BUF_SIZE  1024U
-#define ESP_LINE_BUF_SIZE    384U
-#define ESP_TX_BUF_SIZE      384U
+#define ESP_RX_DMA_BUF_SIZE  2048U
+#define ESP_LINE_BUF_SIZE    1152U
+#define ESP_TX_BUF_SIZE      1152U
 
 #define WIFI_CFG_PATH        "system/wifi.cfg"
 
@@ -31,7 +31,7 @@ static char     s_tx_buf[ESP_TX_BUF_SIZE] __attribute__((aligned(4)));
 static FIL      s_rpc_fil __attribute__((aligned(4)));
 static DIR      s_rpc_dir __attribute__((aligned(4)));
 static FILINFO  s_rpc_fno __attribute__((aligned(4)));
-static uint8_t  s_rpc_io_buf[128] __attribute__((aligned(4)));
+static uint8_t  s_rpc_io_buf[512] __attribute__((aligned(4)));
 
 static char     s_pending_app_run[64] = {0};
 static volatile bool s_has_pending_app_run = false;
@@ -359,6 +359,23 @@ static bool Handle_File_Rpc(const char *line)
         }
         Beeper_Click();
         Send_Raw_Line("STM32:FOK,0\n");
+        return true;
+    }
+
+    /* 9. Set Console Desktop Wallpaper: ESP32:SET_WALL,<path> */
+    if ((p_cmd = strstr(line, "SET_WALL,")) != NULL)
+    {
+        const char *rel = Normalize_Rel_Path(p_cmd + 9);
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        if (UIManager_SetWallpaperPath(rel))
+        {
+            Beeper_Click();
+            Send_Raw_Line("STM32:FOK,0\n");
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FERR\n");
+        }
         return true;
     }
 

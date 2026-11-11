@@ -68,6 +68,11 @@ void UIManager_SetDateTime(uint16_t year, uint8_t month, uint8_t date, uint8_t w
  */
 void UIManager_OpenWifiSetup(void);
 
+/**
+ * @brief Set and persist desktop wallpaper path on SD card (e.g. from Web Studio)
+ */
+bool UIManager_SetWallpaperPath(const char *rel_path);
+
 #ifdef __cplusplus
 }
 #endif
