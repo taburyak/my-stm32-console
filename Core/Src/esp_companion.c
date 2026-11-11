@@ -3,6 +3,7 @@
 #include "temp_sensor.h"
 #include "ui_manager.h"
 #include "app_loader.h"
+#include "beeper.h"
 #include "FreeRTOS.h"
 #include "fatfs.h"
 #include <stdio.h>
@@ -10,10 +11,11 @@
 #include <stdlib.h>
 
 extern UART_HandleTypeDef huart4;
+extern IWDG_HandleTypeDef hiwdg;
 
-#define ESP_RX_DMA_BUF_SIZE  256U
-#define ESP_LINE_BUF_SIZE    128U
-#define ESP_TX_BUF_SIZE      128U
+#define ESP_RX_DMA_BUF_SIZE  1024U
+#define ESP_LINE_BUF_SIZE    384U
+#define ESP_TX_BUF_SIZE      384U
 
 #define WIFI_CFG_PATH        "system/wifi.cfg"
 
@@ -24,6 +26,15 @@ static char     s_line_buf[ESP_LINE_BUF_SIZE];
 static uint16_t s_line_len = 0U;
 
 static char     s_tx_buf[ESP_TX_BUF_SIZE] __attribute__((aligned(4)));
+
+/* DMA-safe FatFs structures in internal SRAM (never CCMRAM) */
+static FIL      s_rpc_fil __attribute__((aligned(4)));
+static DIR      s_rpc_dir __attribute__((aligned(4)));
+static FILINFO  s_rpc_fno __attribute__((aligned(4)));
+static uint8_t  s_rpc_io_buf[128] __attribute__((aligned(4)));
+
+static char     s_pending_app_run[64] = {0};
+static volatile bool s_has_pending_app_run = false;
 
 static volatile bool     s_is_connected  = false;
 static volatile uint32_t s_last_rx_tick  = 0U;
@@ -73,6 +84,285 @@ static void Parse_Slash_UInt8_3(const char *str, uint8_t out[3])
     }
 }
 
+static void Send_Raw_Line(const char *str)
+{
+    if (str == NULL) return;
+    size_t len = strlen(str);
+    if (len == 0U) return;
+    huart4.gState = HAL_UART_STATE_READY;
+    if (HAL_UART_Transmit(&huart4, (const uint8_t *)str, (uint16_t)len, 100U) == HAL_OK)
+    {
+        s_tx_packets++;
+    }
+}
+
+static uint8_t Hex_Nibble(char c)
+{
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+    if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+    return 0U;
+}
+
+static const char *Normalize_Rel_Path(const char *p)
+{
+    if (p == NULL) return "";
+    while (*p == '/' || *p == ' ') p++;
+    return p;
+}
+
+static bool Handle_File_Rpc(const char *line)
+{
+    /* 1. List Directory: ESP32:FS_LS,<path> */
+    if (strncmp(line, "ESP32:FS_LS,", 12) == 0)
+    {
+        const char *rel = Normalize_Rel_Path(line + 12);
+        (void)HAL_IWDG_Refresh(&hiwdg);
+
+        if (f_opendir(&s_rpc_dir, rel) != FR_OK)
+        {
+            Send_Raw_Line("STM32:FLS_END,ERR\n");
+            return true;
+        }
+
+        uint32_t count = 0U;
+        while (count < 64U)
+        {
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            if (f_readdir(&s_rpc_dir, &s_rpc_fno) != FR_OK || s_rpc_fno.fname[0] == '\0')
+            {
+                break;
+            }
+            if (strcmp(s_rpc_fno.fname, ".") == 0 || strcmp(s_rpc_fno.fname, "..") == 0)
+            {
+                continue;
+            }
+            bool is_dir = ((s_rpc_fno.fattrib & AM_DIR) != 0U);
+            snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:FLS_I,%c,%lu,%s\n",
+                     is_dir ? 'D' : 'F',
+                     (unsigned long)s_rpc_fno.fsize,
+                     s_rpc_fno.fname);
+            Send_Raw_Line(s_tx_buf);
+            count++;
+        }
+        (void)f_closedir(&s_rpc_dir);
+        Send_Raw_Line("STM32:FLS_END,OK\n");
+        return true;
+    }
+
+    /* 2. Read File Chunk: ESP32:FS_RD,<path>,<offset>,<len> */
+    if (strncmp(line, "ESP32:FS_RD,", 12) == 0)
+    {
+        char tmp[160];
+        strncpy(tmp, line + 12, sizeof(tmp) - 1U);
+        tmp[sizeof(tmp) - 1U] = '\0';
+
+        char *c1 = strchr(tmp, ',');
+        if (c1 == NULL) { Send_Raw_Line("STM32:FRD_ERR\n"); return true; }
+        *c1 = '\0';
+        char *c2 = strchr(c1 + 1, ',');
+        if (c2 == NULL) { Send_Raw_Line("STM32:FRD_ERR\n"); return true; }
+        *c2 = '\0';
+
+        const char *rel = Normalize_Rel_Path(tmp);
+        uint32_t offset = (uint32_t)strtoul(c1 + 1, NULL, 10);
+        uint32_t req_len = (uint32_t)strtoul(c2 + 1, NULL, 10);
+        if (req_len > sizeof(s_rpc_io_buf)) req_len = sizeof(s_rpc_io_buf);
+
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        if (f_open(&s_rpc_fil, rel, FA_READ) != FR_OK)
+        {
+            Send_Raw_Line("STM32:FRD_ERR\n");
+            return true;
+        }
+
+        uint32_t total_sz = (uint32_t)f_size(&s_rpc_fil);
+        UINT br = 0U;
+        if (offset < total_sz)
+        {
+            if (f_lseek(&s_rpc_fil, offset) == FR_OK)
+            {
+                (void)f_read(&s_rpc_fil, s_rpc_io_buf, (UINT)req_len, &br);
+            }
+        }
+        (void)f_close(&s_rpc_fil);
+
+        int hdr_len = snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:FRD,%lu,%u,%lu,",
+                               (unsigned long)offset, (unsigned int)br, (unsigned long)total_sz);
+        if (hdr_len > 0 && (size_t)(hdr_len + (int)(br * 2U) + 2) < sizeof(s_tx_buf))
+        {
+            static const char hex_lut[] = "0123456789ABCDEF";
+            char *dst = s_tx_buf + hdr_len;
+            for (UINT i = 0U; i < br; i++)
+            {
+                uint8_t b = s_rpc_io_buf[i];
+                *dst++ = hex_lut[(b >> 4) & 0x0FU];
+                *dst++ = hex_lut[b & 0x0FU];
+            }
+            *dst++ = '\n';
+            *dst   = '\0';
+            Send_Raw_Line(s_tx_buf);
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FRD_ERR\n");
+        }
+        return true;
+    }
+
+    /* 3. Write / Append File Chunk: ESP32:FS_WR,<path>,<W|A>,<HEX> */
+    if (strncmp(line, "ESP32:FS_WR,", 12) == 0)
+    {
+        const char *p_path = line + 12;
+        const char *c1 = strchr(p_path, ',');
+        if (c1 == NULL) { Send_Raw_Line("STM32:FERR\n"); return true; }
+        const char *c2 = strchr(c1 + 1, ',');
+        if (c2 == NULL) { Send_Raw_Line("STM32:FERR\n"); return true; }
+
+        char rel_buf[96];
+        size_t path_len = (size_t)(c1 - p_path);
+        if (path_len >= sizeof(rel_buf)) path_len = sizeof(rel_buf) - 1U;
+        strncpy(rel_buf, p_path, path_len);
+        rel_buf[path_len] = '\0';
+        const char *rel = Normalize_Rel_Path(rel_buf);
+
+        char mode_ch = c1[1];
+        const char *hex = c2 + 1;
+        size_t hex_len = strlen(hex);
+        uint32_t data_len = 0U;
+        while ((data_len < sizeof(s_rpc_io_buf)) && ((data_len * 2U + 1U) < hex_len))
+        {
+            uint8_t hi = Hex_Nibble(hex[data_len * 2U]);
+            uint8_t lo = Hex_Nibble(hex[data_len * 2U + 1U]);
+            s_rpc_io_buf[data_len++] = (uint8_t)((hi << 4) | lo);
+        }
+
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        BYTE fmode = (mode_ch == 'W') ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_APPEND);
+        if (f_open(&s_rpc_fil, rel, fmode) != FR_OK)
+        {
+            Send_Raw_Line("STM32:FERR\n");
+            return true;
+        }
+
+        UINT bw = 0U;
+        FRESULT fr = FR_OK;
+        if (data_len > 0U)
+        {
+            fr = f_write(&s_rpc_fil, s_rpc_io_buf, (UINT)data_len, &bw);
+        }
+        (void)f_close(&s_rpc_fil);
+
+        if (fr == FR_OK && bw == (UINT)data_len)
+        {
+            snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:FOK,%u\n", (unsigned int)bw);
+            Send_Raw_Line(s_tx_buf);
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FERR\n");
+        }
+        return true;
+    }
+
+    /* 4. Create Folder: ESP32:FS_MKDIR,<path> */
+    if (strncmp(line, "ESP32:FS_MKDIR,", 15) == 0)
+    {
+        const char *rel = Normalize_Rel_Path(line + 15);
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        FRESULT fr = f_mkdir(rel);
+        if (fr == FR_OK || fr == FR_EXIST)
+        {
+            Beeper_Click();
+            Send_Raw_Line("STM32:FOK,0\n");
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FERR\n");
+        }
+        return true;
+    }
+
+    /* 5. Delete File or Empty Folder: ESP32:FS_DEL,<path> */
+    if (strncmp(line, "ESP32:FS_DEL,", 13) == 0)
+    {
+        const char *rel = Normalize_Rel_Path(line + 13);
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        if (f_unlink(rel) == FR_OK)
+        {
+            Beeper_Click();
+            Send_Raw_Line("STM32:FOK,0\n");
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FERR\n");
+        }
+        return true;
+    }
+
+    /* 6. Rename File or Folder: ESP32:FS_REN,<old>,<new> */
+    if (strncmp(line, "ESP32:FS_REN,", 13) == 0)
+    {
+        char tmp[160];
+        strncpy(tmp, line + 13, sizeof(tmp) - 1U);
+        tmp[sizeof(tmp) - 1U] = '\0';
+
+        char *c1 = strchr(tmp, ',');
+        if (c1 == NULL) { Send_Raw_Line("STM32:FERR\n"); return true; }
+        *c1 = '\0';
+
+        const char *old_rel = Normalize_Rel_Path(tmp);
+        const char *new_rel = Normalize_Rel_Path(c1 + 1);
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        if (f_rename(old_rel, new_rel) == FR_OK)
+        {
+            Beeper_Click();
+            Send_Raw_Line("STM32:FOK,0\n");
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FERR\n");
+        }
+        return true;
+    }
+
+    /* 7. Launch App or C-Script on Console: ESP32:APP_RUN,<path> */
+    if (strncmp(line, "ESP32:APP_RUN,", 14) == 0)
+    {
+        const char *rel = Normalize_Rel_Path(line + 14);
+        if (rel[0] != '\0')
+        {
+            strncpy(s_pending_app_run, rel, sizeof(s_pending_app_run) - 1U);
+            s_pending_app_run[sizeof(s_pending_app_run) - 1U] = '\0';
+            s_has_pending_app_run = true;
+            if (AppLoader_IsRunning())
+            {
+                AppLoader_RequestExit();
+            }
+            Send_Raw_Line("STM32:FOK,0\n");
+        }
+        else
+        {
+            Send_Raw_Line("STM32:FERR\n");
+        }
+        return true;
+    }
+
+    /* 8. Stop Running App on Console: ESP32:APP_STOP */
+    if (strncmp(line, "ESP32:APP_STOP", 14) == 0)
+    {
+        if (AppLoader_IsRunning())
+        {
+            AppLoader_RequestExit();
+        }
+        Beeper_Click();
+        Send_Raw_Line("STM32:FOK,0\n");
+        return true;
+    }
+
+    return false;
+}
+
 static void Process_Incoming_Line(const char *line)
 {
     if (line == NULL || line[0] == '\0')
@@ -80,7 +370,16 @@ static void Process_Incoming_Line(const char *line)
         return;
     }
 
-    /* 1. Remote theme control from ESP32 BOOT button: ESP32:SET_THM=<idx> */
+    /* 0. Web Dashboard File & App Control RPC */
+    if (Handle_File_Rpc(line))
+    {
+        s_is_connected = true;
+        s_last_rx_tick = HAL_GetTick();
+        s_rx_packets++;
+        return;
+    }
+
+    /* 1. Remote theme control from ESP32 Web UI: ESP32:SET_THM=<idx> */
     const char *thm_ptr = strstr(line, "THM=");
     if (thm_ptr != NULL)
     {
@@ -470,6 +769,18 @@ bool ESPCompanion_RequestWeatherUpdate(void)
         return true;
     }
     return false;
+}
+
+bool ESPCompanion_TakePendingAppRun(char *path_out, size_t max_len)
+{
+    if (!s_has_pending_app_run || path_out == NULL || max_len == 0U)
+    {
+        return false;
+    }
+    s_has_pending_app_run = false;
+    strncpy(path_out, s_pending_app_run, max_len - 1U);
+    path_out[max_len - 1U] = '\0';
+    return (path_out[0] != '\0');
 }
 
 uint32_t ESPCompanion_GetRxPackets(void)

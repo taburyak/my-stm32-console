@@ -102,6 +102,11 @@ const ESP_WeatherInfo_t *ESPCompanion_GetWeather(void);
 bool ESPCompanion_RequestWeatherUpdate(void);
 
 /**
+ * @brief Check and consume pending remote app/script launch requested by ESP32 Web UI
+ */
+bool ESPCompanion_TakePendingAppRun(char *path_out, size_t max_len);
+
+/**
  * @brief Diagnostic packet counters
  */
 uint32_t ESPCompanion_GetRxPackets(void);

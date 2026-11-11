@@ -1301,6 +1301,27 @@ void StartDefaultTask(void *argument)
     /* 3.5. Service ESP32-C6 Companion Co-Processor */
     ESPCompanion_Poll();
 
+    char remote_app[64];
+    if (ESPCompanion_TakePendingAppRun(remote_app, sizeof(remote_app)))
+    {
+      size_t rlen = strlen(remote_app);
+      bool is_script = (rlen >= 2U && (strcmp(&remote_app[rlen - 2U], ".c") == 0 ||
+                                       strcmp(&remote_app[rlen - 2U], ".C") == 0));
+      Beeper_Click();
+      if (is_script)
+      {
+        (void)AppLoader_LoadAndRunScript(remote_app);
+      }
+      else
+      {
+        (void)AppLoader_LoadAndRun(remote_app);
+      }
+      if (AppLoader_IsRunning())
+      {
+        continue;
+      }
+    }
+
     /* 4. Update Top Status Bar (RTC Clock & USB/SD indicators) */
     UIManager_Update();
 
