@@ -75,6 +75,33 @@ bool ESPCompanion_SaveWifiToSD(const char *ssid, const char *pass);
 bool ESPCompanion_ReadWifiFromSD(char *ssid_out, size_t ssid_max, char *pass_out, size_t pass_max);
 
 /**
+ * @brief Outdoor Weather Telemetry from ESP32-C6 (Open-Meteo)
+ */
+typedef struct {
+    bool     valid;
+    int16_t  temp_deci;      /* Outdoor temperature in 0.1 C (e.g. 215 = 21.5 C) */
+    int16_t  feels_deci;     /* Apparent temperature in 0.1 C */
+    uint8_t  humidity;       /* Relative humidity 0..100 % */
+    uint16_t wind_deci;      /* Wind speed in 0.1 km/h */
+    uint8_t  wmo_code;       /* WMO weather condition code (0..99) */
+    int16_t  day_hi_deci[3]; /* 3-day max temp in 0.1 C */
+    int16_t  day_lo_deci[3]; /* 3-day min temp in 0.1 C */
+    uint8_t  day_wmo[3];     /* 3-day WMO codes */
+    char     city[24];       /* Resolved city name */
+    uint32_t updated_tick;   /* HAL_GetTick() of last update */
+} ESP_WeatherInfo_t;
+
+/**
+ * @brief Get cached outdoor weather telemetry
+ */
+const ESP_WeatherInfo_t *ESPCompanion_GetWeather(void);
+
+/**
+ * @brief Request immediate weather refresh from ESP32-C6
+ */
+bool ESPCompanion_RequestWeatherUpdate(void);
+
+/**
  * @brief Diagnostic packet counters
  */
 uint32_t ESPCompanion_GetRxPackets(void);

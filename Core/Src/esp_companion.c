@@ -35,6 +35,44 @@ static char              s_wifi_ip[20]   = "0.0.0.0";
 static char              s_wifi_ssid[34] = "none";
 static volatile int8_t   s_wifi_rssi     = 0;
 
+static ESP_WeatherInfo_t s_weather = {
+    .valid        = false,
+    .temp_deci    = 0,
+    .feels_deci   = 0,
+    .humidity     = 0,
+    .wind_deci    = 0,
+    .wmo_code     = 0,
+    .day_hi_deci  = {0, 0, 0},
+    .day_lo_deci  = {0, 0, 0},
+    .day_wmo      = {0, 0, 0},
+    .city         = "Auto",
+    .updated_tick = 0U
+};
+
+static void Parse_Slash_Int16_3(const char *str, int16_t out[3])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (str == NULL || *str == '\0') break;
+        out[i] = (int16_t)atoi(str);
+        const char *sl = strchr(str, '/');
+        if (sl == NULL) break;
+        str = sl + 1;
+    }
+}
+
+static void Parse_Slash_UInt8_3(const char *str, uint8_t out[3])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (str == NULL || *str == '\0') break;
+        out[i] = (uint8_t)atoi(str);
+        const char *sl = strchr(str, '/');
+        if (sl == NULL) break;
+        str = sl + 1;
+    }
+}
+
 static void Process_Incoming_Line(const char *line)
 {
     if (line == NULL || line[0] == '\0')
@@ -81,6 +119,37 @@ static void Process_Incoming_Line(const char *line)
             printf("[NTP] Synchronized RTC from Wi-Fi: %04d-%02d-%02d %02d:%02d:%02d\r\n",
                    y, m, d, h, mn, s);
         }
+        return;
+    }
+
+    /* 2.5. Outdoor Weather Telemetry: ESP32:WTH,OK=1,T=...,FL=...,HUM=...,WND=...,WMO=...,HI=a/b/c,LO=a/b/c,DW=a/b/c,CITY=... */
+    if (strstr(line, "WTH,") != NULL || strstr(line, "ESP32:WTH") != NULL)
+    {
+        s_is_connected = true;
+        s_last_rx_tick = HAL_GetTick();
+        s_rx_packets++;
+
+        const char *p;
+        if ((p = strstr(line, "T=")))   s_weather.temp_deci  = (int16_t)atoi(p + 2);
+        if ((p = strstr(line, "FL=")))  s_weather.feels_deci = (int16_t)atoi(p + 3);
+        if ((p = strstr(line, "HUM="))) s_weather.humidity   = (uint8_t)atoi(p + 4);
+        if ((p = strstr(line, "WND="))) s_weather.wind_deci  = (uint16_t)atoi(p + 4);
+        if ((p = strstr(line, "WMO="))) s_weather.wmo_code   = (uint8_t)atoi(p + 4);
+        if ((p = strstr(line, "HI=")))  Parse_Slash_Int16_3(p + 3, s_weather.day_hi_deci);
+        if ((p = strstr(line, "LO=")))  Parse_Slash_Int16_3(p + 3, s_weather.day_lo_deci);
+        if ((p = strstr(line, "DW=")))  Parse_Slash_UInt8_3(p + 3, s_weather.day_wmo);
+        if ((p = strstr(line, "CITY=")))
+        {
+            const char *c_start = p + 5;
+            size_t l = strcspn(c_start, ",\r\n");
+            if (l > 0 && l < sizeof(s_weather.city))
+            {
+                strncpy(s_weather.city, c_start, l);
+                s_weather.city[l] = '\0';
+            }
+        }
+        s_weather.valid        = true;
+        s_weather.updated_tick = HAL_GetTick();
         return;
     }
 
@@ -380,6 +449,23 @@ bool ESPCompanion_LoadAndSendWifiFromSD(void)
     {
         printf("[WIFI] Loaded from SD: SSID='%s'\r\n", ssid);
         return ESPCompanion_SendWifiCredentials(ssid, pass);
+    }
+    return false;
+}
+
+const ESP_WeatherInfo_t *ESPCompanion_GetWeather(void)
+{
+    return &s_weather;
+}
+
+bool ESPCompanion_RequestWeatherUpdate(void)
+{
+    static const char req[] = "STM32:REQ_WTH\n";
+    huart4.gState = HAL_UART_STATE_READY;
+    if (HAL_UART_Transmit(&huart4, (const uint8_t *)req, (uint16_t)(sizeof(req) - 1U), 20U) == HAL_OK)
+    {
+        s_tx_packets++;
+        return true;
     }
     return false;
 }

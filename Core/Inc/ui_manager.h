@@ -19,7 +19,9 @@ typedef enum {
     UI_SCREEN_GAMES,         /* Games launcher: built-in ROM game + games/<name>.bin icon tiles */
     UI_SCREEN_SETTINGS,      /* RTC Clock, Audio Mute & EEPROM Settings */
     UI_SCREEN_SYSINFO,       /* Hardware POST & Memory Diagnostics */
-    UI_SCREEN_WIFI           /* Wi-Fi Setup & Network Status */
+    UI_SCREEN_WIFI,          /* Wi-Fi Setup & Network Status */
+    UI_SCREEN_WEATHER,       /* Full-screen Weather Forecast & Indoor/Outdoor Station */
+    UI_SCREEN_CALENDAR       /* Interactive Monthly Calendar */
 } UI_Screen_t;
 
 /**

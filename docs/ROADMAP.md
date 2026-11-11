@@ -29,6 +29,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 - [x] Internal MCU temperature sensor (`ADC1` `IN16`/`IN17` with `VREFINT` calibration + overheat alarm) & external 1-Wire `DS18B20` (`PA15`, `Libs/DS18B20`, `Core/Src/temp_sensor.c`), exposed to SDK apps via `sys_get_mcu_temp_deci()` / `sys_get_ext_temp_deci()` (SVC 49) and C-scripts (`temp_mcu()` / `temp_ext()`).
 - [x] Settings & EEPROM persistence (`AT24C02` `0x00..0x0B`): 4-point `XPT2046` touchscreen calibration wizard (`Run_Touch_Calibration_Wizard`), gamepad analog stick deadzone configuration (`4..32`), and 4 UI color themes (`Cyber Blue`, `Emerald`, `Retro Amber`, `Synthwave`).
 - [x] Interactive Text & C-Script Editor and File Manager in SD Explorer (`Core/Src/ui_manager.c`, `Libs/lvgl_port/lv_port_console.c`): multi-line `lv_textarea` editor (up to 8 KB in `MM_EXT_TEXT_PREVIEW`) with block cursor, USB keyboard navigation (`Up`/`Down`/`Left`/`Right`/`Home`/`End`/`Del`), toggleable on-screen touch `lv_keyboard`, `Save` to SD card, instant `Run` button for `.c` scripts, plus full file & directory operations (`[ + New File... ]` with custom name & supported extension selector `.c`/`.txt`/`.h`/`.md`/`.ini`/`.cfg`, `[ + New Folder... ]` via `f_mkdir`, `[ Rename Current Folder ]`, `[ Delete Empty Folder ]`, file `Rename`, `Copy`, `Move`, `Paste`, and `Delete` with confirmation).
+- [x] Multi-page Home Dashboard (`lv_tileview` swipe left/right between Launcher page and Widgets page), full-screen Weather Station (`UI_SCREEN_WEATHER` with `Open-Meteo` outdoor weather + 3-day forecast via `ESP32-C6`, indoor `DS18B20` & `MCU` temperatures, procedural + SD `.bmp` weather icons), and interactive Monthly Calendar (`UI_SCREEN_CALENDAR` synced with NTP/RTC).
 
 ## Next
 
@@ -51,9 +52,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 - [ ] App GPIO API (activate the skeleton) + DS18B20 example.
 - [ ] Relocatable modules or overlays for apps larger than the sandbox.
 - [ ] UART link multiplayer between two consoles.
-- [ ] Multi-page Home Dashboard: свайп ліворуч/праворуч між головним екраном плиток та другим екраном (віджети: погода, календар подій, швидкі дії).
-- [ ] Optional `ESP32-C6-LCD-1.47` Wi-Fi 6 / BLE 5 companion co-processor & second screen on header `P11` (`UART4` `PA0`/`PA1`) — see [ROADMAP_ESP32_C6.md](ROADMAP_ESP32_C6.md).
--0 [~] Rich LVGL apps: text & C-script editor in SD Explorer done; calendar open (синхронізація подій Google Calendar через ESP32); додаток/віджет погоди; мережевий SpeedTest.
+- [~] Optional `ESP32-C6-LCD-1.47` Wi-Fi 6 / BLE 5 companion co-processor & second screen on header `P11` (`UART4` `PA0`/`PA1`) — stages E1..E3 done; see [ROADMAP_ESP32_C6.md](ROADMAP_ESP32_C6.md).
+- [~] Rich LVGL apps: text & C-script editor, Weather Station, and Monthly Calendar done; Google Calendar event sync & network SpeedTest open.
 
 ## Engineering hygiene
 

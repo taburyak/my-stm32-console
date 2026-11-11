@@ -8,6 +8,7 @@
 #include "beeper.h"
 #include "fatfs.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "ccmram.h"
 #include "app_loader.h"
@@ -81,6 +82,11 @@ static lv_obj_t * s_ext_btns[6]     = {NULL};
 static lv_obj_t * s_wifi_ssid_ta    = NULL;
 static lv_obj_t * s_wifi_pass_ta    = NULL;
 static lv_obj_t * s_wifi_stat_lbl   = NULL;
+static lv_obj_t * s_home_tv         = NULL;
+static lv_obj_t * s_home_tile0      = NULL;
+static lv_obj_t * s_home_tile1      = NULL;
+static uint8_t    s_home_active_col = 0U;
+static uint32_t   s_last_wth_tick   = 0U;
 static char       s_editor_path[STORAGE_MAX_PATH_LEN];
 static bool       s_editor_dirty    = false;
 static char       s_action_file_path[STORAGE_MAX_PATH_LEN];
@@ -136,6 +142,8 @@ static void Build_Games_Screen(void);
 static void Build_Settings_Screen(void);
 static void Build_SysInfo_Screen(void);
 static void Build_Wifi_Screen(void);
+static void Build_Weather_Screen(void);
+static void Build_Calendar_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
 
@@ -421,6 +429,23 @@ static void RTC_GetDateTime(uint8_t *hours, uint8_t *minutes, uint8_t *seconds)
     }
 }
 
+static void RTC_GetCalendarDate(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *weekday)
+{
+    RTC_TimeTypeDef sTime = {0};
+    RTC_DateTypeDef sDate = {0};
+
+    (void)HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    if (HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN) == HAL_OK)
+    {
+        uint16_t y = (uint16_t)(2000U + sDate.Year);
+        if (y < 2024U) y = 2026U;
+        if (year)    *year    = y;
+        if (month)   *month   = (sDate.Month >= 1U && sDate.Month <= 12U) ? sDate.Month : 11U;
+        if (day)     *day     = (sDate.Date  >= 1U && sDate.Date  <= 31U) ? sDate.Date  : 1U;
+        if (weekday) *weekday = (sDate.WeekDay >= 1U && sDate.WeekDay <= 7U) ? sDate.WeekDay : 1U;
+    }
+}
+
 static void RTC_SetTimeManual(uint8_t hours, uint8_t minutes)
 {
     RTC_TimeTypeDef sTime = {0};
@@ -629,6 +654,20 @@ void UIManager_Update(void)
             lv_label_set_text_fmt(s_wifi_stat_lbl, "#FF5555 Connection failed:# %s", ESPCompanion_GetWifiSsid());
         }
     }
+
+    const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+    if (wth->valid && wth->updated_tick != s_last_wth_tick)
+    {
+        s_last_wth_tick = wth->updated_tick;
+        if (current_screen == UI_SCREEN_WEATHER)
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_WEATHER;
+        }
+        else if (current_screen == UI_SCREEN_HOME && s_home_active_col == 1U)
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_HOME;
+        }
+    }
 }
 
 void UIManager_OnAppExit(void)
@@ -658,6 +697,9 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_wifi_ssid_ta     = NULL;
     s_wifi_pass_ta     = NULL;
     s_wifi_stat_lbl    = NULL;
+    s_home_tv          = NULL;
+    s_home_tile0       = NULL;
+    s_home_tile1       = NULL;
     memset(s_ext_btns, 0, sizeof(s_ext_btns));
     games_grid_obj     = NULL;
     lbl_time_set       = NULL;
@@ -675,7 +717,7 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     switch (screen)
     {
         case UI_SCREEN_HOME:
-            lv_label_set_text(lbl_screen_title, "STM32 OS");
+            lv_label_set_text(lbl_screen_title, s_home_active_col == 0U ? "STM32 OS" : "Widgets");
             Build_Home_Screen();
             break;
 
@@ -704,6 +746,16 @@ void UIManager_ShowScreen(UI_Screen_t screen)
             Build_Wifi_Screen();
             break;
 
+        case UI_SCREEN_WEATHER:
+            lv_label_set_text(lbl_screen_title, "Weather Station");
+            Build_Weather_Screen();
+            break;
+
+        case UI_SCREEN_CALENDAR:
+            lv_label_set_text(lbl_screen_title, "Calendar");
+            Build_Calendar_Screen();
+            break;
+
         default:
             Build_Home_Screen();
             break;
@@ -711,8 +763,176 @@ void UIManager_ShowScreen(UI_Screen_t screen)
 }
 
 /* ==========================================================================
- * 2. Home Screen Builder
+ * 2. Multi-Page Home Screen Builder (Swipe Tile 0: Apps <-> Tile 1: Widgets)
  * ========================================================================== */
+
+static const char *Weather_WmoDescription(uint8_t wmo)
+{
+    if (wmo == 0U) return "Clear Sky";
+    if (wmo == 1U) return "Mainly Clear";
+    if (wmo == 2U) return "Partly Cloudy";
+    if (wmo == 3U) return "Overcast";
+    if (wmo == 45U || wmo == 48U) return "Foggy";
+    if (wmo >= 51U && wmo <= 57U) return "Drizzle";
+    if (wmo >= 61U && wmo <= 67U) return "Rain";
+    if (wmo >= 71U && wmo <= 77U) return "Snow";
+    if (wmo >= 80U && wmo <= 82U) return "Rain Showers";
+    if (wmo >= 85U && wmo <= 86U) return "Snow Showers";
+    if (wmo >= 95U) return "Thunderstorm";
+    return "Cloudy";
+}
+
+static const char *Weather_WmoIconFile(uint8_t wmo)
+{
+    if (wmo == 0U || wmo == 1U) return "assets/weather/sun.bmp";
+    if (wmo == 2U || wmo == 3U) return "assets/weather/cloud.bmp";
+    if (wmo == 45U || wmo == 48U) return "assets/weather/fog.bmp";
+    if (wmo >= 51U && wmo <= 67U) return "assets/weather/rain.bmp";
+    if (wmo >= 71U && wmo <= 86U) return "assets/weather/snow.bmp";
+    if (wmo >= 95U) return "assets/weather/storm.bmp";
+    return "assets/weather/cloud.bmp";
+}
+
+static void Create_Weather_Graphic(lv_obj_t *parent, int16_t x, int16_t y, uint8_t wmo, bool allow_sd_bmp)
+{
+    if (allow_sd_bmp && SDCard_IsMounted())
+    {
+        const char *bmp_path = Weather_WmoIconFile(wmo);
+        if (f_stat(bmp_path, &s_ui_fno) == FR_OK)
+        {
+            lv_obj_t *img = lv_img_create(parent);
+            if (Set_Image_From_SD(img, bmp_path))
+            {
+                lv_obj_set_pos(img, x, y);
+                return;
+            }
+            lv_obj_del(img);
+        }
+    }
+
+    lv_obj_t *box = lv_obj_create(parent);
+    lv_obj_set_size(box, 64, 56);
+    lv_obj_set_pos(box, x, y);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_style_pad_all(box, 0, 0);
+
+    /* Sun disc for clear / partly cloudy */
+    if (wmo <= 2U)
+    {
+        lv_obj_t *sun = lv_obj_create(box);
+        int16_t sz = (wmo <= 1U) ? 38 : 28;
+        lv_obj_set_size(sun, sz, sz);
+        lv_obj_set_pos(sun, (wmo <= 1U) ? 13 : 6, (wmo <= 1U) ? 9 : 4);
+        lv_obj_clear_flag(sun, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(sun, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(sun, lv_color_hex(0xFFD600), 0);
+        lv_obj_set_style_border_width(sun, 3, 0);
+        lv_obj_set_style_border_color(sun, lv_color_hex(0xFF9100), 0);
+    }
+
+    /* Cloud body for cloudy / fog / rain / snow / storm */
+    if (wmo >= 2U)
+    {
+        uint32_t c_hex = (wmo >= 95U) ? 0x546E7AU : ((wmo >= 51U) ? 0x90A4AEU : 0xECEFF1U);
+
+        lv_obj_t *c1 = lv_obj_create(box);
+        lv_obj_set_size(c1, 24, 24);
+        lv_obj_set_pos(c1, 12, 14);
+        lv_obj_clear_flag(c1, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(c1, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(c1, lv_color_hex(c_hex), 0);
+        lv_obj_set_style_border_width(c1, 0, 0);
+
+        lv_obj_t *c2 = lv_obj_create(box);
+        lv_obj_set_size(c2, 20, 20);
+        lv_obj_set_pos(c2, 28, 17);
+        lv_obj_clear_flag(c2, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(c2, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(c2, lv_color_hex(c_hex), 0);
+        lv_obj_set_style_border_width(c2, 0, 0);
+
+        lv_obj_t *base = lv_obj_create(box);
+        lv_obj_set_size(base, 44, 16);
+        lv_obj_set_pos(base, 10, 24);
+        lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(base, 8, 0);
+        lv_obj_set_style_bg_color(base, lv_color_hex(c_hex), 0);
+        lv_obj_set_style_border_width(base, 0, 0);
+    }
+
+    /* Raindrops / Snowflakes / Fog bars / Lightning */
+    if ((wmo >= 51U && wmo <= 67U) || (wmo >= 80U && wmo <= 82U))
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            lv_obj_t *drop = lv_obj_create(box);
+            lv_obj_set_size(drop, 4, 10);
+            lv_obj_set_pos(drop, (int16_t)(16 + i * 13), 43);
+            lv_obj_clear_flag(drop, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_radius(drop, 2, 0);
+            lv_obj_set_style_bg_color(drop, lv_color_hex(0x00E5FF), 0);
+            lv_obj_set_style_border_width(drop, 0, 0);
+        }
+    }
+    else if ((wmo >= 71U && wmo <= 77U) || (wmo >= 85U && wmo <= 86U))
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            lv_obj_t *flk = lv_obj_create(box);
+            lv_obj_set_size(flk, 6, 6);
+            lv_obj_set_pos(flk, (int16_t)(15 + i * 13), 44);
+            lv_obj_clear_flag(flk, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_radius(flk, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(flk, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_border_width(flk, 0, 0);
+        }
+    }
+    else if (wmo >= 95U)
+    {
+        lv_obj_t *bolt = lv_label_create(box);
+        lv_obj_set_style_text_color(bolt, lv_color_hex(0xFFD600), 0);
+        lv_obj_set_pos(bolt, 24, 38);
+        lv_label_set_text(bolt, LV_SYMBOL_CHARGE);
+    }
+    else if (wmo == 45U || wmo == 48U)
+    {
+        for (int i = 0; i < 2; i++)
+        {
+            lv_obj_t *fog = lv_obj_create(box);
+            lv_obj_set_size(fog, 38, 3);
+            lv_obj_set_pos(fog, 13, (int16_t)(43 + i * 6));
+            lv_obj_clear_flag(fog, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_bg_color(fog, lv_color_hex(0xB0BEC5), 0);
+            lv_obj_set_style_border_width(fog, 0, 0);
+        }
+    }
+}
+
+static void home_tileview_changed_cb(lv_event_t * e)
+{
+    lv_obj_t * tv = lv_event_get_target(e);
+    lv_obj_t * act = lv_tileview_get_tile_act(tv);
+    uint8_t new_col = (act == s_home_tile1) ? 1U : 0U;
+    if (new_col != s_home_active_col)
+    {
+        s_home_active_col = new_col;
+        lv_label_set_text(lbl_screen_title, s_home_active_col == 0U ? "STM32 OS" : "Widgets");
+    }
+}
+
+static void home_page_switch_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED && s_home_tv != NULL)
+    {
+        uint8_t target_col = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+        s_home_active_col = target_col;
+        Beeper_Click();
+        lv_obj_set_tile_id(s_home_tv, target_col, 0, LV_ANIM_ON);
+        lv_label_set_text(lbl_screen_title, target_col == 0U ? "STM32 OS" : "Widgets");
+    }
+}
 
 static void home_icon_event_cb(lv_event_t * e)
 {
@@ -729,7 +949,7 @@ static void Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
                                     uint32_t accent_hex, UI_Screen_t target_screen)
 {
     lv_obj_t * btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, 136, 84);
+    lv_obj_set_size(btn, 136, 82);
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x252F48), 0);
@@ -792,10 +1012,147 @@ static void Build_Home_Screen(void)
         }
     }
 
-    Create_Desktop_Shortcut(workspace_cont, 16,  16, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
-    Create_Desktop_Shortcut(workspace_cont, 168, 16, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_GAMES);
-    Create_Desktop_Shortcut(workspace_cont, 16,  114, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
-    Create_Desktop_Shortcut(workspace_cont, 168, 114, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
+    /* Create horizontal 2-page swipeable Tileview */
+    s_home_tv = lv_tileview_create(workspace_cont);
+    lv_obj_set_size(s_home_tv, 320, 216);
+    lv_obj_set_pos(s_home_tv, 0, 0);
+    lv_obj_set_style_bg_opa(s_home_tv, LV_OPA_TRANSP, 0);
+    lv_obj_set_scrollbar_mode(s_home_tv, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_event_cb(s_home_tv, home_tileview_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    s_home_tile0 = lv_tileview_add_tile(s_home_tv, 0, 0, LV_DIR_RIGHT);
+    s_home_tile1 = lv_tileview_add_tile(s_home_tv, 1, 0, LV_DIR_LEFT);
+    lv_obj_set_style_bg_opa(s_home_tile0, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(s_home_tile1, LV_OPA_TRANSP, 0);
+
+    /* ---- Page 1 (Tile 0): 4 Main Launcher Shortcuts ---- */
+    Create_Desktop_Shortcut(s_home_tile0, 16,  10, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
+    Create_Desktop_Shortcut(s_home_tile0, 168, 10, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_GAMES);
+    Create_Desktop_Shortcut(s_home_tile0, 16,  102, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
+    Create_Desktop_Shortcut(s_home_tile0, 168, 102, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
+
+    lv_obj_t * btn_to_p2 = lv_btn_create(s_home_tile0);
+    lv_obj_set_size(btn_to_p2, 136, 20);
+    lv_obj_align(btn_to_p2, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_set_style_bg_color(btn_to_p2, lv_color_hex(0x1B2234), 0);
+    lv_obj_set_style_bg_opa(btn_to_p2, LV_OPA_80, 0);
+    lv_obj_t * lbl_p2 = lv_label_create(btn_to_p2);
+    lv_label_set_text(lbl_p2, "Widgets  o . " LV_SYMBOL_RIGHT);
+    lv_obj_center(lbl_p2);
+    lv_obj_add_event_cb(btn_to_p2, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)1U);
+
+    /* ---- Page 2 (Tile 1): Live Weather Card & Calendar Card ---- */
+    const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+
+    /* Left Card: Weather Station Tile */
+    lv_obj_t * w_btn = lv_btn_create(s_home_tile1);
+    lv_obj_set_size(w_btn, 144, 174);
+    lv_obj_set_pos(w_btn, 12, 10);
+    lv_obj_set_style_radius(w_btn, 10, 0);
+    lv_obj_set_style_bg_color(w_btn, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_bg_opa(w_btn, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(w_btn, 2, 0);
+    lv_obj_set_style_border_color(w_btn, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_border_color(w_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(w_btn, 3, LV_STATE_FOCUSED);
+    lv_obj_add_event_cb(w_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_WEATHER);
+
+    Create_Weather_Graphic(w_btn, 36, 4, wth->valid ? wth->wmo_code : 2U, false);
+
+    lv_obj_t * w_lbl = lv_label_create(w_btn);
+    lv_label_set_recolor(w_lbl, true);
+    lv_obj_set_width(w_lbl, 130);
+    lv_obj_set_style_text_align(w_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(w_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+    if (wth->valid)
+    {
+        lv_label_set_text_fmt(w_lbl,
+            "#00E5FF %s#\n"
+            "#FFD600 %s%d.%d C#\n"
+            "%s\n"
+            "#90A4AE H:%u%% W:%u.%ukm/h#",
+            wth->city,
+            (wth->temp_deci < 0) ? "-" : "+",
+            abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
+            Weather_WmoDescription(wth->wmo_code),
+            (unsigned int)wth->humidity,
+            (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U));
+    }
+    else
+    {
+        int32_t mcu_dc = TempSensor_ReadMcuDeciC();
+        lv_label_set_text_fmt(w_lbl,
+            "#00E5FF Weather#\n"
+            "#FFD600 Forecast#\n"
+            "%s\n"
+            "#90A4AE MCU: %ld.%ld C#",
+            ESPCompanion_IsWifiConnected() ? "Tap to sync" : "Wi-Fi offline",
+            (long)(mcu_dc / 10), (long)(abs(mcu_dc) % 10));
+    }
+
+    /* Right Card: Calendar & Date Tile */
+    lv_obj_t * c_btn = lv_btn_create(s_home_tile1);
+    lv_obj_set_size(c_btn, 144, 174);
+    lv_obj_set_pos(c_btn, 164, 10);
+    lv_obj_set_style_radius(c_btn, 10, 0);
+    lv_obj_set_style_bg_color(c_btn, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_bg_opa(c_btn, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(c_btn, 2, 0);
+    lv_obj_set_style_border_color(c_btn, lv_color_hex(0x00FF66), 0);
+    lv_obj_set_style_border_color(c_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(c_btn, 3, LV_STATE_FOCUSED);
+    lv_obj_add_event_cb(c_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_CALENDAR);
+
+    uint16_t yr = 2026U;
+    uint8_t  mo = 11U, dy = 11U, wd = 3U;
+    RTC_GetCalendarDate(&yr, &mo, &dy, &wd);
+    static const char * const s_wd_names[8] = {
+        "", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+    };
+    static const char * const s_mo_names[13] = {
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    };
+
+    lv_obj_t * c_lbl = lv_label_create(c_btn);
+    lv_label_set_recolor(c_lbl, true);
+    lv_obj_set_width(c_lbl, 130);
+    lv_obj_set_style_text_align(c_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(c_lbl);
+    lv_label_set_text_fmt(c_lbl,
+        "#00FF66 " LV_SYMBOL_BELL " Calendar#\n\n"
+        "#FFD600 %s#\n"
+        "#FFFFFF %02u %s#\n"
+        "#00E5FF %04u#\n\n"
+        "#90A4AE Open Month View#",
+        s_wd_names[(wd <= 7U) ? wd : 1U],
+        (unsigned int)dy, s_mo_names[(mo <= 12U) ? mo : 1U],
+        (unsigned int)yr);
+
+    lv_obj_t * btn_to_p1 = lv_btn_create(s_home_tile1);
+    lv_obj_set_size(btn_to_p1, 136, 20);
+    lv_obj_align(btn_to_p1, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_set_style_bg_color(btn_to_p1, lv_color_hex(0x1B2234), 0);
+    lv_obj_set_style_bg_opa(btn_to_p1, LV_OPA_80, 0);
+    lv_obj_t * lbl_p1 = lv_label_create(btn_to_p1);
+    lv_label_set_text(lbl_p1, LV_SYMBOL_LEFT " . o  Launcher");
+    lv_obj_center(lbl_p1);
+    lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)0U);
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, btn_to_p2);
+        lv_group_add_obj(grp, w_btn);
+        lv_group_add_obj(grp, c_btn);
+        lv_group_add_obj(grp, btn_to_p1);
+    }
+
+    if (s_home_active_col == 1U)
+    {
+        lv_obj_set_tile_id(s_home_tv, 1, 0, LV_ANIM_OFF);
+    }
 }
 
 /* ==========================================================================
@@ -3642,5 +3999,229 @@ static void Build_SysInfo_Screen(void)
         lv_group_add_obj(grp, btn_test);
         lv_group_add_obj(grp, btn_temp);
         lv_group_add_obj(grp, btn_back);
+    }
+}
+
+/* ==========================================================================
+ * 7. Full-Screen Weather Station & 3-Day Forecast
+ * ========================================================================== */
+
+static void btn_weather_refresh_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_home_active_col = 1U;
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+        return;
+    }
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+
+    Beeper_Click();
+    (void)TempSensor_ReadMcuDeciC();
+    int32_t ext_dc = 0;
+    (void)TempSensor_ReadExtDeciC(&ext_dc);
+    (void)ESPCompanion_RequestWeatherUpdate();
+    s_pending_screen = (int8_t)UI_SCREEN_WEATHER;
+}
+
+static void btn_widget_back_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED ||
+        (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC))
+    {
+        Beeper_Click();
+        s_home_active_col = 1U;
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+    }
+}
+
+static void Build_Weather_Screen(void)
+{
+    uint32_t accent_hex = s_themes[s_theme_id % THEME_COUNT].title_col;
+    const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+
+    /* Top Row: [< Back] [City & Condition] [Refresh] */
+    lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_back, 60, 24);
+    lv_obj_set_pos(btn_back, 6, 4);
+    lv_obj_t * lbl_b = lv_label_create(btn_back);
+    lv_label_set_text(lbl_b, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(lbl_b);
+    lv_obj_add_event_cb(btn_back, btn_widget_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_back, btn_widget_back_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t * lbl_city = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl_city, lv_color_hex(accent_hex), 0);
+    lv_obj_set_pos(lbl_city, 72, 8);
+    lv_obj_set_width(lbl_city, 168);
+    lv_label_set_long_mode(lbl_city, LV_LABEL_LONG_DOT);
+    if (wth->valid)
+    {
+        lv_label_set_text_fmt(lbl_city, "%s - %s", wth->city, Weather_WmoDescription(wth->wmo_code));
+    }
+    else
+    {
+        lv_label_set_text(lbl_city, ESPCompanion_IsWifiConnected() ? "Syncing Open-Meteo..." : "Wi-Fi Offline");
+    }
+
+    lv_obj_t * btn_sync = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_sync, 68, 24);
+    lv_obj_set_pos(btn_sync, 246, 4);
+    lv_obj_set_style_bg_color(btn_sync, lv_color_hex(0x0277BD), 0);
+    lv_obj_t * lbl_s = lv_label_create(btn_sync);
+    lv_label_set_text(lbl_s, LV_SYMBOL_REFRESH " Sync");
+    lv_obj_center(lbl_s);
+    lv_obj_add_event_cb(btn_sync, btn_weather_refresh_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_sync, btn_weather_refresh_cb, LV_EVENT_KEY, NULL);
+
+    /* Main Current Weather Panel */
+    lv_obj_t * main_card = lv_obj_create(workspace_cont);
+    lv_obj_set_size(main_card, 308, 94);
+    lv_obj_set_pos(main_card, 6, 32);
+    lv_obj_clear_flag(main_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(main_card, lv_color_hex(0x101826), 0);
+    lv_obj_set_style_border_color(main_card, lv_color_hex(accent_hex), 0);
+    lv_obj_set_style_border_width(main_card, 1, 0);
+    lv_obj_set_style_pad_all(main_card, 6, 0);
+
+    Create_Weather_Graphic(main_card, 4, 12, wth->valid ? wth->wmo_code : 2U, true);
+
+    int32_t mcu_dc = TempSensor_ReadMcuDeciC();
+    bool    ext_ok = false;
+    int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
+    char    room_str[24];
+    if (ext_ok)
+    {
+        snprintf(room_str, sizeof(room_str), "%s%ld.%ld C",
+                 (ext_dc < 0) ? "-" : "+", (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10));
+    }
+    else
+    {
+        snprintf(room_str, sizeof(room_str), "N/A");
+    }
+
+    lv_obj_t * cur_lbl = lv_label_create(main_card);
+    lv_label_set_recolor(cur_lbl, true);
+    lv_obj_set_pos(cur_lbl, 76, 2);
+    if (wth->valid)
+    {
+        lv_label_set_text_fmt(cur_lbl,
+            "Outdoor: #FFD600 %s%d.%d C#  (Feels %s%d.%d C)\n"
+            "Humidity: #00E5FF %u%%#  |  Wind: #00FF66 %u.%u km/h#\n"
+            "Room (DS18B20): #FFAE00 %s#\n"
+            "Console MCU: #B388FF %ld.%ld C#",
+            (wth->temp_deci < 0) ? "-" : "+", abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
+            (wth->feels_deci < 0) ? "-" : "+", abs(wth->feels_deci) / 10, abs(wth->feels_deci) % 10,
+            (unsigned int)wth->humidity,
+            (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U),
+            room_str,
+            (long)(mcu_dc / 10), (long)(abs(mcu_dc) % 10));
+    }
+    else
+    {
+        lv_label_set_text_fmt(cur_lbl,
+            "Outdoor: #90A4AE Waiting for ESP32 Wi-Fi...#\n"
+            "Press [Sync] to fetch Open-Meteo\n"
+            "Room (DS18B20): #FFAE00 %s#\n"
+            "Console MCU: #B388FF %ld.%ld C#",
+            room_str,
+            (long)(mcu_dc / 10), (long)(abs(mcu_dc) % 10));
+    }
+
+    /* 3-Day Forecast Cards (Bottom Row) */
+    static const char * const s_day_titles[3] = { "Today", "Tomorrow", "Day +2" };
+    for (int i = 0; i < 3; i++)
+    {
+        lv_obj_t * dcard = lv_obj_create(workspace_cont);
+        lv_obj_set_size(dcard, 98, 80);
+        lv_obj_set_pos(dcard, (int16_t)(6 + i * 105), 130);
+        lv_obj_clear_flag(dcard, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(dcard, lv_color_hex(0x162032), 0);
+        lv_obj_set_style_border_color(dcard, lv_color_hex(0x2A3950), 0);
+        lv_obj_set_style_border_width(dcard, 1, 0);
+        lv_obj_set_style_pad_all(dcard, 4, 0);
+
+        lv_obj_t * dlbl = lv_label_create(dcard);
+        lv_label_set_recolor(dlbl, true);
+        lv_obj_set_width(dlbl, 88);
+        lv_obj_set_style_text_align(dlbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(dlbl);
+
+        if (wth->valid)
+        {
+            lv_label_set_text_fmt(dlbl,
+                "#00E5FF %s#\n"
+                "%s\n"
+                "#FF8A80 %s%d.%d# / #80D8FF %s%d.%d#",
+                s_day_titles[i],
+                Weather_WmoDescription(wth->day_wmo[i]),
+                (wth->day_hi_deci[i] < 0) ? "-" : "+", abs(wth->day_hi_deci[i]) / 10, abs(wth->day_hi_deci[i]) % 10,
+                (wth->day_lo_deci[i] < 0) ? "-" : "+", abs(wth->day_lo_deci[i]) / 10, abs(wth->day_lo_deci[i]) % 10);
+        }
+        else
+        {
+            lv_label_set_text_fmt(dlbl, "#00E5FF %s#\n--\n-- / --", s_day_titles[i]);
+        }
+    }
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, btn_back);
+        lv_group_add_obj(grp, btn_sync);
+        lv_group_focus_obj(btn_sync);
+    }
+}
+
+/* ==========================================================================
+ * 8. Interactive Monthly Calendar Screen
+ * ========================================================================== */
+
+static void Build_Calendar_Screen(void)
+{
+    uint16_t yr = 2026U;
+    uint8_t  mo = 11U, dy = 11U, wd = 3U;
+    RTC_GetCalendarDate(&yr, &mo, &dy, &wd);
+
+    lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_back, 60, 24);
+    lv_obj_set_pos(btn_back, 6, 4);
+    lv_obj_t * lbl_b = lv_label_create(btn_back);
+    lv_label_set_text(lbl_b, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(lbl_b);
+    lv_obj_add_event_cb(btn_back, btn_widget_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_back, btn_widget_back_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t * cal = lv_calendar_create(workspace_cont);
+    lv_obj_set_size(cal, 242, 206);
+    lv_obj_set_pos(cal, 72, 4);
+    lv_calendar_set_today_date(cal, yr, mo, dy);
+    lv_calendar_set_showed_date(cal, yr, mo);
+    lv_calendar_header_arrow_create(cal);
+    lv_obj_add_event_cb(cal, global_key_event_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t * side_lbl = lv_label_create(workspace_cont);
+    lv_label_set_recolor(side_lbl, true);
+    lv_obj_set_pos(side_lbl, 6, 38);
+    lv_obj_set_width(side_lbl, 62);
+    lv_label_set_text_fmt(side_lbl,
+        "#00FF66 Today:#\n"
+        "%02u.%02u\n"
+        "%04u\n\n"
+        "#90A4AE NTP:#\n"
+        "%s",
+        (unsigned int)dy, (unsigned int)mo, (unsigned int)yr,
+        ESPCompanion_IsWifiConnected() ? "#00E5FF Sync#" : "#555555 Local#");
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, btn_back);
+        lv_group_add_obj(grp, cal);
+        lv_group_focus_obj(btn_back);
     }
 }
