@@ -24,7 +24,7 @@
 /* can be used to modify / undefine following code or add new definitions */
 #include "main.h"
 extern IWDG_HandleTypeDef hiwdg;
-/* USER CODE END firstSection */
+/* USER CODE END firstSection*/
 
 /* Includes ------------------------------------------------------------------*/
 #include "ff_gen_drv.h"

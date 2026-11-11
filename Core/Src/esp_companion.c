@@ -10,7 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-extern UART_HandleTypeDef huart4;
+extern UART_HandleTypeDef huart6;
 extern IWDG_HandleTypeDef hiwdg;
 
 #define ESP_RX_DMA_BUF_SIZE  1024U
@@ -89,8 +89,8 @@ static void Send_Raw_Line(const char *str)
     if (str == NULL) return;
     size_t len = strlen(str);
     if (len == 0U) return;
-    huart4.gState = HAL_UART_STATE_READY;
-    if (HAL_UART_Transmit(&huart4, (const uint8_t *)str, (uint16_t)len, 100U) == HAL_OK)
+    huart6.gState = HAL_UART_STATE_READY;
+    if (HAL_UART_Transmit(&huart6, (const uint8_t *)str, (uint16_t)len, 100U) == HAL_OK)
     {
         s_tx_packets++;
     }
@@ -506,33 +506,33 @@ void ESPCompanion_Init(void)
     s_line_len     = 0U;
     memset(s_rx_dma_buf, 0, sizeof(s_rx_dma_buf));
 
-    /* GPIO PA0/PA1, DMA1_Stream2/4, and UART4 are configured by CubeMX in MX_UART4_Init() */
-    if (huart4.Instance != NULL && huart4.hdmarx != NULL)
+    /* GPIO PC6/PC7, DMA2_Stream1/7, and USART6 are configured by CubeMX in MX_USART6_UART_Init() */
+    if (huart6.Instance != NULL && huart6.hdmarx != NULL)
     {
-        __HAL_UART_CLEAR_OREFLAG(&huart4);
-        huart4.ErrorCode = HAL_UART_ERROR_NONE;
-        huart4.RxState   = HAL_UART_STATE_READY;
+        __HAL_UART_CLEAR_OREFLAG(&huart6);
+        huart6.ErrorCode = HAL_UART_ERROR_NONE;
+        huart6.RxState   = HAL_UART_STATE_READY;
 
-        (void)HAL_UART_Receive_DMA(&huart4, s_rx_dma_buf, sizeof(s_rx_dma_buf));
+        (void)HAL_UART_Receive_DMA(&huart6, s_rx_dma_buf, sizeof(s_rx_dma_buf));
     }
 }
 
 void ESPCompanion_Poll(void)
 {
-    if (huart4.Instance == NULL || huart4.hdmarx == NULL)
+    if (huart6.Instance == NULL || huart6.hdmarx == NULL)
     {
         return;
     }
 
     /* Auto-recovery: if overrun occurred, clear flag via HAL/LL API and keep DMA RX enabled */
-    if (__HAL_UART_GET_FLAG(&huart4, UART_FLAG_ORE) != RESET)
+    if (__HAL_UART_GET_FLAG(&huart6, UART_FLAG_ORE) != RESET)
     {
-        __HAL_UART_CLEAR_OREFLAG(&huart4);
-        LL_USART_EnableDMAReq_RX(huart4.Instance);
+        __HAL_UART_CLEAR_OREFLAG(&huart6);
+        LL_USART_EnableDMAReq_RX(huart6.Instance);
     }
 
     /* 1. Read newly received bytes from circular DMA buffer */
-    uint16_t dma_rem = (uint16_t)__HAL_DMA_GET_COUNTER(huart4.hdmarx);
+    uint16_t dma_rem = (uint16_t)__HAL_DMA_GET_COUNTER(huart6.hdmarx);
     uint16_t dma_head = (dma_rem <= sizeof(s_rx_dma_buf))
                         ? (uint16_t)(sizeof(s_rx_dma_buf) - dma_rem)
                         : 0U;
@@ -543,8 +543,7 @@ void ESPCompanion_Poll(void)
 
     while (s_rx_read_ptr != dma_head)
     {
-        /* Mask bit 7 (7-bit ASCII) to tolerate stop-bit edge slew on jumper wires */
-        char c = (char)(s_rx_dma_buf[s_rx_read_ptr] & 0x7FU);
+        char c = (char)s_rx_dma_buf[s_rx_read_ptr];
         s_rx_read_ptr = (s_rx_read_ptr + 1U) % sizeof(s_rx_dma_buf);
 
         if (c == '\n' || c == '\r')
@@ -598,8 +597,8 @@ void ESPCompanion_Poll(void)
 
         if (len > 0)
         {
-            huart4.gState = HAL_UART_STATE_READY;
-            if (HAL_UART_Transmit(&huart4, (uint8_t *)s_tx_buf, (uint16_t)len, 10U) == HAL_OK)
+            huart6.gState = HAL_UART_STATE_READY;
+            if (HAL_UART_Transmit(&huart6, (uint8_t *)s_tx_buf, (uint16_t)len, 10U) == HAL_OK)
             {
                 s_tx_packets++;
             }
@@ -649,8 +648,8 @@ bool ESPCompanion_SendWifiCredentials(const char *ssid, const char *pass)
                        ssid, (pass != NULL) ? pass : "");
     if (len <= 0) return false;
 
-    huart4.gState = HAL_UART_STATE_READY;
-    HAL_StatusTypeDef st = HAL_UART_Transmit(&huart4, (uint8_t *)buf, (uint16_t)len, 100U);
+    huart6.gState = HAL_UART_STATE_READY;
+    HAL_StatusTypeDef st = HAL_UART_Transmit(&huart6, (uint8_t *)buf, (uint16_t)len, 100U);
     if (st == HAL_OK)
     {
         s_tx_packets++;
@@ -766,8 +765,8 @@ const ESP_WeatherInfo_t *ESPCompanion_GetWeather(void)
 bool ESPCompanion_RequestWeatherUpdate(void)
 {
     static const char req[] = "STM32:REQ_WTH\n";
-    huart4.gState = HAL_UART_STATE_READY;
-    if (HAL_UART_Transmit(&huart4, (const uint8_t *)req, (uint16_t)(sizeof(req) - 1U), 20U) == HAL_OK)
+    huart6.gState = HAL_UART_STATE_READY;
+    if (HAL_UART_Transmit(&huart6, (const uint8_t *)req, (uint16_t)(sizeof(req) - 1U), 20U) == HAL_OK)
     {
         s_tx_packets++;
         return true;
@@ -799,7 +798,7 @@ uint32_t ESPCompanion_GetTxPackets(void)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == UART4)
+    if (huart->Instance == USART6)
     {
         __HAL_UART_CLEAR_OREFLAG(huart);
         huart->ErrorCode = HAL_UART_ERROR_NONE;
