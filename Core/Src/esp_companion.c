@@ -31,7 +31,7 @@ static char     s_tx_buf[ESP_TX_BUF_SIZE] __attribute__((aligned(4)));
 static FIL      s_rpc_fil __attribute__((aligned(4)));
 static DIR      s_rpc_dir __attribute__((aligned(4)));
 static FILINFO  s_rpc_fno __attribute__((aligned(4)));
-static uint8_t  s_rpc_io_buf[512] __attribute__((aligned(4)));
+static uint8_t  s_rpc_io_buf[1024] __attribute__((aligned(4)));
 
 static char     s_pending_app_run[64] = {0};
 static volatile bool s_has_pending_app_run = false;
@@ -111,6 +111,29 @@ static const char *Normalize_Rel_Path(const char *p)
     return p;
 }
 
+static bool WaitForStreamAck(uint32_t timeout_ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while ((HAL_GetTick() - t0) < timeout_ms)
+    {
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        uint16_t dma_rem = (uint16_t)__HAL_DMA_GET_COUNTER(huart6.hdmarx);
+        uint16_t dma_head = (dma_rem <= sizeof(s_rx_dma_buf)) ? (uint16_t)(sizeof(s_rx_dma_buf) - dma_rem) : 0U;
+        if (dma_head >= sizeof(s_rx_dma_buf)) dma_head = 0U;
+
+        while (s_rx_read_ptr != dma_head)
+        {
+            uint8_t c = s_rx_dma_buf[s_rx_read_ptr];
+            s_rx_read_ptr = (s_rx_read_ptr + 1U) % sizeof(s_rx_dma_buf);
+            if (c == 'K')
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool Handle_File_Rpc(const char *line)
 {
     const char *p_cmd = NULL;
@@ -149,6 +172,55 @@ static bool Handle_File_Rpc(const char *line)
         }
         (void)f_closedir(&s_rpc_dir);
         Send_Raw_Line("STM32:FLS_END,OK\n");
+        return true;
+    }
+
+    /* 1.5. Fast Full-File Binary Stream: ESP32:FS_STREAM,<path> */
+    if ((p_cmd = strstr(line, "FS_STREAM,")) != NULL)
+    {
+        const char *rel = Normalize_Rel_Path(p_cmd + 10);
+        (void)HAL_IWDG_Refresh(&hiwdg);
+
+        if (f_open(&s_rpc_fil, rel, FA_READ) != FR_OK)
+        {
+            Send_Raw_Line("STM32:STRM_ERR\n");
+            return true;
+        }
+
+        uint32_t total_sz = (uint32_t)f_size(&s_rpc_fil);
+        snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:STRM_START,%lu\n", (unsigned long)total_sz);
+        Send_Raw_Line(s_tx_buf);
+
+        uint32_t sent = 0U;
+        while (sent < total_sz)
+        {
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            UINT req = (total_sz - sent > sizeof(s_rpc_io_buf))
+                       ? (UINT)sizeof(s_rpc_io_buf)
+                       : (UINT)(total_sz - sent);
+            UINT br = 0U;
+            if (f_read(&s_rpc_fil, s_rpc_io_buf, req, &br) != FR_OK || br == 0U)
+            {
+                break;
+            }
+            huart6.gState = HAL_UART_STATE_READY;
+            if (HAL_UART_Transmit(&huart6, s_rpc_io_buf, (uint16_t)br, 1000U) != HAL_OK)
+            {
+                break;
+            }
+            s_tx_packets++;
+            sent += br;
+
+            /* Flow control: wait for 1-byte ACK ('K') from ESP32 before sending next chunk */
+            if (sent < total_sz)
+            {
+                if (!WaitForStreamAck(1500U))
+                {
+                    break;
+                }
+            }
+        }
+        (void)f_close(&s_rpc_fil);
         return true;
     }
 
