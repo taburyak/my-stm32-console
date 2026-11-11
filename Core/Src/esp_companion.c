@@ -111,23 +111,42 @@ static const char *Normalize_Rel_Path(const char *p)
     return p;
 }
 
+static uint16_t Get_Dma_Rx_Head(void)
+{
+    uint16_t dma_rem = (uint16_t)__HAL_DMA_GET_COUNTER(huart6.hdmarx);
+    uint16_t head = (dma_rem <= sizeof(s_rx_dma_buf))
+                    ? (uint16_t)(sizeof(s_rx_dma_buf) - dma_rem)
+                    : 0U;
+    return (head < sizeof(s_rx_dma_buf)) ? head : 0U;
+}
+
 static bool WaitForStreamAck(uint32_t timeout_ms)
 {
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < timeout_ms)
     {
         (void)HAL_IWDG_Refresh(&hiwdg);
-        uint16_t dma_rem = (uint16_t)__HAL_DMA_GET_COUNTER(huart6.hdmarx);
-        uint16_t dma_head = (dma_rem <= sizeof(s_rx_dma_buf)) ? (uint16_t)(sizeof(s_rx_dma_buf) - dma_rem) : 0U;
-        if (dma_head >= sizeof(s_rx_dma_buf)) dma_head = 0U;
+        if (__HAL_UART_GET_FLAG(&huart6, UART_FLAG_ORE) != RESET)
+        {
+            __HAL_UART_CLEAR_OREFLAG(&huart6);
+            LL_USART_EnableDMAReq_RX(huart6.Instance);
+        }
 
-        while (s_rx_read_ptr != dma_head)
+        while (s_rx_read_ptr != Get_Dma_Rx_Head())
         {
             uint8_t c = s_rx_dma_buf[s_rx_read_ptr];
             s_rx_read_ptr = (s_rx_read_ptr + 1U) % sizeof(s_rx_dma_buf);
             if (c == 'K')
             {
+                s_is_connected = true;
+                s_last_rx_tick = HAL_GetTick();
                 return true;
+            }
+            if (c == 'X')
+            {
+                s_is_connected = true;
+                s_last_rx_tick = HAL_GetTick();
+                return false;
             }
         }
     }
@@ -194,6 +213,12 @@ static bool Handle_File_Rpc(const char *line)
         uint32_t sent = 0U;
         while (sent < total_sz)
         {
+            /* Wait for ESP32 to request the next chunk ('K') or abort ('X') BEFORE transmitting binary bytes */
+            if (!WaitForStreamAck(1500U))
+            {
+                break;
+            }
+
             (void)HAL_IWDG_Refresh(&hiwdg);
             UINT req = (total_sz - sent > sizeof(s_rpc_io_buf))
                        ? (UINT)sizeof(s_rpc_io_buf)
@@ -210,17 +235,10 @@ static bool Handle_File_Rpc(const char *line)
             }
             s_tx_packets++;
             sent += br;
-
-            /* Flow control: wait for 1-byte ACK ('K') from ESP32 before sending next chunk */
-            if (sent < total_sz)
-            {
-                if (!WaitForStreamAck(1500U))
-                {
-                    break;
-                }
-            }
+            s_last_rx_tick = HAL_GetTick();
         }
         (void)f_close(&s_rpc_fil);
+        s_last_rx_tick = HAL_GetTick();
         return true;
     }
 
@@ -620,17 +638,8 @@ void ESPCompanion_Poll(void)
         LL_USART_EnableDMAReq_RX(huart6.Instance);
     }
 
-    /* 1. Read newly received bytes from circular DMA buffer */
-    uint16_t dma_rem = (uint16_t)__HAL_DMA_GET_COUNTER(huart6.hdmarx);
-    uint16_t dma_head = (dma_rem <= sizeof(s_rx_dma_buf))
-                        ? (uint16_t)(sizeof(s_rx_dma_buf) - dma_rem)
-                        : 0U;
-    if (dma_head >= sizeof(s_rx_dma_buf))
-    {
-        dma_head = 0U;
-    }
-
-    while (s_rx_read_ptr != dma_head)
+    /* 1. Read newly received bytes from circular DMA buffer (query live DMA head on every step) */
+    while (s_rx_read_ptr != Get_Dma_Rx_Head())
     {
         char c = (char)s_rx_dma_buf[s_rx_read_ptr];
         s_rx_read_ptr = (s_rx_read_ptr + 1U) % sizeof(s_rx_dma_buf);
@@ -654,8 +663,8 @@ void ESPCompanion_Poll(void)
         }
     }
 
-    /* 2. Link Timeout Check: disconnected if no heartbeat for 1500 ms */
-    if (s_is_connected && ((HAL_GetTick() - s_last_rx_tick) > 1500U))
+    /* 2. Link Timeout Check: disconnected if no packet/heartbeat for 5000 ms */
+    if (s_is_connected && ((HAL_GetTick() - s_last_rx_tick) > 5000U))
     {
         s_is_connected = false;
         s_wifi_status  = 0;
