@@ -29,10 +29,17 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 - [x] Internal MCU temperature sensor (`ADC1` `IN16`/`IN17` with `VREFINT` calibration + overheat alarm) & external 1-Wire `DS18B20` (`PA15`, `Libs/DS18B20`, `Core/Src/temp_sensor.c`), exposed to SDK apps via `sys_get_mcu_temp_deci()` / `sys_get_ext_temp_deci()` (SVC 49) and C-scripts (`temp_mcu()` / `temp_ext()`).
 - [x] Settings & EEPROM persistence (`AT24C02` `0x00..0x0B`): 4-point `XPT2046` touchscreen calibration wizard (`Run_Touch_Calibration_Wizard`), gamepad analog stick deadzone configuration (`4..32`), and 4 UI color themes (`Cyber Blue`, `Emerald`, `Retro Amber`, `Synthwave`).
 - [x] Interactive Text & C-Script Editor and File Manager in SD Explorer (`Core/Src/ui_manager.c`, `Libs/lvgl_port/lv_port_console.c`): multi-line `lv_textarea` editor (up to 8 KB in `MM_EXT_TEXT_PREVIEW`) with block cursor, USB keyboard navigation (`Up`/`Down`/`Left`/`Right`/`Home`/`End`/`Del`), toggleable on-screen touch `lv_keyboard`, `Save` to SD card, instant `Run` button for `.c` scripts, plus full file & directory operations (`[ + New File... ]` with custom name & supported extension selector `.c`/`.txt`/`.h`/`.md`/`.ini`/`.cfg`, `[ + New Folder... ]` via `f_mkdir`, `[ Rename Current Folder ]`, `[ Delete Empty Folder ]`, file `Rename`, `Copy`, `Move`, `Paste`, and `Delete` with confirmation).
-- [x] Multi-page Home Dashboard (`lv_tileview` swipe left/right between Launcher page and Widgets page), full-screen Weather Station (`UI_SCREEN_WEATHER` with `Open-Meteo` outdoor weather + 3-day forecast via `ESP32-C6`, indoor `DS18B20` & `MCU` temperatures, procedural + SD `.bmp` weather icons), and interactive Monthly Calendar (`UI_SCREEN_CALENDAR` synced with NTP/RTC).
+- [x] Multi-page Home Dashboard (`lv_tileview` swipe left/right between 4-tile Launcher page and 4-tile Widgets page), full-screen Weather Station (`UI_SCREEN_WEATHER` with `Open-Meteo` outdoor weather + 3-day forecast via `ESP32-C6`, indoor `DS18B20` & `MCU` temperatures, procedural + SD `.bmp` weather icons), interactive Monthly Calendar (`UI_SCREEN_CALENDAR` synced with NTP/RTC), and 3-stage Network & `USART6` Companion Link SpeedTest (`UI_SCREEN_SPEEDTEST`).
+- [x] `ESP32-C6-LCD-1.47` Wi-Fi 6 Companion Co-Processor on `USART6` (`PC6`/`PC7` @ `921600` baud, circular DMA RX + flow-controlled binary streaming): 3-page status HUD + Dual-Screen Game HUD & WS2812 RGB LED API (`SDK_SVC_ESP_CTL` / C-Script `esp_hud_*`, `esp_led`, `weather_temp`), plus **Web Studio (`http://stm32-console.local`)** with SD Explorer, universal editor, inline image viewer, live screen capture, and virtual web gamepad.
 
 ## Next
 
+- [ ] Interactive PC Terminal CLI over `USART3` (`115200` / `921600`, alongside `"UPLD!\n"` binary loader):
+  - Human-friendly text shell (`help` / `-help` / `/help`, `ls [dir]`, `cat <file>`, `rm <file>`, `run <app>`, `stop`, `sysinfo`, `temp`, `shot`, `reboot`) usable from any serial terminal (PuTTY, Tera Term, VS Code Serial Monitor) — especially useful when operating standalone without the ESP32-C6 Wi-Fi module.
+  - Optional `esp <cmd>` bridge command to query/configure the companion module (Wi-Fi status, credentials, diagnostics) directly from the PC serial terminal.
+- [ ] Firmware Update Architecture (Wi-Fi OTA & Serial Terminal DFU):
+  - **ESP32-C6 Companion OTA**: HTTP firmware upload endpoint (`POST /api/ota/esp32` via Arduino `Update` partition API) in Web Studio + serial update via USB-C.
+  - **STM32F407 Console Bootloader & OTA/UART DFU**: compact custom bootloader in Flash Sector 0–1 (`0x08000000`, 32 KB) with CRC-32 + header verification that flashes `SD:/system/fw_update.bin` into main application sectors (`0x08008000..0x080FFFFF`) with automatic rollback safety; firmware image can be staged either wirelessly via Web Studio (`POST /api/ota/stm32` → SD) or from PC terminal over `USART3` (XMODEM-1K / `tools/uart_upload.py`).
 - [ ] Memory step M2-a (LVGL pool to external SRAM, 64 KB app sandbox) when needed.
 
 ## Later
@@ -52,8 +59,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 - [ ] App GPIO API (activate the skeleton) + DS18B20 example.
 - [ ] Relocatable modules or overlays for apps larger than the sandbox.
 - [ ] UART link multiplayer between two consoles.
-- [~] Optional `ESP32-C6-LCD-1.47` Wi-Fi 6 / BLE 5 companion co-processor & second screen on header `P11` (`UART4` `PA0`/`PA1`) — stages E1..E3 done; see [ROADMAP_ESP32_C6.md](ROADMAP_ESP32_C6.md).
-- [~] Rich LVGL apps: text & C-script editor, Weather Station, and Monthly Calendar done; Google Calendar event sync & network SpeedTest open.
+- [~] Rich LVGL apps: text & C-script editor, Weather Station, Monthly Calendar, and SpeedTest done; Google Calendar event sync open.
 
 ## Engineering hygiene
 

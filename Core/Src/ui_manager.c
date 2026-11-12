@@ -4535,7 +4535,8 @@ static void Build_SpeedTest_Screen(void)
     lv_obj_add_event_cb(btn_run, btn_speedtest_run_cb, LV_EVENT_KEY, NULL);
 
     /* Metric Cards: 1) Ping Latency, 2) Wi-Fi Download, 3) USART6 Bus Speed */
-    static const char * const s_titles[3] = { "Internet Ping", "Wi-Fi Download", "USART6 Bus" };
+    static const char * const s_titles[3] = { "Ping", "Wi-Fi DL", "UART6 Bus" };
+    static const char * const s_subs[3]   = { "HTTP RTT", "HTTP Stream", "921.6k 8N1" };
     uint32_t borders[3] = { 0x00E5FFU, 0x00FF66U, 0xFFAE00U };
 
     for (int i = 0; i < 3; i++)
@@ -4547,57 +4548,68 @@ static void Build_SpeedTest_Screen(void)
         lv_obj_set_style_bg_color(card, lv_color_hex(0x121A2B), 0);
         lv_obj_set_style_border_color(card, lv_color_hex(borders[i]), 0);
         lv_obj_set_style_border_width(card, 2, 0);
-        lv_obj_set_style_pad_all(card, 6, 0);
+        lv_obj_set_style_pad_all(card, 4, 0);
 
-        lv_obj_t * clbl = lv_label_create(card);
-        lv_label_set_recolor(clbl, true);
-        lv_obj_set_width(clbl, 84);
-        lv_obj_set_style_text_align(clbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(clbl);
+        /* 1. Card Title (top) */
+        lv_obj_t * lbl_t = lv_label_create(card);
+        lv_obj_set_style_text_color(lbl_t, lv_color_hex(borders[i]), 0);
+        lv_label_set_text(lbl_t, s_titles[i]);
+        lv_obj_align(lbl_t, LV_ALIGN_TOP_MID, 0, 2);
+
+        /* 2. Measured Value (center, bright high-contrast) */
+        lv_obj_t * lbl_v = lv_label_create(card);
+        lv_obj_set_style_text_align(lbl_v, LV_TEXT_ALIGN_CENTER, 0);
 
         if (i == 0)
         {
             if (spd->ping_ms > 0U)
             {
-                lv_label_set_text_fmt(clbl, "#00E5FF %s#\n\n#FFD600 %u ms#\n#90A4AE HTTP RTT#",
-                                      s_titles[i], (unsigned int)spd->ping_ms);
+                lv_obj_set_style_text_color(lbl_v, lv_color_hex(0xFFD600), 0);
+                lv_label_set_text_fmt(lbl_v, "%u ms", (unsigned int)spd->ping_ms);
             }
             else
             {
-                lv_label_set_text_fmt(clbl, "#00E5FF %s#\n\n#90A4AE %s#\n#546E7A Latency#",
-                                      s_titles[i], (spd->state == 1U) ? "..." : "-- ms");
+                lv_obj_set_style_text_color(lbl_v, lv_color_hex(0x90A4AE), 0);
+                lv_label_set_text(lbl_v, (spd->state == 1U) ? "..." : "-- ms");
             }
         }
         else if (i == 1)
         {
             if (spd->dl_kbps > 0U)
             {
-                lv_label_set_text_fmt(clbl, "#00FF66 %s#\n\n#FFFFFF %u.%u#\n#00FF66 Mbit/s#",
-                                      s_titles[i],
+                lv_obj_set_style_text_color(lbl_v, lv_color_hex(0xFFFFFF), 0);
+                lv_label_set_text_fmt(lbl_v, "%u.%u\nMbps",
                                       (unsigned int)(spd->dl_kbps / 1000U),
                                       (unsigned int)((spd->dl_kbps % 1000U) / 100U));
             }
             else
             {
-                lv_label_set_text_fmt(clbl, "#00FF66 %s#\n\n#90A4AE %s#\n#546E7A HTTP Stream#",
-                                      s_titles[i], (spd->state == 1U) ? "..." : "-- Mbps");
+                lv_obj_set_style_text_color(lbl_v, lv_color_hex(0x90A4AE), 0);
+                lv_label_set_text(lbl_v, (spd->state == 1U) ? "..." : "-- Mbps");
             }
         }
         else
         {
             if (spd->link_kbs_x10 > 0U)
             {
-                lv_label_set_text_fmt(clbl, "#FFAE00 %s#\n\n#FFFFFF %u.%u#\n#FFAE00 KB/s#",
-                                      s_titles[i],
+                lv_obj_set_style_text_color(lbl_v, lv_color_hex(0xFFFFFF), 0);
+                lv_label_set_text_fmt(lbl_v, "%u.%u\nKB/s",
                                       (unsigned int)(spd->link_kbs_x10 / 10U),
                                       (unsigned int)(spd->link_kbs_x10 % 10U));
             }
             else
             {
-                lv_label_set_text_fmt(clbl, "#FFAE00 %s#\n\n#90A4AE %s#\n#546E7A 921.6k 8N1#",
-                                      s_titles[i], (spd->state == 1U) ? "..." : "-- KB/s");
+                lv_obj_set_style_text_color(lbl_v, lv_color_hex(0x90A4AE), 0);
+                lv_label_set_text(lbl_v, (spd->state == 1U) ? "..." : "-- KB/s");
             }
         }
+        lv_obj_align(lbl_v, LV_ALIGN_CENTER, 0, 2);
+
+        /* 3. Card Subtitle (bottom) */
+        lv_obj_t * lbl_sub = lv_label_create(card);
+        lv_obj_set_style_text_color(lbl_sub, lv_color_hex(0x90A4AE), 0);
+        lv_label_set_text(lbl_sub, s_subs[i]);
+        lv_obj_align(lbl_sub, LV_ALIGN_BOTTOM_MID, 0, -1);
     }
 
     /* Bottom Summary / Progress Bar Panel */
