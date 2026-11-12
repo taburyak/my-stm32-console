@@ -102,6 +102,28 @@ const ESP_WeatherInfo_t *ESPCompanion_GetWeather(void);
 bool ESPCompanion_RequestWeatherUpdate(void);
 
 /**
+ * @brief Network & Companion Link SpeedTest Telemetry
+ */
+typedef struct {
+    uint8_t  state;        /* 0=Idle, 1=Running, 2=Done, 3=Error */
+    uint16_t ping_ms;      /* HTTP/TCP latency in ms */
+    uint16_t dl_kbps;      /* Wi-Fi HTTP download speed in kbit/s (e.g. 24500 = 24.5 Mbps) */
+    uint16_t link_kbs_x10; /* USART6 STM32<->ESP32 throughput in 0.1 KB/s (e.g. 648 = 64.8 KB/s) */
+    uint32_t updated_tick;
+} ESP_SpeedTestInfo_t;
+
+const ESP_SpeedTestInfo_t *ESPCompanion_GetSpeedTest(void);
+bool ESPCompanion_StartSpeedTest(void);
+
+/**
+ * @brief Dual-Screen Game HUD & RGB LED controls on ESP32-C6-LCD-1.47
+ */
+bool ESPCompanion_HudClear(void);
+bool ESPCompanion_HudSetLine(uint8_t line_idx, const char *text);
+bool ESPCompanion_SetLedRgb(uint8_t r, uint8_t g, uint8_t b);
+bool ESPCompanion_HudRestore(void);
+
+/**
  * @brief Check and consume pending remote app/script launch requested by ESP32 Web UI
  */
 bool ESPCompanion_TakePendingAppRun(char *path_out, size_t max_len);

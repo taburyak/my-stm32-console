@@ -4,6 +4,7 @@
 #include "usb_host_manager.h"
 #include "ili9341_simple.h"
 #include "temp_sensor.h"
+#include "esp_companion.h"
 #include <string.h>
 
 extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
@@ -214,13 +215,83 @@ int32_t AppSvc_GetTempDeci(uint32_t source)
         int32_t ext_dc = 0;
         return TempSensor_ReadExtDeciC(&ext_dc) ? ext_dc : SDK_TEMP_INVALID;
     }
+    if (source == SDK_TEMP_SRC_WEATHER)
+    {
+        const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+        if (ESPCompanion_IsConnected() && wth != NULL && wth->valid)
+        {
+            return (int32_t)wth->temp_deci;
+        }
+        return SDK_TEMP_INVALID;
+    }
     return SDK_TEMP_INVALID;
+}
+
+int32_t AppSvc_EspControl(uint32_t op, uint32_t p1, uint32_t p2)
+{
+    switch (op)
+    {
+        case SDK_ESP_OP_STATUS:
+        {
+            int32_t st = 0;
+            if (ESPCompanion_IsConnected())     st |= 1;
+            if (ESPCompanion_IsWifiConnected()) st |= 2;
+            return st;
+        }
+
+        case SDK_ESP_OP_HUD_CLEAR:
+            return ESPCompanion_HudClear() ? SDK_OK : SDK_ERR_IO;
+
+        case SDK_ESP_OP_HUD_LINE:
+        {
+            if (p1 > 5U)
+            {
+                return SDK_ERR_INVALID;
+            }
+            const char *user_str = (const char *)(uintptr_t)p2;
+            if (user_str == NULL)
+            {
+                return SDK_ERR_INVALID;
+            }
+            char kbuf[52];
+            size_t i = 0U;
+            for (; i + 1U < sizeof(kbuf); i++)
+            {
+                if (!AppLoader_IsUserBufferValid(&user_str[i], 1U))
+                {
+                    return SDK_ERR_INVALID;
+                }
+                kbuf[i] = user_str[i];
+                if (kbuf[i] == '\0')
+                {
+                    break;
+                }
+            }
+            kbuf[i] = '\0';
+            return ESPCompanion_HudSetLine((uint8_t)p1, kbuf) ? SDK_OK : SDK_ERR_IO;
+        }
+
+        case SDK_ESP_OP_LED_RGB:
+        {
+            uint8_t r = (uint8_t)((p1 >> 16) & 0xFFU);
+            uint8_t g = (uint8_t)((p1 >> 8) & 0xFFU);
+            uint8_t b = (uint8_t)(p1 & 0xFFU);
+            return ESPCompanion_SetLedRgb(r, g, b) ? SDK_OK : SDK_ERR_IO;
+        }
+
+        case SDK_ESP_OP_HUD_RESTORE:
+            return ESPCompanion_HudRestore() ? SDK_OK : SDK_ERR_IO;
+
+        default:
+            return SDK_ERR_INVALID;
+    }
 }
 
 void AppSvc_ResetHardware(void)
 {
     Beeper_StopSequence();
     lcdWaitDMAIdle(&hdma_memtomem_dma2_stream0);
+    (void)ESPCompanion_HudRestore();
 
     for (uint32_t i = 0U; i < USER_GPIO_COUNT; i++)
     {

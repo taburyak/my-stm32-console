@@ -280,7 +280,8 @@ static const BuiltinConst_t s_builtin_consts[] = {
     { "SDK_FILE_WRITE",    (int32_t)SDK_FILE_WRITE },
     { "SDK_FILE_CREATE",   (int32_t)SDK_FILE_CREATE },
     { "SDK_FILE_TRUNC",    (int32_t)SDK_FILE_TRUNC },
-    { "SDK_FILE_APPEND",   (int32_t)SDK_FILE_APPEND }
+    { "SDK_FILE_APPEND",   (int32_t)SDK_FILE_APPEND },
+    { "SDK_TEMP_INVALID",  (int32_t)SDK_TEMP_INVALID }
 };
 
 static bool sc_lookup_const(const char *name, int32_t *out_val)
@@ -1293,7 +1294,70 @@ static bool sc_call_builtin(const char *name, int32_t *args, uint8_t argc, uint1
         *out = sys_get_ext_temp_deci();
         return true;
     }
-    if (sc_streq(name, "exit") || sc_streq(name, "sys_exit"))
+    if (sc_streq(name, "weather_temp") || sc_streq(name, "sys_get_weather_temp_deci"))
+    {
+        *out = sys_get_weather_temp_deci();
+        return true;
+    }
+    if (sc_streq(name, "esp_online") || sc_streq(name, "sys_esp_is_online"))
+    {
+        *out = sys_esp_is_online() ? 1 : 0;
+        return true;
+    }
+    if (sc_streq(name, "esp_hud_clear") || sc_streq(name, "sys_esp_hud_clear"))
+    {
+        *out = sys_esp_hud_clear();
+        return true;
+    }
+    if (sc_streq(name, "esp_hud_text") || sc_streq(name, "sys_esp_hud_text"))
+    {
+        if (argc >= 2U)
+        {
+            const char *s = (const char *)(uintptr_t)(uint32_t)args[1];
+            *out = (s != NULL) ? sys_esp_hud_text((uint8_t)args[0], s) : SDK_ERR_INVALID;
+        }
+        return true;
+    }
+    if (sc_streq(name, "esp_hud_num"))
+    {
+        if (argc >= 3U)
+        {
+            const char *label = (const char *)(uintptr_t)(uint32_t)args[1];
+            int32_t val = args[2];
+            char buf[52];
+            uint32_t idx = 0U;
+            if (label != NULL)
+            {
+                while (label[idx] != '\0' && idx < 36U)
+                {
+                    buf[idx] = label[idx];
+                    idx++;
+                }
+            }
+            if (val < 0)
+            {
+                buf[idx++] = '-';
+            }
+            uint32_t mag = (val < 0) ? (uint32_t)(-val) : (uint32_t)val;
+            sdk_uint_to_str(mag, &buf[idx], 1U);
+            *out = sys_esp_hud_text((uint8_t)args[0], buf);
+        }
+        return true;
+    }
+    if (sc_streq(name, "esp_led") || sc_streq(name, "sys_esp_set_led"))
+    {
+        if (argc >= 3U)
+        {
+            *out = sys_esp_set_led((uint8_t)args[0], (uint8_t)args[1], (uint8_t)args[2]);
+        }
+        return true;
+    }
+    if (sc_streq(name, "esp_hud_restore") || sc_streq(name, "sys_esp_hud_restore"))
+    {
+        *out = sys_esp_hud_restore();
+        return true;
+    }
+    if (sc_streq(name, "exit") || sc_streq(name, "sys_exit") || sc_streq(name, "exit_app"))
     {
         VM->flow = FLOW_EXIT;
         sys_exit();

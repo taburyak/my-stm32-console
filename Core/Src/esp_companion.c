@@ -3,6 +3,9 @@
 #include "temp_sensor.h"
 #include "ui_manager.h"
 #include "app_loader.h"
+#include "uart_loader.h"
+#include "usb_host_manager.h"
+#include "ccmram.h"
 #include "beeper.h"
 #include "FreeRTOS.h"
 #include "fatfs.h"
@@ -22,7 +25,7 @@ extern IWDG_HandleTypeDef hiwdg;
 static uint8_t  s_rx_dma_buf[ESP_RX_DMA_BUF_SIZE] __attribute__((aligned(4)));
 static uint16_t s_rx_read_ptr = 0U;
 
-static char     s_line_buf[ESP_LINE_BUF_SIZE];
+CCMRAM_BUF static char s_line_buf[ESP_LINE_BUF_SIZE];
 static uint16_t s_line_len = 0U;
 
 static char     s_tx_buf[ESP_TX_BUF_SIZE] __attribute__((aligned(4)));
@@ -33,8 +36,17 @@ static DIR      s_rpc_dir __attribute__((aligned(4)));
 static FILINFO  s_rpc_fno __attribute__((aligned(4)));
 static uint8_t  s_rpc_io_buf[1024] __attribute__((aligned(4)));
 
-static char     s_pending_app_run[64] = {0};
+CCMRAM_BUF static char s_pending_app_run[64];
 static volatile bool s_has_pending_app_run = false;
+static volatile bool s_game_hud_dirty      = false;
+
+static ESP_SpeedTestInfo_t s_speed_test = {
+    .state        = 0U,
+    .ping_ms      = 0U,
+    .dl_kbps      = 0U,
+    .link_kbs_x10 = 0U,
+    .updated_tick = 0U
+};
 
 static volatile bool     s_is_connected  = false;
 static volatile uint32_t s_last_rx_tick  = 0U;
@@ -469,6 +481,78 @@ static bool Handle_File_Rpc(const char *line)
         return true;
     }
 
+    /* 10. Capture Live Console Screen to SD: ESP32:SCREENSHOT */
+    if (strstr(line, "SCREENSHOT") != NULL)
+    {
+        char shot_path[64] = {0};
+        (void)HAL_IWDG_Refresh(&hiwdg);
+        if (Screenshot_CaptureToSD(shot_path, sizeof(shot_path)) && shot_path[0] != '\0')
+        {
+            snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:SHOT_OK,/%s\n", shot_path);
+            Send_Raw_Line(s_tx_buf);
+        }
+        else
+        {
+            Send_Raw_Line("STM32:SHOT_ERR\n");
+        }
+        return true;
+    }
+
+    /* 11. Virtual Web Gamepad Input: ESP32:VPAD,<mask>,<lx>,<ly> */
+    if ((p_cmd = strstr(line, "VPAD,")) != NULL)
+    {
+        const char *p = p_cmd + 5;
+        uint16_t vmask = (uint16_t)strtoul(p, NULL, 10);
+        int8_t lx = 0, ly = 0;
+        const char *c1 = strchr(p, ',');
+        if (c1 != NULL)
+        {
+            lx = (int8_t)atoi(c1 + 1);
+            const char *c2 = strchr(c1 + 1, ',');
+            if (c2 != NULL)
+            {
+                ly = (int8_t)atoi(c2 + 1);
+            }
+        }
+        USBHostManager_SetVirtualPad(vmask, lx, ly);
+        return true;
+    }
+
+    /* 12. USART6 Link Benchmark Burst: ESP32:SPD_BURST,<kb> */
+    if ((p_cmd = strstr(line, "SPD_BURST,")) != NULL)
+    {
+        uint32_t kb = (uint32_t)strtoul(p_cmd + 10, NULL, 10);
+        if (kb == 0U || kb > 64U) kb = 16U;
+        uint32_t total_bytes = kb * 1024U;
+
+        snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:STRM_START,%lu\n", (unsigned long)total_bytes);
+        Send_Raw_Line(s_tx_buf);
+
+        for (uint32_t i = 0U; i < sizeof(s_rpc_io_buf); i++)
+        {
+            s_rpc_io_buf[i] = (uint8_t)(0x30U + (i & 0x3FU));
+        }
+
+        uint32_t sent = 0U;
+        while (sent < total_bytes)
+        {
+            if (!WaitForStreamAck(1500U))
+            {
+                break;
+            }
+            (void)HAL_IWDG_Refresh(&hiwdg);
+            huart6.gState = HAL_UART_STATE_READY;
+            if (HAL_UART_Transmit(&huart6, s_rpc_io_buf, (uint16_t)sizeof(s_rpc_io_buf), 1000U) != HAL_OK)
+            {
+                break;
+            }
+            s_tx_packets++;
+            sent += (uint32_t)sizeof(s_rpc_io_buf);
+            s_last_rx_tick = HAL_GetTick();
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -560,6 +644,22 @@ static void Process_Incoming_Line(const char *line)
         }
         s_weather.valid        = true;
         s_weather.updated_tick = HAL_GetTick();
+        return;
+    }
+
+    /* 2.6. SpeedTest Progress & Result Telemetry: ESP32:SPD,ST=...,PING=...,DL=...,LINK=... */
+    if (strstr(line, "SPD,") != NULL || strstr(line, "ESP32:SPD") != NULL)
+    {
+        s_is_connected = true;
+        s_last_rx_tick = HAL_GetTick();
+        s_rx_packets++;
+
+        const char *p;
+        if ((p = strstr(line, "ST=")))   s_speed_test.state        = (uint8_t)atoi(p + 3);
+        if ((p = strstr(line, "PING="))) s_speed_test.ping_ms      = (uint16_t)atoi(p + 5);
+        if ((p = strstr(line, "DL=")))   s_speed_test.dl_kbps      = (uint16_t)strtoul(p + 3, NULL, 10);
+        if ((p = strstr(line, "LINK="))) s_speed_test.link_kbs_x10 = (uint16_t)strtoul(p + 5, NULL, 10);
+        s_speed_test.updated_tick = HAL_GetTick();
         return;
     }
 
@@ -870,6 +970,76 @@ bool ESPCompanion_RequestWeatherUpdate(void)
         return true;
     }
     return false;
+}
+
+const ESP_SpeedTestInfo_t *ESPCompanion_GetSpeedTest(void)
+{
+    return &s_speed_test;
+}
+
+bool ESPCompanion_StartSpeedTest(void)
+{
+    if (!s_is_connected)
+    {
+        return false;
+    }
+    s_speed_test.state        = 1U;
+    s_speed_test.updated_tick = HAL_GetTick();
+    Send_Raw_Line("STM32:REQ_SPD\n");
+    return true;
+}
+
+bool ESPCompanion_HudClear(void)
+{
+    s_game_hud_dirty = true;
+    Send_Raw_Line("STM32:GHUD_CLR\n");
+    return s_is_connected;
+}
+
+bool ESPCompanion_HudSetLine(uint8_t line_idx, const char *text)
+{
+    if (line_idx > 5U || text == NULL)
+    {
+        return false;
+    }
+    char clean[52];
+    size_t j = 0U;
+    for (size_t i = 0U; text[i] != '\0' && j + 1U < sizeof(clean); i++)
+    {
+        char c = text[i];
+        if (c >= 0x20 && c <= 0x7E)
+        {
+            clean[j++] = c;
+        }
+    }
+    clean[j] = '\0';
+
+    s_game_hud_dirty = true;
+    char cmd[72];
+    snprintf(cmd, sizeof(cmd), "STM32:GHUD_LN,%u,%s\n", (unsigned int)line_idx, clean);
+    Send_Raw_Line(cmd);
+    return s_is_connected;
+}
+
+bool ESPCompanion_SetLedRgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    s_game_hud_dirty = true;
+    char cmd[40];
+    snprintf(cmd, sizeof(cmd), "STM32:GLED,%u,%u,%u\n",
+             (unsigned int)r, (unsigned int)g, (unsigned int)b);
+    Send_Raw_Line(cmd);
+    return s_is_connected;
+}
+
+bool ESPCompanion_HudRestore(void)
+{
+    if (!s_game_hud_dirty)
+    {
+        return true;
+    }
+    s_game_hud_dirty = false;
+    Send_Raw_Line("STM32:GHUD_EXIT\n");
+    return true;
 }
 
 bool ESPCompanion_TakePendingAppRun(char *path_out, size_t max_len)

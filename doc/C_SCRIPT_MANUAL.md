@@ -178,6 +178,22 @@ Every script automatically gets its own isolated directory on the SD card based 
 | `eeprom_read_u8(offset)` | Reads 1 byte at `offset` (`0..127`) from AT24C02 EEPROM (or `-1` on error). |
 | `eeprom_write_u8(offset, val)` | Writes 1 byte (`0..255`) at `offset` (`0..127`) to EEPROM (skips write if unchanged). |
 
+### 4.5 Temperature Sensors & ESP32-C6 Dual-Screen Companion HUD
+
+When an **ESP32-C6-LCD-1.47** companion module is connected on `USART6` (`PC6`/`PC7` @ `921600` baud), scripts can drive its 1.47" IPS LCD (`320×172`) as a dedicated second-screen HUD, control its onboard WS2812 RGB LED, and read live indoor/outdoor temperatures. When the script exits, the OS automatically restores the standard 3-page Companion HUD.
+
+| Function | Description |
+|----------|-------------|
+| `temp_mcu()` | STM32F407 internal die temperature in `0.1 °C` (e.g. `415` = `41.5 °C`). |
+| `temp_ext()` | Onboard DS18B20 (`PA15`) room temperature in `0.1 °C`, or `SDK_TEMP_INVALID` (`-32768`) if absent. |
+| `weather_temp()` | Outdoor Open-Meteo temperature in `0.1 °C` cached from ESP32-C6, or `SDK_TEMP_INVALID` if offline. |
+| `esp_online()` | Returns `1` if the ESP32-C6 companion link is active, `0` if disconnected. |
+| `esp_hud_clear()` | Switches the ESP32 1.47" LCD into **Game HUD Mode** and clears all 6 text rows (`0..5`). |
+| `esp_hud_text(line, str)` | Writes string `str` (up to 48 ASCII chars) to row `line` (`0..5`) on the ESP32 1.47" LCD. |
+| `esp_hud_num(line, label, val)` | Formats `label` + signed integer `val` onto row `line` (`0..5`), e.g. `esp_hud_num(1, "SCORE: ", score)`. |
+| `esp_led(r, g, b)` | Sets the ESP32-C6 onboard WS2812 RGB LED (`0..255` per channel). |
+| `esp_hud_restore()` | Manually exits Game HUD Mode back to the standard 3-page Companion HUD (also called automatically on exit). |
+
 ---
 
 ## 5. Built-in Constants

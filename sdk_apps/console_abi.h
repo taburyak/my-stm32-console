@@ -76,10 +76,19 @@ typedef struct {
 #define SDK_SVC_GPIO_WRITE      47U
 #define SDK_SVC_GPIO_READ       48U
 #define SDK_SVC_TEMP_GET        49U /* blocking (kernel gate): a0=0 -> MCU temp (0.1 C), a0=1 -> Ext DS18B20 temp (0.1 C) */
+#define SDK_SVC_ESP_CTL         50U /* blocking (kernel gate): ESP32-C6 Companion HUD / RGB LED / Weather query */
 
 #define SDK_TEMP_SRC_MCU        0U
 #define SDK_TEMP_SRC_EXT        1U
+#define SDK_TEMP_SRC_WEATHER    2U
 #define SDK_TEMP_INVALID        (-32768)
+
+/* ---- SDK_SVC_ESP_CTL sub-operations ---- */
+#define SDK_ESP_OP_STATUS       0U /* returns bit0=link_online, bit1=wifi_connected */
+#define SDK_ESP_OP_HUD_CLEAR    1U /* switches ESP32 1.47" LCD to Game HUD mode & clears lines */
+#define SDK_ESP_OP_HUD_LINE     2U /* a1=line(0..5), a2=const char* text */
+#define SDK_ESP_OP_LED_RGB      3U /* a1=packed RGB888 ((r<<16)|(g<<8)|b) */
+#define SDK_ESP_OP_HUD_RESTORE  4U /* exits Game HUD mode back to standard 3-page Companion HUD */
 
 #define SDK_SLEEP_MAX_MS        1000U
 

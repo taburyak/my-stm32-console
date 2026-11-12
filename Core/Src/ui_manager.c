@@ -86,23 +86,24 @@ static lv_obj_t * s_home_tv         = NULL;
 static lv_obj_t * s_home_tile0      = NULL;
 static lv_obj_t * s_home_tile1      = NULL;
 static lv_obj_t * s_home_p0_btns[5] = {NULL};
-static lv_obj_t * s_home_p1_btns[3] = {NULL};
+static lv_obj_t * s_home_p1_btns[5] = {NULL};
 static uint8_t    s_home_active_col = 0U;
 static uint32_t   s_last_wth_tick   = 0U;
+static uint32_t   s_last_spd_tick   = 0U;
 static int8_t     s_last_esp_state  = -2;
-static char       s_editor_path[STORAGE_MAX_PATH_LEN];
+CCMRAM_BUF static char s_editor_path[STORAGE_MAX_PATH_LEN];
 static bool       s_editor_dirty    = false;
-static char       s_action_file_path[STORAGE_MAX_PATH_LEN];
-static char       s_action_file_name[STORAGE_MAX_NAME_LEN];
-static char       s_clip_path[STORAGE_MAX_PATH_LEN];
-static char       s_clip_name[STORAGE_MAX_NAME_LEN];
+CCMRAM_BUF static char s_action_file_path[STORAGE_MAX_PATH_LEN];
+CCMRAM_BUF static char s_action_file_name[STORAGE_MAX_NAME_LEN];
+CCMRAM_BUF static char s_clip_path[STORAGE_MAX_PATH_LEN];
+CCMRAM_BUF static char s_clip_name[STORAGE_MAX_NAME_LEN];
 static bool       s_clip_is_cut     = false;
 static uint8_t    s_fname_mode      = 0U;
 static uint8_t    s_selected_ext_idx = 0U;
 static char       s_orig_rename_ext[12];
-static char s_clicked_item[STORAGE_MAX_NAME_LEN];
-static char s_next_path[STORAGE_MAX_PATH_LEN];
-static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
+CCMRAM_BUF static char s_clicked_item[STORAGE_MAX_NAME_LEN];
+CCMRAM_BUF static char s_next_path[STORAGE_MAX_PATH_LEN];
+CCMRAM_BUF static char s_title_buf[STORAGE_MAX_PATH_LEN + 16U];
 #define EXT_TEXT_PREVIEW_BUF  ((char *)MM_EXT_TEXT_PREVIEW)
 #define EXT_TEXT_PREVIEW_SIZE MM_EXT_TEXT_PREVIEW_SIZE
 
@@ -115,8 +116,8 @@ static lv_obj_t * lbl_thm_val  = NULL;
 
 /* Wallpaper selected from the image viewer, persisted on the SD card */
 #define WALLPAPER_CFG_PATH  "system/wallpaper.cfg"
-static char s_wallpaper_path[STORAGE_MAX_PATH_LEN];
-static char s_preview_path[STORAGE_MAX_PATH_LEN];
+CCMRAM_BUF static char s_wallpaper_path[STORAGE_MAX_PATH_LEN];
+CCMRAM_BUF static char s_preview_path[STORAGE_MAX_PATH_LEN];
 
 /* Games launcher: built-in ROM game + games/<name>.bin tiles with optional games/<name>.bmp icons */
 #define GAMES_MAX_TILES       16U
@@ -130,10 +131,10 @@ typedef struct {
     bool is_script;
 } Game_Entry_t;
 
-static lv_obj_t *    games_grid_obj = NULL;
-static Game_Entry_t  s_games[GAMES_MAX_TILES];
-static uint32_t      s_games_count  = 0;
-static lv_img_dsc_t  s_icon_dsc[GAMES_MAX_TILES];
+static lv_obj_t *              games_grid_obj = NULL;
+CCMRAM_BUF static Game_Entry_t s_games[GAMES_MAX_TILES];
+static uint32_t                s_games_count  = 0;
+static lv_img_dsc_t            s_icon_dsc[GAMES_MAX_TILES];
 
 extern const uint8_t g_rom_arkanoid_bin[];
 extern const uint8_t g_rom_arkanoid_bin_end[];
@@ -147,6 +148,7 @@ static void Build_SysInfo_Screen(void);
 static void Build_Wifi_Screen(void);
 static void Build_Weather_Screen(void);
 static void Build_Calendar_Screen(void);
+static void Build_SpeedTest_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
 
@@ -380,36 +382,41 @@ static bool Set_Image_From_SD(lv_obj_t *img_obj, const char *fatfs_path)
 static void Wallpaper_LoadConfig(void)
 {
     UINT br = 0;
+    char buf[STORAGE_MAX_PATH_LEN];
 
     s_wallpaper_path[0] = '\0';
     if (f_open(&s_ui_fil, WALLPAPER_CFG_PATH, FA_READ) != FR_OK)
     {
         return;
     }
-    if (f_read(&s_ui_fil, s_wallpaper_path, sizeof(s_wallpaper_path) - 1U, &br) != FR_OK)
+    if (f_read(&s_ui_fil, buf, sizeof(buf) - 1U, &br) != FR_OK)
     {
         br = 0;
     }
     f_close(&s_ui_fil);
 
-    s_wallpaper_path[br] = '\0';
-    while (br > 0U && (s_wallpaper_path[br - 1U] == '\r' || s_wallpaper_path[br - 1U] == '\n' ||
-                       s_wallpaper_path[br - 1U] == ' '))
+    buf[br] = '\0';
+    while (br > 0U && (buf[br - 1U] == '\r' || buf[br - 1U] == '\n' ||
+                       buf[br - 1U] == ' '))
     {
-        s_wallpaper_path[--br] = '\0';
+        buf[--br] = '\0';
     }
+    memcpy(s_wallpaper_path, buf, br + 1U);
 }
 
 static bool Wallpaper_SaveConfig(const char *path)
 {
     UINT bw = 0;
-    UINT len = (UINT)strlen(path);
+    char buf[STORAGE_MAX_PATH_LEN];
+    strncpy(buf, path, sizeof(buf) - 1U);
+    buf[sizeof(buf) - 1U] = '\0';
+    UINT len = (UINT)strlen(buf);
 
     if (f_open(&s_ui_fil, WALLPAPER_CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
     {
         return false;
     }
-    FRESULT res = f_write(&s_ui_fil, path, len, &bw);
+    FRESULT res = f_write(&s_ui_fil, buf, len, &bw);
     f_close(&s_ui_fil);
     return (res == FR_OK && bw == len);
 }
@@ -678,7 +685,8 @@ void UIManager_Update(void)
         }
     }
 
-    const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+    const ESP_WeatherInfo_t   *wth = ESPCompanion_GetWeather();
+    const ESP_SpeedTestInfo_t *spd = ESPCompanion_GetSpeedTest();
     int8_t cur_esp_state = !ESPCompanion_IsConnected() ? 0
                          : (ESPCompanion_IsWifiConnected() ? 2 : 1);
 
@@ -690,6 +698,23 @@ void UIManager_Update(void)
         if (current_screen == UI_SCREEN_WEATHER)
         {
             s_pending_screen = (int8_t)UI_SCREEN_WEATHER;
+        }
+        else if (current_screen == UI_SCREEN_SPEEDTEST)
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_SPEEDTEST;
+        }
+        else if (current_screen == UI_SCREEN_HOME && s_home_active_col == 1U)
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_HOME;
+        }
+    }
+
+    if (spd->updated_tick != s_last_spd_tick)
+    {
+        s_last_spd_tick = spd->updated_tick;
+        if (current_screen == UI_SCREEN_SPEEDTEST)
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_SPEEDTEST;
         }
         else if (current_screen == UI_SCREEN_HOME && s_home_active_col == 1U)
         {
@@ -784,6 +809,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
         case UI_SCREEN_CALENDAR:
             lv_label_set_text(lbl_screen_title, "Calendar");
             Build_Calendar_Screen();
+            break;
+
+        case UI_SCREEN_SPEEDTEST:
+            lv_label_set_text(lbl_screen_title, "SpeedTest");
+            Build_SpeedTest_Screen();
             break;
 
         default:
@@ -966,7 +996,7 @@ static void Sync_Home_Group_To_Active_Page(void)
     }
     else
     {
-        for (uint8_t i = 0U; i < 3U; i++)
+        for (uint8_t i = 0U; i < 5U; i++)
         {
             if (s_home_p1_btns[i] != NULL)
             {
@@ -1033,6 +1063,24 @@ static void home_icon_event_cb(lv_event_t * e)
         UI_Screen_t target = (UI_Screen_t)(uintptr_t)lv_event_get_user_data(e);
         Beeper_Click();
         UIManager_ShowScreen(target);
+    }
+}
+
+static void reserved_tile_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col == 1U)
+    {
+        s_home_active_col = 0U;
+        Beeper_Click();
+        lv_obj_set_tile_id(s_home_tv, 0, 0, LV_ANIM_ON);
+        lv_label_set_text(lbl_screen_title, "STM32 OS");
+        Sync_Home_Group_To_Active_Page();
+        return;
+    }
+    if (code == LV_EVENT_CLICKED)
+    {
+        Beeper_Click();
     }
 }
 
@@ -1139,145 +1187,111 @@ static void Build_Home_Screen(void)
     lv_obj_add_event_cb(btn_to_p2, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)1U);
     s_home_p0_btns[4] = btn_to_p2;
 
-    /* ---- Page 2 (Tile 1): Live Weather Card & Calendar Card ---- */
-    const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+    /* ---- Page 2 (Tile 1): Standardized 2x2 4-Tile Widgets Grid ---- */
+    const ESP_WeatherInfo_t   *wth = ESPCompanion_GetWeather();
+    const ESP_SpeedTestInfo_t *spd = ESPCompanion_GetSpeedTest();
     bool esp_online = ESPCompanion_IsConnected();
     bool wifi_ok    = ESPCompanion_IsWifiConnected();
+    bool ext_ok     = false;
+    int32_t ext_dc  = TempSensor_GetCachedExtDeciC(&ext_ok);
 
-    /* Left Card: Weather Station / Indoor DS18B20 Tile */
-    lv_obj_t * w_btn = lv_btn_create(s_home_tile1);
-    lv_obj_set_size(w_btn, 144, 174);
-    lv_obj_set_pos(w_btn, 12, 10);
-    lv_obj_clear_flag(w_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_style_radius(w_btn, 10, 0);
-    lv_obj_set_style_bg_color(w_btn, lv_color_hex(esp_online ? 0x1E293B : 0x181F2C), 0);
-    lv_obj_set_style_bg_opa(w_btn, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(w_btn, 2, 0);
-    lv_obj_set_style_border_color(w_btn, lv_color_hex(esp_online ? 0x00E5FF : 0xFFAE00), 0);
-    lv_obj_set_style_border_color(w_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(w_btn, 3, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_color(w_btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
-    lv_obj_add_event_cb(w_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_WEATHER);
-    lv_obj_add_event_cb(w_btn, home_icon_event_cb, LV_EVENT_KEY, (void *)(uintptr_t)UI_SCREEN_WEATHER);
-    s_home_p1_btns[0] = w_btn;
-
-    Create_Weather_Graphic(w_btn, 36, 4, (esp_online && wth->valid) ? wth->wmo_code : 2U, false);
-
-    lv_obj_t * w_lbl = lv_label_create(w_btn);
+    /* Tile [0] Top-Left (16, 10): Weather Station */
+    lv_obj_t * w_btn = Create_Desktop_Shortcut(s_home_tile1, 16, 10, LV_SYMBOL_EYE_OPEN, "Weather",
+                                               esp_online ? 0x00E5FFU : 0xFFAE00U, UI_SCREEN_WEATHER);
+    lv_obj_t * w_lbl = lv_obj_get_child(w_btn, 0);
     lv_label_set_recolor(w_lbl, true);
-    lv_obj_set_style_text_color(w_lbl, lv_color_hex(0xE2E8F0), 0);
-    lv_obj_set_width(w_lbl, 130);
-    lv_obj_set_style_text_align(w_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(w_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
-
-    bool ext_ok = false;
-    int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
-
     if (esp_online && wth->valid)
     {
         lv_label_set_text_fmt(w_lbl,
-            "#00E5FF %s#\n"
-            "#FFD600 %s%d.%d C#\n"
-            "#FFFFFF %s#\n"
-            "#90A4AE H:%u%% W:%u.%ukm/h#",
+            "#00E5FF " LV_SYMBOL_EYE_OPEN " %s#\n#FFD600 %s%d.%d C#\n#FFFFFF %s#",
             wth->city,
-            (wth->temp_deci < 0) ? "-" : "+",
-            abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
-            Weather_WmoDescription(wth->wmo_code),
-            (unsigned int)wth->humidity,
-            (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U));
+            (wth->temp_deci < 0) ? "-" : "+", abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
+            Weather_WmoDescription(wth->wmo_code));
     }
-    else if (!esp_online)
+    else if (ext_ok)
     {
-        /* Companion not connected: operate in Local DS18B20 Room Sensor mode */
-        if (ext_ok)
-        {
-            lv_label_set_text_fmt(w_lbl,
-                "#FFAE00 Room Sensor#\n"
-                "#FFD600 %s%ld.%ld C#\n"
-                "#FFFFFF Board DS18B20#\n"
-                "#90A4AE No ESP32 Module#",
-                (ext_dc < 0) ? "-" : "+",
-                (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10));
-        }
-        else
-        {
-            lv_label_set_text(w_lbl,
-                "#90A4AE Weather Offline#\n"
-                "#FFD600 --.- C#\n"
-                "#FFFFFF No ESP32 Link#\n"
-                "#90A4AE DS18B20: N/A#");
-        }
+        lv_label_set_text_fmt(w_lbl,
+            "#FFAE00 " LV_SYMBOL_EYE_OPEN " Weather#\n#FFD600 %s%ld.%ld C#\n#90A4AE Room DS18B20#",
+            (ext_dc < 0) ? "-" : "+", (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10));
     }
     else
     {
-        /* Companion online, waiting for Wi-Fi or Open-Meteo sync */
-        if (ext_ok)
-        {
-            lv_label_set_text_fmt(w_lbl,
-                "#00E5FF Weather#\n"
-                "#FFD600 Room %s%ld.%ld C#\n"
-                "#FFFFFF %s#\n"
-                "#90A4AE (Board DS18B20)#",
-                (ext_dc < 0) ? "-" : "+",
-                (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10),
-                wifi_ok ? "Syncing Meteo..." : "Wi-Fi Offline");
-        }
-        else
-        {
-            lv_label_set_text_fmt(w_lbl,
-                "#00E5FF Weather#\n"
-                "#FFD600 Forecast#\n"
-                "#FFFFFF %s#\n"
-                "#90A4AE Open Station#",
-                wifi_ok ? "Tap to sync" : "Wi-Fi offline");
-        }
+        lv_label_set_text_fmt(w_lbl,
+            "#00E5FF " LV_SYMBOL_EYE_OPEN " Weather#\n#FFD600 --.- C#\n#90A4AE %s#",
+            esp_online ? (wifi_ok ? "Syncing..." : "Wi-Fi Off") : "Offline");
     }
+    s_home_p1_btns[0] = w_btn;
 
-    /* Right Card: Calendar & Date Tile (always works via internal RTC or NTP) */
-    lv_obj_t * c_btn = lv_btn_create(s_home_tile1);
-    lv_obj_set_size(c_btn, 144, 174);
-    lv_obj_set_pos(c_btn, 164, 10);
-    lv_obj_clear_flag(c_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_style_radius(c_btn, 10, 0);
-    lv_obj_set_style_bg_color(c_btn, lv_color_hex(0x1E293B), 0);
-    lv_obj_set_style_bg_opa(c_btn, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(c_btn, 2, 0);
-    lv_obj_set_style_border_color(c_btn, lv_color_hex(0x00FF66), 0);
-    lv_obj_set_style_border_color(c_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(c_btn, 3, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_color(c_btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
-    lv_obj_add_event_cb(c_btn, home_icon_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)UI_SCREEN_CALENDAR);
-    lv_obj_add_event_cb(c_btn, home_icon_event_cb, LV_EVENT_KEY, (void *)(uintptr_t)UI_SCREEN_CALENDAR);
-    s_home_p1_btns[1] = c_btn;
-
+    /* Tile [1] Top-Right (168, 10): Calendar & Date */
     uint16_t yr = 2026U;
     uint8_t  mo = 11U, dy = 11U, wd = 3U;
     RTC_GetCalendarDate(&yr, &mo, &dy, &wd);
-    static const char * const s_wd_names[8] = {
-        "", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+    static const char * const s_wd_short[8] = {
+        "", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
     };
-    static const char * const s_mo_names[13] = {
-        "", "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December"
+    static const char * const s_mo_short[13] = {
+        "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
     };
 
-    lv_obj_t * c_lbl = lv_label_create(c_btn);
+    lv_obj_t * c_btn = Create_Desktop_Shortcut(s_home_tile1, 168, 10, LV_SYMBOL_BELL, "Calendar",
+                                               0x00FF66U, UI_SCREEN_CALENDAR);
+    lv_obj_t * c_lbl = lv_obj_get_child(c_btn, 0);
     lv_label_set_recolor(c_lbl, true);
-    lv_obj_set_style_text_color(c_lbl, lv_color_hex(0xE2E8F0), 0);
-    lv_obj_set_width(c_lbl, 130);
-    lv_obj_set_style_text_align(c_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(c_lbl);
     lv_label_set_text_fmt(c_lbl,
-        "#00FF66 " LV_SYMBOL_BELL " Calendar#\n\n"
-        "#FFD600 %s#\n"
-        "#FFFFFF %02u %s#\n"
-        "#00E5FF %04u#\n\n"
-        "#90A4AE %s#",
-        s_wd_names[(wd <= 7U) ? wd : 1U],
-        (unsigned int)dy, s_mo_names[(mo <= 12U) ? mo : 1U],
+        "#00FF66 " LV_SYMBOL_BELL " Calendar#\n#FFFFFF %s %02u %s#\n#90A4AE %04u (%s)#",
+        s_wd_short[(wd <= 7U) ? wd : 1U],
+        (unsigned int)dy, s_mo_short[(mo <= 12U) ? mo : 1U],
         (unsigned int)yr,
-        wifi_ok ? "Clock: NTP Sync" : "Clock: Int. RTC");
+        wifi_ok ? "NTP" : "RTC");
+    s_home_p1_btns[1] = c_btn;
+
+    /* Tile [2] Bottom-Left (16, 102): SpeedTest */
+    lv_obj_t * s_btn = Create_Desktop_Shortcut(s_home_tile1, 16, 102, LV_SYMBOL_CHARGE, "SpeedTest",
+                                               0xFFAE00U, UI_SCREEN_SPEEDTEST);
+    lv_obj_t * s_lbl = lv_obj_get_child(s_btn, 0);
+    lv_label_set_recolor(s_lbl, true);
+    if (spd->state == 1U)
+    {
+        lv_label_set_text(s_lbl, "#FFAE00 " LV_SYMBOL_CHARGE " SpeedTest#\n#00E5FF Running...#\n#90A4AE Measuring#");
+    }
+    else if (spd->state == 2U)
+    {
+        lv_label_set_text_fmt(s_lbl,
+            "#FFAE00 " LV_SYMBOL_CHARGE " SpeedTest#\n#00FF66 %u.%u Mbps#\n#90A4AE %ums | %uKB/s#",
+            (unsigned int)(spd->dl_kbps / 1000U), (unsigned int)((spd->dl_kbps % 1000U) / 100U),
+            (unsigned int)spd->ping_ms,
+            (unsigned int)(spd->link_kbs_x10 / 10U));
+    }
+    else
+    {
+        lv_label_set_text_fmt(s_lbl,
+            "#FFAE00 " LV_SYMBOL_CHARGE " SpeedTest#\n#FFFFFF Net & Link#\n#90A4AE %s#",
+            esp_online ? "Tap to test" : "ESP32 Offline");
+    }
+    s_home_p1_btns[2] = s_btn;
+
+    /* Tile [3] Bottom-Right (168, 102): Reserved Slot */
+    lv_obj_t * r_btn = lv_btn_create(s_home_tile1);
+    lv_obj_set_size(r_btn, 136, 82);
+    lv_obj_set_pos(r_btn, 168, 102);
+    lv_obj_clear_flag(r_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_set_style_radius(r_btn, 10, 0);
+    lv_obj_set_style_bg_color(r_btn, lv_color_hex(0x1B2234), 0);
+    lv_obj_set_style_bg_opa(r_btn, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(r_btn, 2, 0);
+    lv_obj_set_style_border_color(r_btn, lv_color_hex(0x546E7A), 0);
+    lv_obj_set_style_border_color(r_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(r_btn, 3, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(r_btn, lv_color_hex(0x283550), LV_STATE_FOCUSED);
+    lv_obj_t * r_lbl = lv_label_create(r_btn);
+    lv_label_set_recolor(r_lbl, true);
+    lv_obj_set_style_text_align(r_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(r_lbl, "#90A4AE " LV_SYMBOL_PLUS " Reserved#\n#546E7A Future Slot#");
+    lv_obj_center(r_lbl);
+    lv_obj_add_event_cb(r_btn, reserved_tile_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(r_btn, reserved_tile_cb, LV_EVENT_KEY, NULL);
+    s_home_p1_btns[3] = r_btn;
 
     lv_obj_t * btn_to_p1 = lv_btn_create(s_home_tile1);
     lv_obj_set_size(btn_to_p1, 136, 20);
@@ -1295,7 +1309,7 @@ static void Build_Home_Screen(void)
     lv_obj_center(lbl_p1);
     lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)0U);
     lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)0U);
-    s_home_p1_btns[2] = btn_to_p1;
+    s_home_p1_btns[4] = btn_to_p1;
 
     if (s_home_active_col == 1U)
     {
@@ -4440,5 +4454,220 @@ static void Build_Calendar_Screen(void)
             }
         }
         lv_group_focus_obj(btn_back);
+    }
+}
+
+/* ==========================================================================
+ * 9. Network & Companion Link SpeedTest Screen
+ * ========================================================================== */
+
+static void btn_speedtest_run_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_home_active_col = 1U;
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+        return;
+    }
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+
+    if (!ESPCompanion_IsConnected())
+    {
+        Beeper_ErrorAlert();
+        return;
+    }
+
+    Beeper_Beep(25);
+    (void)ESPCompanion_StartSpeedTest();
+    s_pending_screen = (int8_t)UI_SCREEN_SPEEDTEST;
+}
+
+static void Build_SpeedTest_Screen(void)
+{
+    uint32_t accent_hex = s_themes[s_theme_id % THEME_COUNT].title_col;
+    const ESP_SpeedTestInfo_t *spd = ESPCompanion_GetSpeedTest();
+    bool esp_online = ESPCompanion_IsConnected();
+    bool wifi_ok    = ESPCompanion_IsWifiConnected();
+
+    lv_obj_t * btn_back = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_back, 60, 24);
+    lv_obj_set_pos(btn_back, 6, 4);
+    lv_obj_t * lbl_b = lv_label_create(btn_back);
+    lv_label_set_text(lbl_b, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(lbl_b);
+    lv_obj_add_event_cb(btn_back, btn_widget_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_back, btn_widget_back_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t * lbl_hdr = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl_hdr, lv_color_hex(accent_hex), 0);
+    lv_obj_set_pos(lbl_hdr, 72, 8);
+    lv_obj_set_width(lbl_hdr, 162);
+    lv_label_set_long_mode(lbl_hdr, LV_LABEL_LONG_DOT);
+    if (!esp_online)
+    {
+        lv_label_set_text(lbl_hdr, "ESP32-C6 Offline");
+    }
+    else if (spd->state == 1U)
+    {
+        lv_label_set_text(lbl_hdr, "Benchmarking...");
+    }
+    else if (wifi_ok)
+    {
+        lv_label_set_text_fmt(lbl_hdr, "%s (%ddBm)", ESPCompanion_GetWifiSsid(), (int)ESPCompanion_GetWifiRssi());
+    }
+    else
+    {
+        lv_label_set_text(lbl_hdr, "UART6 Link Only (No Wi-Fi)");
+    }
+
+    lv_obj_t * btn_run = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn_run, 76, 24);
+    lv_obj_set_pos(btn_run, 238, 4);
+    lv_obj_set_style_bg_color(btn_run, lv_color_hex((esp_online && spd->state != 1U) ? 0x00A859 : 0x37474F), 0);
+    lv_obj_t * lbl_r = lv_label_create(btn_run);
+    lv_label_set_text(lbl_r, (spd->state == 1U) ? "Busy..." : (LV_SYMBOL_PLAY " Start"));
+    lv_obj_center(lbl_r);
+    lv_obj_add_event_cb(btn_run, btn_speedtest_run_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_run, btn_speedtest_run_cb, LV_EVENT_KEY, NULL);
+
+    /* Metric Cards: 1) Ping Latency, 2) Wi-Fi Download, 3) USART6 Bus Speed */
+    static const char * const s_titles[3] = { "Internet Ping", "Wi-Fi Download", "USART6 Bus" };
+    uint32_t borders[3] = { 0x00E5FFU, 0x00FF66U, 0xFFAE00U };
+
+    for (int i = 0; i < 3; i++)
+    {
+        lv_obj_t * card = lv_obj_create(workspace_cont);
+        lv_obj_set_size(card, 98, 92);
+        lv_obj_set_pos(card, (int16_t)(6 + i * 105), 34);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x121A2B), 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(borders[i]), 0);
+        lv_obj_set_style_border_width(card, 2, 0);
+        lv_obj_set_style_pad_all(card, 6, 0);
+
+        lv_obj_t * clbl = lv_label_create(card);
+        lv_label_set_recolor(clbl, true);
+        lv_obj_set_width(clbl, 84);
+        lv_obj_set_style_text_align(clbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(clbl);
+
+        if (i == 0)
+        {
+            if (spd->ping_ms > 0U)
+            {
+                lv_label_set_text_fmt(clbl, "#00E5FF %s#\n\n#FFD600 %u ms#\n#90A4AE HTTP RTT#",
+                                      s_titles[i], (unsigned int)spd->ping_ms);
+            }
+            else
+            {
+                lv_label_set_text_fmt(clbl, "#00E5FF %s#\n\n#90A4AE %s#\n#546E7A Latency#",
+                                      s_titles[i], (spd->state == 1U) ? "..." : "-- ms");
+            }
+        }
+        else if (i == 1)
+        {
+            if (spd->dl_kbps > 0U)
+            {
+                lv_label_set_text_fmt(clbl, "#00FF66 %s#\n\n#FFFFFF %u.%u#\n#00FF66 Mbit/s#",
+                                      s_titles[i],
+                                      (unsigned int)(spd->dl_kbps / 1000U),
+                                      (unsigned int)((spd->dl_kbps % 1000U) / 100U));
+            }
+            else
+            {
+                lv_label_set_text_fmt(clbl, "#00FF66 %s#\n\n#90A4AE %s#\n#546E7A HTTP Stream#",
+                                      s_titles[i], (spd->state == 1U) ? "..." : "-- Mbps");
+            }
+        }
+        else
+        {
+            if (spd->link_kbs_x10 > 0U)
+            {
+                lv_label_set_text_fmt(clbl, "#FFAE00 %s#\n\n#FFFFFF %u.%u#\n#FFAE00 KB/s#",
+                                      s_titles[i],
+                                      (unsigned int)(spd->link_kbs_x10 / 10U),
+                                      (unsigned int)(spd->link_kbs_x10 % 10U));
+            }
+            else
+            {
+                lv_label_set_text_fmt(clbl, "#FFAE00 %s#\n\n#90A4AE %s#\n#546E7A 921.6k 8N1#",
+                                      s_titles[i], (spd->state == 1U) ? "..." : "-- KB/s");
+            }
+        }
+    }
+
+    /* Bottom Summary / Progress Bar Panel */
+    lv_obj_t * sum = lv_obj_create(workspace_cont);
+    lv_obj_set_size(sum, 308, 78);
+    lv_obj_set_pos(sum, 6, 132);
+    lv_obj_clear_flag(sum, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(sum, lv_color_hex(0x101624), 0);
+    lv_obj_set_style_border_color(sum, lv_color_hex(0x2A3950), 0);
+    lv_obj_set_style_border_width(sum, 1, 0);
+    lv_obj_set_style_pad_all(sum, 6, 0);
+
+    lv_obj_t * bar = lv_bar_create(sum);
+    lv_obj_set_size(bar, 292, 14);
+    lv_obj_set_pos(bar, 0, 2);
+    lv_bar_set_range(bar, 0, 100);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1E293B), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x00FF66), LV_PART_INDICATOR);
+
+    int32_t pct = 0;
+    if (spd->state == 1U)
+    {
+        pct = (spd->dl_kbps > 0U) ? 75 : ((spd->ping_ms > 0U) ? 35 : 15);
+    }
+    else if (spd->state == 2U)
+    {
+        pct = (int32_t)(spd->dl_kbps / 400U); /* 40 Mbps = 100% scale on 2.4 GHz ESP32-C6 */
+        if (pct < 12 && spd->link_kbs_x10 > 0U) pct = 25;
+        if (pct > 100) pct = 100;
+    }
+    lv_bar_set_value(bar, pct, LV_ANIM_OFF);
+
+    lv_obj_t * slbl = lv_label_create(sum);
+    lv_label_set_recolor(slbl, true);
+    lv_obj_set_style_text_color(slbl, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_pos(slbl, 0, 22);
+    lv_obj_set_width(slbl, 292);
+
+    if (!esp_online)
+    {
+        lv_label_set_text(slbl,
+            "#FF5555 Companion link inactive.#\n"
+            "#90A4AE Connect ESP32-C6 to P13 (PC6/PC7 @ 921600).#");
+    }
+    else if (spd->state == 1U)
+    {
+        lv_label_set_text(slbl,
+            "#00E5FF Running 3-stage benchmark on ESP32-C6...#\n"
+            "#90A4AE 1) HTTP Ping  2) 512KB Wi-Fi DL  3) 32KB UART6#");
+    }
+    else if (spd->state == 2U)
+    {
+        lv_label_set_text_fmt(slbl,
+            "#00FF66 Benchmark Complete!# IP: #00E5FF %s#\n"
+            "#90A4AE UART6 theoretical max: 90.0 KB/s (8N1 framed)#",
+            ESPCompanion_GetWifiIp());
+    }
+    else
+    {
+        lv_label_set_text_fmt(slbl,
+            "#FFFFFF Ready:# Press #00FF66 [Start]# to test Wi-Fi & UART6.\n"
+            "#90A4AE Host: http://stm32-console.local (%s)#",
+            ESPCompanion_GetWifiIp());
+    }
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, btn_run);
+        lv_group_add_obj(grp, btn_back);
+        lv_group_focus_obj(btn_run);
     }
 }

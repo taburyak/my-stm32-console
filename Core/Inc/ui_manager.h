@@ -21,7 +21,8 @@ typedef enum {
     UI_SCREEN_SYSINFO,       /* Hardware POST & Memory Diagnostics */
     UI_SCREEN_WIFI,          /* Wi-Fi Setup & Network Status */
     UI_SCREEN_WEATHER,       /* Full-screen Weather Forecast & Indoor/Outdoor Station */
-    UI_SCREEN_CALENDAR       /* Interactive Monthly Calendar */
+    UI_SCREEN_CALENDAR,      /* Interactive Monthly Calendar */
+    UI_SCREEN_SPEEDTEST      /* Network & USART6 Companion Link Benchmark */
 } UI_Screen_t;
 
 /**

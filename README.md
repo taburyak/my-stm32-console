@@ -9,12 +9,12 @@ DIY retro game & developer console built on **STM32F407ZGT6** (168 MHz Cortex-M4
 - **On-Device & Web Development**:
   - Built-in **C-Script interpreter** (`Core/Src/script_engine.c`) for running `.c` source games/tools directly from SD without a PC compiler.
   - On-console **SD File Manager & Code Editor** (new file/folder, rename, copy, move, delete, edit, save & run).
-  - Wireless **Web Studio (`http://stm32-console.local`)** via ESP32-C6 over `USART6` (`PC6`/`PC7` @ `921600` baud): live telemetry, SD explorer, universal text/code editor, inline `.bmp`/`.png`/`.jpg` image viewer, wallpaper setter, and instant `Save & Run`.
+  - Wireless **Web Studio (`http://stm32-console.local`)** via ESP32-C6 over `USART6` (`PC6`/`PC7` @ `921600` baud): live telemetry, SD explorer, universal text/code editor, inline `.bmp`/`.png`/`.jpg` image viewer, live screen capture (`📸 Capture Screen`), virtual web gamepad (`🎮 Gamepad`), wallpaper setter, and instant `Save & Run`.
 - **Input & Peripherals**:
   - **USB Host (TinyUSB)**: USB HID Keyboard, Mouse (with live cursor), and Gamepad (`D-Pad` + dual analog sticks).
   - **Storage**: microSD card (`SDIO` 4-bit DMA + FatFs), `W25Q128` SPI Flash (16 MB), `AT24C02` I2C EEPROM (settings persistence).
-  - **Sensors & Time**: Hardware RTC with automatic **Wi-Fi SNTP** sync, **Open-Meteo** 3-day outdoor weather station, onboard **DS18B20** room sensor (`PA15`), and internal MCU temperature monitor.
-  - **Companion HUD (`ESP32-C6-LCD-1.47`)**: 3-page 172×320 ST7789 status display switched via `BOOT` button (`Net & Link`, `STM32 Console`, `Weather & Clock`) + synced WS2812 RGB LED.
+  - **Sensors, Time & SpeedTest**: Hardware RTC with automatic **Wi-Fi SNTP** sync, **Open-Meteo** 3-day outdoor weather station, **Network & USART6 SpeedTest** widget, onboard **DS18B20** room sensor (`PA15`), and internal MCU temperature monitor.
+  - **Dual-Screen Companion HUD (`ESP32-C6-LCD-1.47`)**: 3-page 172×320 ST7789 status display switched via `BOOT` button + programmable **Game HUD Mode** (`esp_hud_text`, `esp_led`) for native SDK and C-Script apps.
 
 ## Controls
 

@@ -618,6 +618,9 @@ uint32_t AppLoader_ReadInputMask_Privileged(void)
     /* 2.5. USB HID Keyboard (Cursor Arrows, WASD, Space, Enter, ESC) */
     mask |= USBHostManager_GetKeyboardGameMask();
 
+    /* 2.6. Virtual Web Gamepad (ESP32 Web Studio over USART6) */
+    mask |= (uint32_t)USBHostManager_GetVirtualGameMask();
+
     /* 3. USB Mouse drag support (Left half / Right half if clicked) */
     USB_MouseEvent_t mse;
     if (USBHostManager_GetMouseState(&mse))

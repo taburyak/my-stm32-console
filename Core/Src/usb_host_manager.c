@@ -38,6 +38,12 @@ static USB_MouseEvent_t current_mouse_state = {
 /* Current Gamepad State */
 static USB_GamepadState_t current_gamepad_state = {0};
 
+/* Virtual Web Gamepad State (from ESP32 Web Studio over USART6) */
+static volatile uint16_t s_vpad_mask      = 0U;
+static volatile int8_t   s_vpad_lx        = 0;
+static volatile int8_t   s_vpad_ly        = 0;
+static volatile uint32_t s_vpad_last_tick = 0U;
+
 /* Lookup table: HID Scancode to ASCII [unshifted, shifted] */
 static uint8_t const keycode2ascii[128][2] = { HID_KEYCODE_TO_ASCII };
 
@@ -84,6 +90,9 @@ void USBHostManager_FlushInputQueues(void)
     kbd_tail = 0;
     app_kbd_head = 0;
     app_kbd_tail = 0;
+    s_vpad_mask = 0U;
+    s_vpad_lx   = 0;
+    s_vpad_ly   = 0;
     memset(&prev_kbd_report, 0, sizeof(prev_kbd_report));
 }
 
@@ -203,12 +212,80 @@ bool USBHostManager_GetMouseState(USB_MouseEvent_t *state)
 
 bool USBHostManager_GetGamepadState(USB_GamepadState_t *state)
 {
-    if (!is_gamepad_ready || state == NULL)
+    if (state == NULL)
     {
         return false;
     }
-    *state = current_gamepad_state;
+
+    uint16_t vmask = USBHostManager_GetVirtualGameMask();
+    bool vactive = (vmask != 0U || s_vpad_lx != 0 || s_vpad_ly != 0);
+
+    if (!is_gamepad_ready && !vactive)
+    {
+        return false;
+    }
+
+    if (is_gamepad_ready)
+    {
+        *state = current_gamepad_state;
+    }
+    else
+    {
+        memset(state, 0, sizeof(*state));
+        state->hat = 0x0FU;
+    }
+
+    if (vactive)
+    {
+        if ((vmask & APP_KEY_LEFT) != 0U)  state->dpad_left  = true;
+        if ((vmask & APP_KEY_RIGHT) != 0U) state->dpad_right = true;
+        if ((vmask & APP_KEY_UP) != 0U)    state->dpad_up    = true;
+        if ((vmask & APP_KEY_DOWN) != 0U)  state->dpad_down  = true;
+        if ((vmask & APP_KEY_A) != 0U)     state->btn_a      = true;
+        if ((vmask & APP_KEY_B) != 0U)     state->btn_x      = true;
+        if ((vmask & APP_KEY_X) != 0U)     state->btn_y      = true;
+        if ((vmask & APP_KEY_START) != 0U) state->btn_start  = true;
+        if ((vmask & APP_KEY_EXIT) != 0U)  state->btn_b      = true;
+        if (s_vpad_lx != 0)                state->left_x     = s_vpad_lx;
+        if (s_vpad_ly != 0)                state->left_y     = s_vpad_ly;
+    }
     return true;
+}
+
+void USBHostManager_SetVirtualPad(uint16_t mask, int8_t lx, int8_t ly)
+{
+    uint16_t prev = USBHostManager_GetVirtualGameMask();
+    uint16_t pressed = (uint16_t)(mask & ~prev);
+
+    s_vpad_mask      = mask;
+    s_vpad_lx        = lx;
+    s_vpad_ly        = ly;
+    s_vpad_last_tick = HAL_GetTick();
+
+    /* Enqueue LVGL navigation edges when in OS UI (ignored automatically if sandbox app is running) */
+    if ((pressed & APP_KEY_UP) != 0U)    enqueue_key(0x52, 0, true);
+    if ((pressed & APP_KEY_DOWN) != 0U)  enqueue_key(0x51, 0, true);
+    if ((pressed & APP_KEY_LEFT) != 0U)  enqueue_key(0x50, 0, true);
+    if ((pressed & APP_KEY_RIGHT) != 0U) enqueue_key(0x4F, 0, true);
+    if ((pressed & APP_KEY_A) != 0U)     enqueue_key(0x28, '\r', true);
+    if ((pressed & APP_KEY_EXIT) != 0U)  enqueue_key(0x29, 0, true);
+    if ((pressed & APP_KEY_B) != 0U)     enqueue_key(0x2A, 0, true);
+    if ((pressed & APP_KEY_X) != 0U)     enqueue_key(0x2B, 0, true);
+}
+
+uint16_t USBHostManager_GetVirtualGameMask(void)
+{
+    if (s_vpad_mask != 0U || s_vpad_lx != 0 || s_vpad_ly != 0)
+    {
+        if ((HAL_GetTick() - s_vpad_last_tick) > 1200U)
+        {
+            s_vpad_mask = 0U;
+            s_vpad_lx   = 0;
+            s_vpad_ly   = 0;
+            return 0U;
+        }
+    }
+    return s_vpad_mask;
 }
 
 /* ==========================================================================

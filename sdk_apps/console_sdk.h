@@ -432,6 +432,43 @@ static inline int32_t sys_get_ext_temp_deci(void)
     return sys_get_temp_deci(SDK_TEMP_SRC_EXT);
 }
 
+static inline int32_t sys_get_weather_temp_deci(void)
+{
+    return sys_get_temp_deci(SDK_TEMP_SRC_WEATHER);
+}
+
+/* ---- ESP32-C6 Companion Second-Screen HUD & RGB LED ---- */
+SDK_SYSCALL int32_t sys_esp_ctl(uint32_t op, uint32_t p1, uint32_t p2)
+{
+    return (int32_t)SDK_SVC_CALL3(SDK_SVC_ESP_CTL, op, p1, p2);
+}
+
+static inline bool sys_esp_is_online(void)
+{
+    return (sys_esp_ctl(SDK_ESP_OP_STATUS, 0U, 0U) & 1) != 0;
+}
+
+static inline int32_t sys_esp_hud_clear(void)
+{
+    return sys_esp_ctl(SDK_ESP_OP_HUD_CLEAR, 0U, 0U);
+}
+
+static inline int32_t sys_esp_hud_text(uint8_t line, const char *text)
+{
+    return sys_esp_ctl(SDK_ESP_OP_HUD_LINE, (uint32_t)line, (uint32_t)text);
+}
+
+static inline int32_t sys_esp_set_led(uint8_t r, uint8_t g, uint8_t b)
+{
+    uint32_t packed = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    return sys_esp_ctl(SDK_ESP_OP_LED_RGB, packed, 0U);
+}
+
+static inline int32_t sys_esp_hud_restore(void)
+{
+    return sys_esp_ctl(SDK_ESP_OP_HUD_RESTORE, 0U, 0U);
+}
+
 /* ==========================================================================
  * 7. Game Helpers
  * ========================================================================== */
