@@ -110,6 +110,7 @@ void    USBHostManager_SetStickDeadzone(uint8_t deadzone);
 uint8_t USBHostManager_GetStickDeadzone(void);
 void    USBHostManager_SetVirtualPad(uint16_t mask, int8_t lx, int8_t ly);
 uint16_t USBHostManager_GetVirtualGameMask(void);
+uint16_t USBHostManager_ConsumeVirtualGameMask(void);
 
 #ifdef __cplusplus
 }

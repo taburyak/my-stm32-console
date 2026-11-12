@@ -39,10 +39,12 @@ static USB_MouseEvent_t current_mouse_state = {
 static USB_GamepadState_t current_gamepad_state = {0};
 
 /* Virtual Web Gamepad State (from ESP32 Web Studio over USART6) */
-static volatile uint16_t s_vpad_mask      = 0U;
-static volatile int8_t   s_vpad_lx        = 0;
-static volatile int8_t   s_vpad_ly        = 0;
-static volatile uint32_t s_vpad_last_tick = 0U;
+static volatile uint16_t s_vpad_mask       = 0U;
+static volatile uint16_t s_vpad_latch_mask = 0U;
+static volatile int8_t   s_vpad_lx         = 0;
+static volatile int8_t   s_vpad_ly         = 0;
+static volatile uint32_t s_vpad_last_tick  = 0U;
+static volatile uint32_t s_vpad_exit_tick  = 0U;
 
 /* Lookup table: HID Scancode to ASCII [unshifted, shifted] */
 static uint8_t const keycode2ascii[128][2] = { HID_KEYCODE_TO_ASCII };
@@ -90,9 +92,11 @@ void USBHostManager_FlushInputQueues(void)
     kbd_tail = 0;
     app_kbd_head = 0;
     app_kbd_tail = 0;
-    s_vpad_mask = 0U;
-    s_vpad_lx   = 0;
-    s_vpad_ly   = 0;
+    s_vpad_mask       = 0U;
+    s_vpad_latch_mask = 0U;
+    s_vpad_lx         = 0;
+    s_vpad_ly         = 0;
+    s_vpad_exit_tick  = 0U;
     memset(&prev_kbd_report, 0, sizeof(prev_kbd_report));
 }
 
@@ -254,23 +258,48 @@ bool USBHostManager_GetGamepadState(USB_GamepadState_t *state)
 
 void USBHostManager_SetVirtualPad(uint16_t mask, int8_t lx, int8_t ly)
 {
+    uint32_t now = HAL_GetTick();
     uint16_t prev = USBHostManager_GetVirtualGameMask();
     uint16_t pressed = (uint16_t)(mask & ~prev);
 
-    s_vpad_mask      = mask;
-    s_vpad_lx        = lx;
-    s_vpad_ly        = ly;
-    s_vpad_last_tick = HAL_GetTick();
+    s_vpad_mask        = mask;
+    s_vpad_latch_mask |= pressed;
+    s_vpad_lx          = lx;
+    s_vpad_ly          = ly;
+    s_vpad_last_tick   = now;
 
-    /* Enqueue LVGL navigation edges when in OS UI (ignored automatically if sandbox app is running) */
-    if ((pressed & APP_KEY_UP) != 0U)    enqueue_key(0x52, 0, true);
-    if ((pressed & APP_KEY_DOWN) != 0U)  enqueue_key(0x51, 0, true);
-    if ((pressed & APP_KEY_LEFT) != 0U)  enqueue_key(0x50, 0, true);
-    if ((pressed & APP_KEY_RIGHT) != 0U) enqueue_key(0x4F, 0, true);
-    if ((pressed & APP_KEY_A) != 0U)     enqueue_key(0x28, '\r', true);
-    if ((pressed & APP_KEY_EXIT) != 0U)  enqueue_key(0x29, 0, true);
-    if ((pressed & APP_KEY_B) != 0U)     enqueue_key(0x2A, 0, true);
-    if ((pressed & APP_KEY_X) != 0U)     enqueue_key(0x2B, 0, true);
+    if (AppLoader_IsRunning())
+    {
+        if ((mask & APP_KEY_EXIT) != 0U)
+        {
+            if (s_vpad_exit_tick == 0U)
+            {
+                s_vpad_exit_tick = now;
+            }
+            else if ((now - s_vpad_exit_tick) >= 500U)
+            {
+                /* Force-exit running app if EXIT/ESC is held >= 500 ms (matches physical KEY3 hold) */
+                AppLoader_RequestExit();
+                s_vpad_exit_tick = 0U;
+            }
+        }
+        else
+        {
+            s_vpad_exit_tick = 0U;
+        }
+        return;
+    }
+
+    s_vpad_exit_tick = 0U;
+
+    /* Enqueue LVGL navigation edges when in OS UI */
+    if ((pressed & APP_KEY_UP) != 0U)                     enqueue_key(0x52, 0, true);    /* Up Arrow */
+    if ((pressed & APP_KEY_DOWN) != 0U)                   enqueue_key(0x51, 0, true);    /* Down Arrow */
+    if ((pressed & APP_KEY_LEFT) != 0U)                   enqueue_key(0x50, 0, true);    /* Left Arrow */
+    if ((pressed & APP_KEY_RIGHT) != 0U)                  enqueue_key(0x4F, 0, true);    /* Right Arrow */
+    if ((pressed & APP_KEY_A) != 0U)                      enqueue_key(0x28, '\r', true); /* Enter / Open */
+    if ((pressed & (APP_KEY_B | APP_KEY_EXIT)) != 0U)     enqueue_key(0x29, 0, true);    /* Esc / Back */
+    if ((pressed & APP_KEY_X) != 0U)                      enqueue_key(0x2B, 0, true);    /* Tab / Next */
 }
 
 uint16_t USBHostManager_GetVirtualGameMask(void)
@@ -279,13 +308,24 @@ uint16_t USBHostManager_GetVirtualGameMask(void)
     {
         if ((HAL_GetTick() - s_vpad_last_tick) > 1200U)
         {
-            s_vpad_mask = 0U;
-            s_vpad_lx   = 0;
-            s_vpad_ly   = 0;
+            s_vpad_mask      = 0U;
+            s_vpad_lx        = 0;
+            s_vpad_ly        = 0;
+            s_vpad_exit_tick = 0U;
             return 0U;
         }
     }
     return s_vpad_mask;
+}
+
+uint16_t USBHostManager_ConsumeVirtualGameMask(void)
+{
+    uint16_t held = USBHostManager_GetVirtualGameMask();
+    __disable_irq();
+    uint16_t latched = s_vpad_latch_mask;
+    s_vpad_latch_mask = 0U;
+    __enable_irq();
+    return (uint16_t)(held | latched);
 }
 
 /* ==========================================================================

@@ -536,7 +536,7 @@ static bool Handle_File_Rpc(const char *line)
         uint32_t sent = 0U;
         while (sent < total_bytes)
         {
-            if (!WaitForStreamAck(1500U))
+            if (!WaitForStreamAck(500U))
             {
                 break;
             }
@@ -770,6 +770,13 @@ void ESPCompanion_Poll(void)
         s_wifi_status  = 0;
     }
 
+    /* 2.5. Safety net: never leave SpeedTest stuck in Running state > 12 s */
+    if (s_speed_test.state == 1U && ((HAL_GetTick() - s_speed_test.updated_tick) > 12000U))
+    {
+        s_speed_test.state        = 2U;
+        s_speed_test.updated_tick = HAL_GetTick();
+    }
+
     /* 3. Periodic Telemetry Transmission to ESP32 (every 500 ms) */
     static uint32_t last_tx_tick = 0U;
     if ((HAL_GetTick() - last_tx_tick) >= 500U)
@@ -984,8 +991,11 @@ bool ESPCompanion_StartSpeedTest(void)
         return false;
     }
     s_speed_test.state        = 1U;
+    s_speed_test.ping_ms      = 0U;
+    s_speed_test.dl_kbps      = 0U;
+    s_speed_test.link_kbs_x10 = 0U;
     s_speed_test.updated_tick = HAL_GetTick();
-    Send_Raw_Line("STM32:REQ_SPD\n");
+    Send_Raw_Line("\nSTM32:REQ_SPD\n");
     return true;
 }
 
