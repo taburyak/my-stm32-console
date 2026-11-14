@@ -50,6 +50,7 @@ static ESP_SpeedTestInfo_t s_speed_test = {
 
 static volatile bool     s_is_connected  = false;
 static volatile uint32_t s_last_rx_tick  = 0U;
+static volatile uint32_t s_last_web_activity_tick = 0U;
 static volatile uint32_t s_rx_packets    = 0U;
 static volatile uint32_t s_tx_packets    = 0U;
 
@@ -566,8 +567,10 @@ static void Process_Incoming_Line(const char *line)
     /* 0. Web Dashboard File & App Control RPC */
     if (Handle_File_Rpc(line))
     {
+        uint32_t now = HAL_GetTick();
         s_is_connected = true;
-        s_last_rx_tick = HAL_GetTick();
+        s_last_rx_tick = now;
+        s_last_web_activity_tick = now;
         s_rx_packets++;
         return;
     }
@@ -583,8 +586,10 @@ static void Process_Incoming_Line(const char *line)
             snprintf(s_tx_buf, sizeof(s_tx_buf), "STM32:FOK,%d\n", thm_val);
             Send_Raw_Line(s_tx_buf);
         }
+        uint32_t now = HAL_GetTick();
         s_is_connected = true;
-        s_last_rx_tick = HAL_GetTick();
+        s_last_rx_tick = now;
+        s_last_web_activity_tick = now;
         s_rx_packets++;
         return;
     }
@@ -1052,6 +1057,16 @@ bool ESPCompanion_HudRestore(void)
     return true;
 }
 
+bool ESPCompanion_SetIdleMode(bool idle)
+{
+    if (!s_is_connected)
+    {
+        return false;
+    }
+    Send_Raw_Line(idle ? "STM32:IDLE,1\n" : "STM32:IDLE,0\n");
+    return true;
+}
+
 bool ESPCompanion_TakePendingAppRun(char *path_out, size_t max_len)
 {
     if (!s_has_pending_app_run || path_out == NULL || max_len == 0U)
@@ -1072,6 +1087,11 @@ uint32_t ESPCompanion_GetRxPackets(void)
 uint32_t ESPCompanion_GetTxPackets(void)
 {
     return s_tx_packets;
+}
+
+uint32_t ESPCompanion_GetLastWebActivityTick(void)
+{
+    return s_last_web_activity_tick;
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)

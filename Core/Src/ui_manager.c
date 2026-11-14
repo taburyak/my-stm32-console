@@ -27,17 +27,21 @@ extern DMA_HandleTypeDef  hdma_memtomem_dma2_stream0;
 #define EEPROM_CFG_ADDR      0x00U
 #define EEPROM_CFG_MAGIC_V1  0xA5U
 #define EEPROM_CFG_MAGIC_V2  0xA6U
+#define EEPROM_CFG_MAGIC_V3  0xA7U
 #define THEME_COUNT          4U
+#define SS_TIMEOUT_COUNT     5U
 
 typedef struct {
-    uint8_t  magic;          /* EEPROM_CFG_MAGIC_V2 */
-    uint8_t  sound_muted;    /* 0 = sound on, 1 = muted */
-    uint8_t  theme_id;       /* 0..3 UI color theme */
-    uint8_t  stick_deadzone; /* Analog stick deadzone (0..48, default 8) */
-    uint16_t touch_min_x;    /* XPT2046 raw calibration bounds */
+    uint8_t  magic;           /* EEPROM_CFG_MAGIC_V3 */
+    uint8_t  sound_muted;     /* 0 = sound on, 1 = muted */
+    uint8_t  theme_id;        /* 0..3 UI color theme */
+    uint8_t  stick_deadzone;  /* Analog stick deadzone (0..48, default 8) */
+    uint16_t touch_min_x;     /* XPT2046 raw calibration bounds */
     uint16_t touch_max_x;
     uint16_t touch_min_y;
     uint16_t touch_max_y;
+    uint8_t  screensaver_idx; /* 0=Off, 1=1m, 2=3m, 3=5m, 4=10m */
+    uint8_t  reserved;
 } System_Config_t;
 
 typedef struct {
@@ -149,8 +153,21 @@ static void Build_Wifi_Screen(void);
 static void Build_Weather_Screen(void);
 static void Build_Calendar_Screen(void);
 static void Build_SpeedTest_Screen(void);
+static void Build_Screensaver_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
+
+static const uint32_t     s_ss_timeouts_ms[SS_TIMEOUT_COUNT] = { 0UL, 60000UL, 180000UL, 300000UL, 600000UL };
+static const char * const s_ss_labels[SS_TIMEOUT_COUNT]      = { "Off", "1m", "3m", "5m", "10m" };
+static uint8_t            s_ss_timeout_idx                   = 1U; /* Default: 1m */
+
+static UI_Screen_t s_pre_screensaver_screen = UI_SCREEN_HOME;
+static uint32_t    s_ss_entered_tick        = 0U;
+static uint32_t    s_ss_last_temp_tick      = 0U;
+static lv_obj_t *  s_ss_lbl_clock           = NULL;
+static lv_obj_t *  s_ss_lbl_date            = NULL;
+static lv_obj_t *  s_ss_lbl_temps           = NULL;
+static lv_obj_t *  s_lbl_idle_val           = NULL;
 
 /* ==========================================================================
  * EEPROM Settings Load / Save
@@ -178,14 +195,19 @@ static void Settings_LoadFromEEPROM(void)
     System_Config_t cfg = {0};
     if (AT24Cxx_Read(EEPROM_CFG_ADDR, &cfg, sizeof(cfg)) == HAL_OK)
     {
-        if (cfg.magic == EEPROM_CFG_MAGIC_V2)
+        if (cfg.magic == EEPROM_CFG_MAGIC_V3 || cfg.magic == EEPROM_CFG_MAGIC_V2)
         {
             Beeper_SetMuted(cfg.sound_muted != 0U);
             s_theme_id = (cfg.theme_id < THEME_COUNT) ? cfg.theme_id : 0U;
             USBHostManager_SetStickDeadzone((cfg.stick_deadzone <= 48U) ? cfg.stick_deadzone : 8U);
             XPT2046_TouchSetCalibration(cfg.touch_min_x, cfg.touch_max_x, cfg.touch_min_y, cfg.touch_max_y);
-            printf("[CFG] Loaded EEPROM v2: muted=%u theme=%u dz=%u touch=[%u..%u, %u..%u]\r\n",
-                   cfg.sound_muted, s_theme_id, cfg.stick_deadzone,
+            if (cfg.magic == EEPROM_CFG_MAGIC_V3 && cfg.screensaver_idx < SS_TIMEOUT_COUNT)
+            {
+                s_ss_timeout_idx = cfg.screensaver_idx;
+            }
+            printf("[CFG] Loaded EEPROM v%u: muted=%u theme=%u dz=%u ss=%u touch=[%u..%u, %u..%u]\r\n",
+                   (cfg.magic == EEPROM_CFG_MAGIC_V3) ? 3U : 2U,
+                   cfg.sound_muted, s_theme_id, cfg.stick_deadzone, s_ss_timeout_idx,
                    cfg.touch_min_x, cfg.touch_max_x, cfg.touch_min_y, cfg.touch_max_y);
         }
         else if (cfg.magic == EEPROM_CFG_MAGIC_V1)
@@ -201,14 +223,16 @@ static void Settings_SaveToEEPROM(void)
     XPT2046_TouchGetCalibration(&min_x, &max_x, &min_y, &max_y);
 
     System_Config_t cfg = {
-        .magic          = EEPROM_CFG_MAGIC_V2,
-        .sound_muted    = Beeper_IsMuted() ? 1U : 0U,
-        .theme_id       = s_theme_id,
-        .stick_deadzone = USBHostManager_GetStickDeadzone(),
-        .touch_min_x    = min_x,
-        .touch_max_x    = max_x,
-        .touch_min_y    = min_y,
-        .touch_max_y    = max_y
+        .magic           = EEPROM_CFG_MAGIC_V3,
+        .sound_muted     = Beeper_IsMuted() ? 1U : 0U,
+        .theme_id        = s_theme_id,
+        .stick_deadzone  = USBHostManager_GetStickDeadzone(),
+        .touch_min_x     = min_x,
+        .touch_max_x     = max_x,
+        .touch_min_y     = min_y,
+        .touch_max_y     = max_y,
+        .screensaver_idx = s_ss_timeout_idx,
+        .reserved        = 0U
     };
     (void)AT24Cxx_Write(EEPROM_CFG_ADDR, &cfg, sizeof(cfg));
 }
@@ -703,6 +727,10 @@ void UIManager_Update(void)
         {
             s_pending_screen = (int8_t)UI_SCREEN_SPEEDTEST;
         }
+        else if (current_screen == UI_SCREEN_SCREENSAVER)
+        {
+            s_pending_screen = (int8_t)UI_SCREEN_SCREENSAVER;
+        }
         else if (current_screen == UI_SCREEN_HOME && s_home_active_col == 1U)
         {
             s_pending_screen = (int8_t)UI_SCREEN_HOME;
@@ -721,10 +749,86 @@ void UIManager_Update(void)
             s_pending_screen = (int8_t)UI_SCREEN_HOME;
         }
     }
+
+    /* Idle Screensaver / Desk Weather Clock state machine */
+    uint32_t ss_timeout   = s_ss_timeouts_ms[s_ss_timeout_idx % SS_TIMEOUT_COUNT];
+    uint32_t now_tick     = HAL_GetTick();
+    uint32_t lv_idle_ms   = lv_disp_get_inactive_time(NULL);
+    uint32_t web_act_tick = ESPCompanion_GetLastWebActivityTick();
+    bool     web_recent   = (ss_timeout > 0UL) && (web_act_tick != 0U) &&
+                            ((now_tick - web_act_tick) < ss_timeout);
+
+    if (current_screen == UI_SCREEN_SCREENSAVER)
+    {
+        bool woke_by_input = ((now_tick - s_ss_entered_tick) >= 400U) &&
+                             ((lv_idle_ms < 400U) ||
+                              ((web_act_tick != 0U) && ((now_tick - web_act_tick) < 1000U)));
+        if (woke_by_input)
+        {
+            for (lv_indev_t * d = lv_indev_get_next(NULL); d != NULL; d = lv_indev_get_next(d))
+            {
+                lv_indev_wait_release(d);
+            }
+            (void)ESPCompanion_SetIdleMode(false);
+            s_pending_screen = (int8_t)s_pre_screensaver_screen;
+        }
+        else
+        {
+            if (s_ss_lbl_clock != NULL)
+            {
+                lv_label_set_text_fmt(s_ss_lbl_clock, "%02u:%02u:%02u", hrs, mins, secs);
+            }
+            if (s_ss_lbl_date != NULL)
+            {
+                static const char * const s_wd[8] = { "", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+                static const char * const s_mo[13] = {
+                    "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+                };
+                uint16_t yr = 2026U;
+                uint8_t mo = 11U, dy = 14U, wd = 6U;
+                RTC_GetCalendarDate(&yr, &mo, &dy, &wd);
+                lv_label_set_text_fmt(s_ss_lbl_date, "%s, %02u %s %04u",
+                                      (wd >= 1U && wd <= 7U) ? s_wd[wd] : "---",
+                                      (unsigned int)dy,
+                                      (mo >= 1U && mo <= 12U) ? s_mo[mo] : "---",
+                                      (unsigned int)yr);
+            }
+            if (s_ss_lbl_temps != NULL && (now_tick - s_ss_last_temp_tick) >= 2000U)
+            {
+                s_ss_last_temp_tick = now_tick;
+                bool ext_ok = false;
+                int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
+                int32_t mcu_dc = TempSensor_ReadMcuDeciC();
+                if (ext_ok)
+                {
+                    lv_label_set_text_fmt(s_ss_lbl_temps,
+                        "Room: #FFAE00 %s%ld.%ld C#   MCU: #00FF66 %s%ld.%ld C#",
+                        (ext_dc < 0) ? "-" : "+", (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10),
+                        (mcu_dc < 0) ? "-" : "+", (long)(abs(mcu_dc) / 10), (long)(abs(mcu_dc) % 10));
+                }
+                else
+                {
+                    lv_label_set_text_fmt(s_ss_lbl_temps,
+                        "Room: #90A4AE N/A#   MCU: #00FF66 %s%ld.%ld C#",
+                        (mcu_dc < 0) ? "-" : "+", (long)(abs(mcu_dc) / 10), (long)(abs(mcu_dc) % 10));
+                }
+            }
+        }
+    }
+    else if (ss_timeout > 0UL && !AppLoader_IsRunning() && s_pending_screen < 0 &&
+             lv_idle_ms >= ss_timeout && !web_recent)
+    {
+        s_pre_screensaver_screen = current_screen;
+        s_ss_entered_tick        = now_tick;
+        s_pending_screen         = (int8_t)UI_SCREEN_SCREENSAVER;
+        (void)ESPCompanion_SetIdleMode(true);
+    }
 }
 
 void UIManager_OnAppExit(void)
 {
+    lv_disp_trig_activity(NULL);
     if (current_screen == UI_SCREEN_FILES)
     {
         /* Keep SD Explorer or Code Editor open exactly where the user launched from */
@@ -760,6 +864,10 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     lbl_time_set       = NULL;
     lbl_dz_val         = NULL;
     lbl_thm_val        = NULL;
+    s_ss_lbl_clock     = NULL;
+    s_ss_lbl_date      = NULL;
+    s_ss_lbl_temps     = NULL;
+    s_lbl_idle_val     = NULL;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -814,6 +922,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
         case UI_SCREEN_SPEEDTEST:
             lv_label_set_text(lbl_screen_title, "SpeedTest");
             Build_SpeedTest_Screen();
+            break;
+
+        case UI_SCREEN_SCREENSAVER:
+            lv_label_set_text(lbl_screen_title, "Standby");
+            Build_Screensaver_Screen();
             break;
 
         default:
@@ -3583,6 +3696,15 @@ static void settings_action_btn_cb(lv_event_t * e)
         UIManager_OpenWifiSetup();
         return;
     }
+    else if (action == 10) /* Cycle Screensaver Idle Timeout */
+    {
+        s_ss_timeout_idx = (uint8_t)((s_ss_timeout_idx + 1U) % SS_TIMEOUT_COUNT);
+        Settings_SaveToEEPROM();
+        if (s_lbl_idle_val != NULL)
+        {
+            lv_label_set_text_fmt(s_lbl_idle_val, "Idle: %s", s_ss_labels[s_ss_timeout_idx]);
+        }
+    }
 
     if (lbl_time_set != NULL)
     {
@@ -3905,10 +4027,14 @@ static void Build_Settings_Screen(void)
     lbl_dz_val = lv_obj_get_child(btn_dz, 0);
     lv_label_set_text_fmt(lbl_dz_val, "Stick DZ: %u", (unsigned int)USBHostManager_GetStickDeadzone());
 
-    /* Row 3: Theme selector */
-    lv_obj_t * btn_thm = Create_Setting_Btn(workspace_cont, 12, 68, 296, 28, "", 7);
+    /* Row 3: Theme selector + Idle Screensaver timeout */
+    lv_obj_t * btn_thm = Create_Setting_Btn(workspace_cont, 12, 68, 145, 28, "", 7);
     lbl_thm_val = lv_obj_get_child(btn_thm, 0);
     lv_label_set_text_fmt(lbl_thm_val, "Theme: %s", s_themes[s_theme_id % THEME_COUNT].name);
+
+    lv_obj_t * btn_idle = Create_Setting_Btn(workspace_cont, 163, 68, 145, 28, "", 10);
+    s_lbl_idle_val = lv_obj_get_child(btn_idle, 0);
+    lv_label_set_text_fmt(s_lbl_idle_val, "Idle: %s", s_ss_labels[s_ss_timeout_idx % SS_TIMEOUT_COUNT]);
 
     /* Row 4: Wi-Fi Setup / Network Connection */
     lv_obj_t * btn_wifi = Create_Setting_Btn(workspace_cont, 12, 100, 296, 28, "", 9);
@@ -4348,28 +4474,41 @@ static void Build_Weather_Screen(void)
         lv_obj_set_style_border_width(dcard, 1, 0);
         lv_obj_set_style_pad_all(dcard, 4, 0);
 
-        lv_obj_t * dlbl = lv_label_create(dcard);
-        lv_label_set_recolor(dlbl, true);
-        lv_obj_set_style_text_color(dlbl, lv_color_hex(0xE2E8F0), 0);
-        lv_obj_set_width(dlbl, 88);
-        lv_obj_set_style_text_align(dlbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(dlbl);
+        lv_obj_t * lbl_day = lv_label_create(dcard);
+        lv_obj_set_style_text_color(lbl_day, lv_color_hex(0x00E5FF), 0);
+        lv_obj_set_width(lbl_day, 88);
+        lv_obj_set_pos(lbl_day, 0, 2);
+        lv_obj_set_style_text_align(lbl_day, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(lbl_day, s_day_titles[i]);
+
+        lv_obj_t * lbl_desc = lv_label_create(dcard);
+        lv_obj_set_width(lbl_desc, 88);
+        lv_obj_set_pos(lbl_desc, 0, 24);
+        lv_obj_set_style_text_align(lbl_desc, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(lbl_desc, LV_LABEL_LONG_SCROLL_CIRCULAR);
+
+        lv_obj_t * lbl_temp = lv_label_create(dcard);
+        lv_label_set_recolor(lbl_temp, true);
+        lv_obj_set_style_text_color(lbl_temp, lv_color_hex(0xE2E8F0), 0);
+        lv_obj_set_width(lbl_temp, 90);
+        lv_obj_set_pos(lbl_temp, -1, 48);
+        lv_obj_set_style_text_align(lbl_temp, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(lbl_temp, LV_LABEL_LONG_CLIP);
 
         if (esp_online && wth->valid)
         {
-            lv_label_set_text_fmt(dlbl,
-                "#00E5FF %s#\n"
-                "#FFFFFF %s#\n"
+            lv_obj_set_style_text_color(lbl_desc, lv_color_hex(0xFFFFFF), 0);
+            lv_label_set_text(lbl_desc, Weather_WmoDescription(wth->day_wmo[i]));
+            lv_label_set_text_fmt(lbl_temp,
                 "#FF8A80 %s%d.%d# / #80D8FF %s%d.%d#",
-                s_day_titles[i],
-                Weather_WmoDescription(wth->day_wmo[i]),
                 (wth->day_hi_deci[i] < 0) ? "-" : "+", abs(wth->day_hi_deci[i]) / 10, abs(wth->day_hi_deci[i]) % 10,
                 (wth->day_lo_deci[i] < 0) ? "-" : "+", abs(wth->day_lo_deci[i]) / 10, abs(wth->day_lo_deci[i]) % 10);
         }
         else
         {
-            lv_label_set_text_fmt(dlbl, "#00E5FF %s#\n#90A4AE %s#\n#90A4AE -- / --#",
-                                  s_day_titles[i], esp_online ? "--" : "Offline");
+            lv_obj_set_style_text_color(lbl_desc, lv_color_hex(0x90A4AE), 0);
+            lv_label_set_text(lbl_desc, esp_online ? "--" : "Offline");
+            lv_label_set_text(lbl_temp, "#90A4AE -- / --#");
         }
     }
 
@@ -4681,5 +4820,176 @@ static void Build_SpeedTest_Screen(void)
         lv_group_add_obj(grp, btn_run);
         lv_group_add_obj(grp, btn_back);
         lv_group_focus_obj(btn_run);
+    }
+}
+
+/* ==========================================================================
+ * 10. Idle Screensaver / Desk Weather & Sensor Clock
+ * ========================================================================== */
+
+static void screensaver_wake_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_KEY)
+    {
+        lv_indev_t * act = lv_indev_get_act();
+        if (act != NULL)
+        {
+            lv_indev_wait_release(act);
+        }
+        Beeper_Click();
+        lv_disp_trig_activity(NULL);
+        (void)ESPCompanion_SetIdleMode(false);
+        s_pending_screen = (int8_t)s_pre_screensaver_screen;
+    }
+}
+
+static void Build_Screensaver_Screen(void)
+{
+    bool esp_online = ESPCompanion_IsConnected();
+    bool wifi_ok    = esp_online && ESPCompanion_IsWifiConnected();
+    const ESP_WeatherInfo_t *wth = ESPCompanion_GetWeather();
+
+    /* Full-workspace clickable container to absorb wake touch/key events */
+    lv_obj_t * ovl = lv_obj_create(workspace_cont);
+    lv_obj_set_size(ovl, 320, 216);
+    lv_obj_set_pos(ovl, 0, 0);
+    lv_obj_clear_flag(ovl, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(ovl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(ovl, lv_color_hex(0x060A12), 0);
+    lv_obj_set_style_border_width(ovl, 0, 0);
+    lv_obj_set_style_radius(ovl, 0, 0);
+    lv_obj_set_style_pad_all(ovl, 0, 0);
+    lv_obj_add_event_cb(ovl, screensaver_wake_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(ovl, screensaver_wake_cb, LV_EVENT_KEY, NULL);
+
+    /* Top bar: Date/Weekday on left, Link/Wi-Fi badge on right */
+    static const char * const s_wd[8] = { "", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+    static const char * const s_mo[13] = {
+        "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    uint16_t yr = 2026U;
+    uint8_t  mo = 11U, dy = 14U, wd = 6U;
+    uint8_t  hrs = 0U, mins = 0U, secs = 0U;
+    RTC_GetCalendarDate(&yr, &mo, &dy, &wd);
+    RTC_GetDateTime(&hrs, &mins, &secs);
+
+    s_ss_lbl_date = lv_label_create(ovl);
+    lv_obj_set_style_text_color(s_ss_lbl_date, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_pos(s_ss_lbl_date, 12, 10);
+    lv_label_set_text_fmt(s_ss_lbl_date, "%s, %02u %s %04u",
+                          (wd >= 1U && wd <= 7U) ? s_wd[wd] : "---",
+                          (unsigned int)dy,
+                          (mo >= 1U && mo <= 12U) ? s_mo[mo] : "---",
+                          (unsigned int)yr);
+
+    lv_obj_t * lbl_net = lv_label_create(ovl);
+    lv_label_set_recolor(lbl_net, true);
+    lv_obj_set_pos(lbl_net, 180, 10);
+    lv_obj_set_width(lbl_net, 128);
+    lv_obj_set_style_text_align(lbl_net, LV_TEXT_ALIGN_RIGHT, 0);
+    if (wifi_ok)
+    {
+        lv_label_set_text(lbl_net, "#00FF66 Wi-Fi Online#");
+    }
+    else if (esp_online)
+    {
+        lv_label_set_text(lbl_net, "#FFAE00 Offline (No Wi-Fi)#");
+    }
+    else
+    {
+        lv_label_set_text(lbl_net, "#90A4AE Standalone#");
+    }
+
+    /* Center Hero: Large 28px Digital Clock */
+    s_ss_lbl_clock = lv_label_create(ovl);
+    lv_obj_set_style_text_font(s_ss_lbl_clock, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_ss_lbl_clock, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(s_ss_lbl_clock, 300);
+    lv_obj_set_pos(s_ss_lbl_clock, 10, 42);
+    lv_obj_set_style_text_align(s_ss_lbl_clock, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text_fmt(s_ss_lbl_clock, "%02u:%02u:%02u", hrs, mins, secs);
+
+    /* Bottom Weather & Local Sensor Card */
+    lv_obj_t * card = lv_obj_create(ovl);
+    lv_obj_set_size(card, 304, 106);
+    lv_obj_set_pos(card, 8, 96);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x0E1624), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex((esp_online && wth->valid) ? 0x00E5FF : 0x2A3950), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_pad_all(card, 6, 0);
+
+    if (esp_online && wth->valid)
+    {
+        Create_Weather_Graphic(card, 2, 10, wth->wmo_code, true);
+
+        lv_obj_t * lbl_city = lv_label_create(card);
+        lv_obj_set_style_text_color(lbl_city, lv_color_hex(0x00E5FF), 0);
+        lv_obj_set_pos(lbl_city, 68, 2);
+        lv_obj_set_width(lbl_city, 222);
+        lv_label_set_long_mode(lbl_city, LV_LABEL_LONG_DOT);
+        lv_label_set_text_fmt(lbl_city, "%s: %s", wth->city, Weather_WmoDescription(wth->wmo_code));
+
+        lv_obj_t * lbl_out = lv_label_create(card);
+        lv_label_set_recolor(lbl_out, true);
+        lv_obj_set_style_text_color(lbl_out, lv_color_hex(0xE2E8F0), 0);
+        lv_obj_set_pos(lbl_out, 68, 24);
+        lv_label_set_text_fmt(lbl_out,
+            "Out: #FFD600 %s%d.%d C#  (Feels %s%d.%d)",
+            (wth->temp_deci < 0) ? "-" : "+", abs(wth->temp_deci) / 10, abs(wth->temp_deci) % 10,
+            (wth->feels_deci < 0) ? "-" : "+", abs(wth->feels_deci) / 10, abs(wth->feels_deci) % 10);
+
+        lv_obj_t * lbl_air = lv_label_create(card);
+        lv_label_set_recolor(lbl_air, true);
+        lv_obj_set_style_text_color(lbl_air, lv_color_hex(0xE2E8F0), 0);
+        lv_obj_set_pos(lbl_air, 68, 44);
+        lv_label_set_text_fmt(lbl_air,
+            "RH: #00E5FF %u%%#   Wind: #00FF66 %u.%u km/h#",
+            (unsigned int)wth->humidity,
+            (unsigned int)(wth->wind_deci / 10U), (unsigned int)(wth->wind_deci % 10U));
+    }
+    else
+    {
+        lv_obj_t * lbl_mode = lv_label_create(card);
+        lv_obj_set_style_text_color(lbl_mode, lv_color_hex(0x90A4AE), 0);
+        lv_obj_set_width(lbl_mode, 290);
+        lv_obj_set_pos(lbl_mode, 0, 12);
+        lv_obj_set_style_text_align(lbl_mode, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(lbl_mode, esp_online ? "No Internet Weather (Local Sensors)" : "Local Onboard Sensors");
+    }
+
+    s_ss_lbl_temps = lv_label_create(card);
+    lv_label_set_recolor(s_ss_lbl_temps, true);
+    lv_obj_set_style_text_color(s_ss_lbl_temps, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_width(s_ss_lbl_temps, 290);
+    lv_obj_set_pos(s_ss_lbl_temps, 0, (esp_online && wth->valid) ? 72 : 46);
+    lv_obj_set_style_text_align(s_ss_lbl_temps, LV_TEXT_ALIGN_CENTER, 0);
+
+    bool ext_ok = false;
+    int32_t ext_dc = TempSensor_GetCachedExtDeciC(&ext_ok);
+    int32_t mcu_dc = TempSensor_ReadMcuDeciC();
+    s_ss_last_temp_tick = HAL_GetTick();
+    if (ext_ok)
+    {
+        lv_label_set_text_fmt(s_ss_lbl_temps,
+            "Room: #FFAE00 %s%ld.%ld C#   MCU: #00FF66 %s%ld.%ld C#",
+            (ext_dc < 0) ? "-" : "+", (long)(abs(ext_dc) / 10), (long)(abs(ext_dc) % 10),
+            (mcu_dc < 0) ? "-" : "+", (long)(abs(mcu_dc) / 10), (long)(abs(mcu_dc) % 10));
+    }
+    else
+    {
+        lv_label_set_text_fmt(s_ss_lbl_temps,
+            "Room: #90A4AE N/A#   MCU: #00FF66 %s%ld.%ld C#",
+            (mcu_dc < 0) ? "-" : "+", (long)(abs(mcu_dc) / 10), (long)(abs(mcu_dc) % 10));
+    }
+
+    lv_group_t * grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, ovl);
+        lv_group_focus_obj(ovl);
     }
 }

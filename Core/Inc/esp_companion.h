@@ -122,6 +122,7 @@ bool ESPCompanion_HudClear(void);
 bool ESPCompanion_HudSetLine(uint8_t line_idx, const char *text);
 bool ESPCompanion_SetLedRgb(uint8_t r, uint8_t g, uint8_t b);
 bool ESPCompanion_HudRestore(void);
+bool ESPCompanion_SetIdleMode(bool idle);
 
 /**
  * @brief Check and consume pending remote app/script launch requested by ESP32 Web UI
@@ -133,6 +134,7 @@ bool ESPCompanion_TakePendingAppRun(char *path_out, size_t max_len);
  */
 uint32_t ESPCompanion_GetRxPackets(void);
 uint32_t ESPCompanion_GetTxPackets(void);
+uint32_t ESPCompanion_GetLastWebActivityTick(void);
 
 #ifdef __cplusplus
 }

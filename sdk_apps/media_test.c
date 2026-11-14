@@ -48,6 +48,26 @@ static void draw_int(uint16_t x, uint16_t y, int32_t v)
     sys_draw_text(x, y, buf, COLOR_NEON_GREEN, COLOR_DARK_BG, 1);
 }
 
+static void draw_temp(uint16_t x, uint16_t y, int32_t deci)
+{
+    if (deci == SDK_TEMP_INVALID)
+    {
+        sys_draw_text(x, y, "N/A   ", COLOR_AMBER, COLOR_DARK_BG, 1);
+    }
+    else
+    {
+        draw_int(x, y, deci);
+    }
+}
+
+static void refresh_env(void)
+{
+    draw_temp(82,  ROW(5), sys_get_mcu_temp_deci());
+    draw_temp(240, ROW(5), sys_get_ext_temp_deci());
+    sys_draw_text(70, ROW(6), sys_esp_is_online() ? "ONLINE " : "OFFLINE", COLOR_NEON_GREEN, COLOR_DARK_BG, 1);
+    draw_temp(240, ROW(6), sys_get_weather_temp_deci());
+}
+
 static void draw_static(void)
 {
     sys_clear_screen(COLOR_DARK_BG);
@@ -64,16 +84,16 @@ static void draw_static(void)
     sys_draw_text(170, ROW(4), "READ(0):", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(10, ROW(5), "MCU 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
     sys_draw_text(170, ROW(5), "EXT 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
-    sys_draw_text(10, ROW(6), "A:MELODY DOWN:LOOP UP:STOP B:BENCH", COLOR_AMBER, COLOR_DARK_BG, 1);
-    sys_draw_text(10, ROW(7), "X:READ DS18B20   ESC:EXIT", COLOR_AMBER, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(6), "ESP32:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(170, ROW(6), "WTH 0.1C:", COLOR_WHITE, COLOR_DARK_BG, 1);
+    sys_draw_text(10, ROW(7), "A:PLAY DN:LOOP UP:STOP B:BENCH X:TEMP", COLOR_AMBER, COLOR_DARK_BG, 1);
 
     SDK_GpioCaps_t caps;
     sdk_memset(&caps, 0, sizeof(caps));
     (void)sys_gpio_get_caps(&caps);
     draw_int(100, ROW(4), (int32_t)caps.pin_count);
     draw_int(240, ROW(4), sys_gpio_read(0));
-    draw_int(82,  ROW(5), sys_get_mcu_temp_deci());
-    draw_int(240, ROW(5), sys_get_ext_temp_deci());
+    refresh_env();
 }
 
 static void render_anim(uint32_t t)
@@ -146,8 +166,7 @@ void app_main(void)
         }
         if (pressed & KEY_X)
         {
-            draw_int(82,  ROW(5), sys_get_mcu_temp_deci());
-            draw_int(240, ROW(5), sys_get_ext_temp_deci());
+            refresh_env();
         }
 
         draw_hex(70, ROW(0), sys_random(), 8);
