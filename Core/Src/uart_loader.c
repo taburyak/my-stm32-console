@@ -1,4 +1,5 @@
 #include "uart_loader.h"
+#include "uart_cli.h"
 #include "stm32f4xx_ll_usart.h"
 #include "app_loader.h"
 #include "memory_map.h"
@@ -939,16 +940,20 @@ void UARTLoader_OnRxByte(uint8_t b)
         {
             s_wake_idx     = 0U;
             s_auto_trigger = true;
+            UARTCli_Reset();
             if (AppLoader_IsRunning())
             {
                 AppLoader_RequestExit();
             }
+            return;
         }
     }
     else
     {
         s_wake_idx = (b == s_wake_seq[0]) ? 1U : 0U;
     }
+
+    UARTCli_OnRxByte(b);
 }
 
 bool UARTLoader_TakeAutoTrigger(void)

@@ -42,6 +42,7 @@
 #include "ui_manager.h"
 #include "app_loader.h"
 #include "uart_loader.h"
+#include "uart_cli.h"
 #include "temp_sensor.h"
 #include "esp_companion.h"
 #include "ccmram.h"
@@ -1196,9 +1197,10 @@ void StartDefaultTask(void *argument)
   /* 7.5. Initialize MCU internal temperature sensor & probe external DS18B20 on PA15 */
   (void)TempSensor_Init();
 
-  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & UART3 Background Uploader */
+  /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & USART3 Uploader + CLI */
   UIManager_Init();
   UARTLoader_Init();
+  UARTCli_Init();
 
   /* 8.5. Initialize ESP32-C6 Companion Link on UART4 */
   ESPCompanion_Init();
@@ -1224,6 +1226,9 @@ void StartDefaultTask(void *argument)
         printf("[SHOT] Saved screenshot: %s\r\n", shot_path);
       }
     }
+
+    /* 1.8. Poll interactive PC Terminal CLI over USART3 (works both in menu and while app runs) */
+    UARTCli_Poll();
 
     /* 2. If an external .bin app is running in SandboxTask, yield display to it */
     if (AppLoader_IsRunning())

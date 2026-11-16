@@ -128,6 +128,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/app_services.c
     Core/Src/script_engine.c
     Core/Src/uart_loader.c
+    Core/Src/uart_cli.c
     Core/Src/temp_sensor.c
     Core/Src/esp_companion.c
 )
