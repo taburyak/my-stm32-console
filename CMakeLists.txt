@@ -224,12 +224,18 @@ set_property(TARGET ${BOOT_TARGET} APPEND PROPERTY LINK_DEPENDS "${BOOT_LINKER_S
 target_link_libraries(${BOOT_TARGET} ${TOOLCHAIN_LINK_LIBRARIES})
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+add_custom_command(TARGET ${BOOT_TARGET} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${BOOT_TARGET}> "${CMAKE_BINARY_DIR}/console_bootloader.bin"
+    COMMENT "Generating console_bootloader.bin"
+)
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/fw_update.bin" "${CMAKE_BINARY_DIR}/console_full.bin"
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}> "${CMAKE_BINARY_DIR}/my-stm32-console.bin"
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${BOOT_TARGET}> "${CMAKE_BINARY_DIR}/console_bootloader.bin"
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/pack_fw.py"
             "${CMAKE_BINARY_DIR}/my-stm32-console.bin" "${CMAKE_BINARY_DIR}/fw_update.bin"
     COMMAND ${Python3_EXECUTABLE} -c "import pathlib; b=pathlib.Path('${CMAKE_BINARY_DIR}/console_bootloader.bin').read_bytes().ljust(65536, b'\\xff'); a=pathlib.Path('${CMAKE_BINARY_DIR}/my-stm32-console.bin').read_bytes(); pathlib.Path('${CMAKE_BINARY_DIR}/console_full.bin').write_bytes(b+a)"
+    DEPENDS ${CMAKE_PROJECT_NAME} ${BOOT_TARGET}
     COMMENT "Generating fw_update.bin and console_full.bin"
 )
-add_dependencies(${CMAKE_PROJECT_NAME} ${BOOT_TARGET})
+add_custom_target(console_images ALL DEPENDS "${CMAKE_BINARY_DIR}/fw_update.bin" "${CMAKE_BINARY_DIR}/console_full.bin")

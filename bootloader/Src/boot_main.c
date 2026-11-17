@@ -146,6 +146,7 @@ static void boot_ui_init(const char *subtitle)
     if (!s_lcd_ready)
     {
         lcdInit();
+        lcdSetOrientation(LCD_ORIENTATION_LANDSCAPE);
         HAL_GPIO_WritePin(BOOT_BL_PORT, BOOT_BL_PIN, GPIO_PIN_SET);
         s_lcd_ready = true;
     }
