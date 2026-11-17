@@ -16,7 +16,8 @@ MEMORY
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 96K
   /* App sandbox (code + data + 4 KB task stack), filled at runtime by app_loader.c */
   APP_RAM  (xrw)    : ORIGIN = 0x20018000,   LENGTH = 32K
-  FLASH    (rx)    : ORIGIN = 0x08000000,   LENGTH = 1024K
+  /* Main OS starts after 64 KB Bootloader (Sectors 0..3) at Sector 4 (0x08010000) */
+  FLASH    (rx)  : ORIGIN = 0x08010000,   LENGTH = 960K
   EXTSRAM  (xrw)    : ORIGIN = 0x68000000,   LENGTH = 1024K
 }
 

@@ -554,6 +554,15 @@ static bool Handle_File_Rpc(const char *line)
         return true;
     }
 
+    /* 13. System Reboot into Bootloader (for SD OTA): ESP32:SYS_REBOOT */
+    if (strstr(line, "SYS_REBOOT") != NULL)
+    {
+        Send_Raw_Line("STM32:FOK,0\n");
+        HAL_Delay(60U);
+        NVIC_SystemReset();
+        return true;
+    }
+
     return false;
 }
 

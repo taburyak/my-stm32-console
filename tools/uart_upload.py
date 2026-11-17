@@ -417,6 +417,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--no-run", dest="run", action="store_false", help="Save to SD card only without launching")
     ap.add_argument("--ram-only", action="store_true", help="Do not write to SD card; only run in RAM")
     ap.add_argument("--xmodem", action="store_true", help="Use standard XMODEM-1K CRC instead of zero-touch framed protocol")
+    ap.add_argument("--fw", type=pathlib.Path, default=None, help="Flash STM32 fw_update.bin via CLI fwupdate + XMODEM-1K")
     args = ap.parse_args(argv)
 
     if serial is None:
@@ -432,6 +433,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not f.is_file():
             print(f"Error: file not found: {f}", file=sys.stderr)
             return 1
+
+    if args.fw is not None:
+        if not args.fw.is_file():
+            print(f"Error: firmware file not found: {args.fw}", file=sys.stderr)
+            return 1
+        fw_bytes = args.fw.read_bytes()
+        if len(fw_bytes) < 64 or fw_bytes[:4] != b"4WFU":
+            print("Error: invalid fw_update.bin (missing 4WFU header).", file=sys.stderr)
+            return 1
+        print(f"[uart_upload] Opening {port} @ {args.baud} baud for STM32 FW update ({len(fw_bytes)} B)...")
+        with serial.Serial(port=port, baudrate=args.baud, timeout=3.0) as ser:
+            ser.reset_input_buffer()
+            ser.write(b"\r\nfwupdate\r\n")
+            ser.flush()
+            t0 = time.monotonic()
+            banner = bytearray()
+            while (time.monotonic() - t0) < 3.0:
+                ch = ser.read(1)
+                if ch:
+                    banner.extend(ch)
+                    if b"timeout)..." in banner:
+                        break
+            return 0 if upload_xmodem(ser, fw_bytes) else 1
 
     # Build ordered list of batch operations to run over a single serial session
     ops: List[tuple] = []

@@ -167,3 +167,69 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
     # Add user defined libraries
 )
+
+# --------------------------------------------------------------------------
+# Bootloader (0x08000000, 64 KB) + OTA Package (fw_update.bin) + Full Image
+# --------------------------------------------------------------------------
+set(BOOT_TARGET console_bootloader)
+add_executable(${BOOT_TARGET}
+    bootloader/Src/boot_main.c
+    bootloader/Src/boot_sd_diskio.c
+    Libs/ILI9341/src/ili9341_simple.c
+    Core/Src/system_stm32f4xx.c
+    Core/Src/syscalls.c
+    Core/Src/sysmem.c
+    startup_stm32f407xx.s
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_sd.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_ll_sdmmc.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_sram.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_ll_fsmc.c
+    Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c
+    Middlewares/Third_Party/FatFs/src/diskio.c
+    Middlewares/Third_Party/FatFs/src/ff.c
+    Middlewares/Third_Party/FatFs/src/ff_gen_drv.c
+    Middlewares/Third_Party/FatFs/src/option/ccsbcs.c
+)
+target_include_directories(${BOOT_TARGET} PRIVATE
+    bootloader/Inc
+    Core/Inc
+    Libs/ILI9341/inc
+    Middlewares/Third_Party/FatFs/src
+    Drivers/STM32F4xx_HAL_Driver/Inc
+    Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+    Drivers/CMSIS/Device/ST/STM32F4xx/Include
+    Drivers/CMSIS/Include
+)
+target_compile_definitions(${BOOT_TARGET} PRIVATE
+    USE_HAL_DRIVER
+    STM32F407xx
+    BOOTLOADER_BUILD
+)
+target_compile_options(${BOOT_TARGET} PRIVATE -Os)
+
+set(BOOT_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/bootloader/STM32F407ZG_boot.ld")
+set_target_properties(${BOOT_TARGET} PROPERTIES LINK_FLAGS "-T${BOOT_LINKER_SCRIPT}")
+set_property(TARGET ${BOOT_TARGET} APPEND PROPERTY LINK_DEPENDS "${BOOT_LINKER_SCRIPT}")
+target_link_libraries(${BOOT_TARGET} ${TOOLCHAIN_LINK_LIBRARIES})
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}> "${CMAKE_BINARY_DIR}/my-stm32-console.bin"
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${BOOT_TARGET}> "${CMAKE_BINARY_DIR}/console_bootloader.bin"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/pack_fw.py"
+            "${CMAKE_BINARY_DIR}/my-stm32-console.bin" "${CMAKE_BINARY_DIR}/fw_update.bin"
+    COMMAND ${Python3_EXECUTABLE} -c "import pathlib; b=pathlib.Path('${CMAKE_BINARY_DIR}/console_bootloader.bin').read_bytes().ljust(65536, b'\\xff'); a=pathlib.Path('${CMAKE_BINARY_DIR}/my-stm32-console.bin').read_bytes(); pathlib.Path('${CMAKE_BINARY_DIR}/console_full.bin').write_bytes(b+a)"
+    COMMENT "Generating fw_update.bin and console_full.bin"
+)
+add_dependencies(${CMAKE_PROJECT_NAME} ${BOOT_TARGET})

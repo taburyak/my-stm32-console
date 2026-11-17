@@ -6,6 +6,8 @@
 #include "usb_host_manager.h"
 #include "esp_companion.h"
 #include "console_abi.h"
+#include "fw_update.h"
+#include "stm32f4xx_ll_usart.h"
 #include "cmsis_os2.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -187,6 +189,7 @@ static void cmd_help(void)
         "  temp                   Read MCU, DS18B20 & outdoor temperatures\r\n"
         "  shot                   Capture 320x240 screenshot to SD\r\n"
         "  esp <status|wifi|wth|sync>  Query/sync ESP32-C6 companion\r\n"
+        "  fwupdate               Receive fw_update.bin via XMODEM-CRC/1K and flash\r\n"
         "  reboot                 Reset console\r\n"
     );
 }
@@ -578,6 +581,195 @@ static void cmd_esp(const char *arg)
     }
 }
 
+static uint16_t cli_crc16(const uint8_t *buf, uint32_t len)
+{
+    uint16_t crc = 0U;
+    for (uint32_t i = 0U; i < len; i++)
+    {
+        crc ^= (uint16_t)buf[i] << 8;
+        for (uint8_t b = 0U; b < 8U; b++)
+        {
+            crc = (crc & 0x8000U) ? (uint16_t)((crc << 1) ^ 0x1021U) : (uint16_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+static uint32_t cli_crc32_update(uint32_t crc, const uint8_t *buf, uint32_t len)
+{
+    crc = ~crc;
+    for (uint32_t i = 0U; i < len; i++)
+    {
+        crc ^= buf[i];
+        for (uint8_t b = 0U; b < 8U; b++)
+        {
+            crc = (crc & 1U) ? ((crc >> 1) ^ 0xEDB88320UL) : (crc >> 1);
+        }
+    }
+    return ~crc;
+}
+
+static bool cli_uart3_getc(uint8_t *out, uint32_t timeout_ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while ((HAL_GetTick() - t0) < timeout_ms)
+    {
+        if (LL_USART_IsActiveFlag_ORE(USART3)) LL_USART_ClearFlag_ORE(USART3);
+        if (LL_USART_IsActiveFlag_RXNE(USART3))
+        {
+            *out = LL_USART_ReceiveData8(USART3);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void cmd_fwupdate(void)
+{
+    if (!SDCard_IsMounted())
+    {
+        cli_puts("ERR: SD card not mounted (hold KEY0 on boot for SD-less Rescue DFU)\r\n");
+        return;
+    }
+
+    cli_puts("Ready for xmodem-1k fw_update.bin (30s timeout)...\r\n");
+    osDelay(20);
+
+    (void)f_mkdir("system");
+    static FIL f;
+    if (f_open(&f, FW_UPDATE_SD_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+    {
+        cli_puts("ERR: cannot open SD:/system/fw_update.bin\r\n");
+        return;
+    }
+
+    HAL_NVIC_DisableIRQ(USART3_IRQn);
+    while (LL_USART_IsActiveFlag_RXNE(USART3)) (void)LL_USART_ReceiveData8(USART3);
+
+    uint8_t first = 0U;
+    bool started = false;
+    for (uint32_t tries = 0U; tries < 30U; tries++)
+    {
+        cli_putc('C');
+        if (cli_uart3_getc(&first, 1000U))
+        {
+            started = true;
+            break;
+        }
+    }
+
+    bool ok = started;
+    uint8_t expected_blk = 1U;
+    uint32_t total_rx = 0U;
+    static uint8_t pkt[1024U + 4U];
+
+    while (ok)
+    {
+        if (first == 0x04U) /* EOT */
+        {
+            cli_putc(0x06U);
+            break;
+        }
+        if (first == 0x18U) /* CAN */
+        {
+            ok = false;
+            break;
+        }
+        uint32_t blk_sz = (first == 0x02U) ? 1024U : ((first == 0x01U) ? 128U : 0U);
+        if (blk_sz == 0U)
+        {
+            ok = false;
+            break;
+        }
+
+        bool got_pkt = true;
+        for (uint32_t i = 0U; i < blk_sz + 4U; i++)
+        {
+            if (!cli_uart3_getc(&pkt[i], 1500U))
+            {
+                got_pkt = false;
+                break;
+            }
+        }
+        if (!got_pkt || (uint8_t)(pkt[0] + pkt[1]) != 0xFFU ||
+            cli_crc16(&pkt[2], blk_sz) != (((uint16_t)pkt[blk_sz + 2U] << 8) | pkt[blk_sz + 3U]))
+        {
+            cli_putc(0x15U); /* NAK */
+            if (!cli_uart3_getc(&first, 2000U)) ok = false;
+            continue;
+        }
+
+        if (pkt[0] == expected_blk)
+        {
+            UINT bw = 0U;
+            if (f_write(&f, &pkt[2], (UINT)blk_sz, &bw) != FR_OK || bw != blk_sz)
+            {
+                cli_putc(0x18U);
+                ok = false;
+                break;
+            }
+            total_rx += blk_sz;
+            expected_blk++;
+        }
+        cli_putc(0x06U); /* ACK */
+        if (!cli_uart3_getc(&first, 3000U)) ok = false;
+    }
+
+    (void)f_close(&f);
+    __HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
+
+    if (!ok || total_rx < sizeof(FwUpdate_Header_t))
+    {
+        (void)f_unlink(FW_UPDATE_SD_PATH);
+        cli_puts("\r\nERR: XMODEM transfer failed.\r\n");
+        return;
+    }
+
+    /* Verify 4WFU header & CRC-32 before rebooting */
+    if (f_open(&f, FW_UPDATE_SD_PATH, FA_READ) != FR_OK)
+    {
+        cli_puts("\r\nERR: cannot re-open fw_update.bin\r\n");
+        return;
+    }
+    FwUpdate_Header_t hdr;
+    UINT br = 0U;
+    if (f_read(&f, &hdr, sizeof(hdr), &br) != FR_OK || br != sizeof(hdr) ||
+        hdr.magic != FW_UPDATE_MAGIC || hdr.header_size != FW_UPDATE_HDR_SIZE ||
+        hdr.image_size == 0U || hdr.image_size > FW_UPDATE_MAX_SIZE ||
+        hdr.target_addr != FW_UPDATE_APP_ADDR)
+    {
+        (void)f_close(&f);
+        (void)f_unlink(FW_UPDATE_SD_PATH);
+        cli_puts("\r\nERR: invalid 4WFU header!\r\n");
+        return;
+    }
+
+    uint32_t crc = 0U;
+    uint32_t rem = hdr.image_size;
+    while (rem > 0U)
+    {
+        UINT chunk = (rem > 1024U) ? 1024U : (UINT)rem;
+        if (f_read(&f, pkt, chunk, &br) != FR_OK || br != chunk) break;
+        crc = cli_crc32_update(crc, pkt, br);
+        rem -= br;
+    }
+    (void)f_close(&f);
+
+    if (rem != 0U || crc != hdr.crc32)
+    {
+        (void)f_unlink(FW_UPDATE_SD_PATH);
+        printf("\r\nERR: CRC mismatch (got 0x%08lX, exp 0x%08lX)\r\n",
+               (unsigned long)crc, (unsigned long)hdr.crc32);
+        return;
+    }
+
+    printf("\r\nVerified %lu B (v%s). Rebooting into Bootloader...\r\n",
+           (unsigned long)hdr.image_size, hdr.version);
+    osDelay(60);
+    NVIC_SystemReset();
+}
+
 static void cli_exec(char *line)
 {
     const char *p = skip_ws(line);
@@ -642,6 +834,10 @@ static void cli_exec(char *line)
     else if (str_eq_ci(cmd, "esp"))
     {
         cmd_esp(arg);
+    }
+    else if (str_eq_ci(cmd, "fwupdate"))
+    {
+        cmd_fwupdate();
     }
     else if (str_eq_ci(cmd, "reboot"))
     {
