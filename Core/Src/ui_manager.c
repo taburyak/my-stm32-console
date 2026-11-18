@@ -124,7 +124,7 @@ CCMRAM_BUF static char s_wallpaper_path[STORAGE_MAX_PATH_LEN];
 CCMRAM_BUF static char s_preview_path[STORAGE_MAX_PATH_LEN];
 
 /* Games launcher: built-in ROM game + games/<name>.bin tiles with optional games/<name>.bmp icons */
-#define GAMES_MAX_TILES       16U
+#define GAMES_MAX_TILES       24U
 #define GAME_ICON_SIZE        64
 #define GAME_ICON_SLOT_BYTES  ((uint32_t)GAME_ICON_SIZE * (uint32_t)GAME_ICON_SIZE * 2UL)
 _Static_assert(GAMES_MAX_TILES * GAME_ICON_SLOT_BYTES <= MM_EXT_IMAGE_BUF_SIZE, "Game icons exceed the ext SRAM image buffer");

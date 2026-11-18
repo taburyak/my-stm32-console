@@ -102,7 +102,11 @@ static void Send_Raw_Line(const char *str)
     if (str == NULL) return;
     size_t len = strlen(str);
     if (len == 0U) return;
-    huart6.gState = HAL_UART_STATE_READY;
+    uint32_t t0 = HAL_GetTick();
+    while (huart6.gState != HAL_UART_STATE_READY && (HAL_GetTick() - t0) < 25U)
+    {
+        /* Yield briefly if another RTOS task (e.g. SandboxTask vs GuiRenderTask) is mid-TX */
+    }
     if (HAL_UART_Transmit(&huart6, (const uint8_t *)str, (uint16_t)len, 100U) == HAL_OK)
     {
         s_tx_packets++;
@@ -816,11 +820,7 @@ void ESPCompanion_Poll(void)
 
         if (len > 0)
         {
-            huart6.gState = HAL_UART_STATE_READY;
-            if (HAL_UART_Transmit(&huart6, (uint8_t *)s_tx_buf, (uint16_t)len, 10U) == HAL_OK)
-            {
-                s_tx_packets++;
-            }
+            Send_Raw_Line(s_tx_buf);
         }
     }
 }
