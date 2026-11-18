@@ -9,8 +9,8 @@
 /* ==========================================================================
  * 1. Memory Sandbox Definitions
  * ========================================================================== */
-#define SDK_CODE_BASE_ADDR      0x20018000UL /* 28 KB 0-WS internal SRAM: code + data + BSS */
-#define SDK_CODE_MAX_SIZE       (28UL * 1024UL)
+#define SDK_CODE_BASE_ADDR      0x20010000UL /* 60 KB 0-WS internal SRAM: code + data + BSS */
+#define SDK_CODE_MAX_SIZE       (60UL * 1024UL)
 #define SDK_STACK_SIZE          (4UL * 1024UL) /* App stack, provided by the OS */
 #define SDK_EXT_RAM_BASE_ADDR   0x68080000UL /* 512 KB External FSMC SRAM for App Data */
 

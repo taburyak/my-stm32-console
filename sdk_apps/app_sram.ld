@@ -2,8 +2,8 @@ ENTRY(_sdk_entry)
 
 MEMORY
 {
-    /* 28 KB 0-WS internal SRAM for code, constants, data & BSS (top 4 KB of the 32 KB sandbox is the task stack) */
-    APP_RAM (xrw) : ORIGIN = 0x20018000, LENGTH = 28K
+    /* 60 KB 0-WS internal SRAM for code, constants, data & BSS (top 4 KB of the 64 KB sandbox is the task stack) */
+    APP_RAM (xrw) : ORIGIN = 0x20010000, LENGTH = 60K
     /* 512 KB External FSMC SRAM for Large Game Buffers & Assets */
     EXT_RAM (rw)  : ORIGIN = 0x68080000, LENGTH = 512K
 }

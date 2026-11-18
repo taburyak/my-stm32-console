@@ -33,15 +33,19 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 - [x] `ESP32-C6-LCD-1.47` Wi-Fi 6 Companion Co-Processor on `USART6` (`PC6`/`PC7` @ `921600` baud, circular DMA RX + flow-controlled binary streaming): 3-page status HUD + Dual-Screen Game HUD & WS2812 RGB LED API (`SDK_SVC_ESP_CTL` / C-Script `esp_hud_*`, `esp_led`, `weather_temp`), plus **Web Studio (`http://stm32-console.local`)** with SD Explorer, universal editor, inline image viewer, live screen capture, and virtual web gamepad.
 - [x] **Idle Screensaver / Desk Weather Clock** (`UI_SCREEN_SCREENSAVER` + `ESP32-C6` `STANDBY WEATHER`): configurable timeout (`Off` / `1m` / `3m` / `5m` / `10m` persisted in `AT24C02` EEPROM v3), tracks keyboard/mouse/touch/gamepad/board-keys + Web Studio activity, shows large `28px` clock, date/weekday, `Open-Meteo` weather (when online) and `DS18B20` + `MCU` temperatures, dims `ESP32-C6` backlight via `STM32:IDLE,1`/`0`, and consumes wake events cleanly via `lv_indev_wait_release()`.
 - [x] **Interactive PC Terminal CLI over `USART3`** (`115200` 8N1, alongside `"UPLD!\n"` binary loader; `Core/Src/uart_cli.c`):
-  - Human-friendly text shell (`help` / `-help` / `/help`, `pwd`, `cd [dir]`, `ls [dir]`, `cat <file>`, `rm <file>`, `run <app>`, `stop`, `sysinfo`, `temp`, `shot`, `fwupdate`, `reboot`) usable from any serial terminal (PuTTY, Tera Term, VS Code Serial Monitor).
-  - `esp <status|wifi|wth|sync>` bridge command to query/sync the ESP32-C6 companion directly from the PC serial terminal.
+  - Human-friendly text shell with 8-entry Up/Down arrow history, `Ctrl+C` / `Ctrl+L` / `clear`, file management (`pwd`, `cd`, `ls`, `mkdir`, `cp`, `mv`, `rm`, `cat`, `rx` XMODEM-CRC/1K), memory & disk report (`df` / `mem`), app control (`run`, `stop`), diagnostics (`sysinfo`, `temp`, `shot`), `fwupdate`, and `reboot`.
+  - `esp <status|wifi [ssid pass]|wth|sync|speedtest>` bridge command to query/configure/benchmark the ESP32-C6 companion directly from the PC serial terminal.
 - [x] **Firmware Update Architecture (Wi-Fi OTA & Serial Terminal DFU)**:
   - **ESP32-C6 Companion OTA**: `min_spiffs.csv` dual-OTA partition table (`1.9 MB` × 2 slots) + `POST /api/ota/esp32` with live ST7789 progress bar and `⚡ OTA` modal in Web Studio.
-  - **STM32F407 Console Bootloader & OTA/UART DFU** (`bootloader/`): 23 KB bare-metal bootloader in Flash Sectors 0–3 (`0x08000000`, 64 KB) with polling SDIO/FatFs + ILI9341 progress UI; validates `SD:/system/fw_update.bin` (`4WFU` header + IEEE `CRC-32` via `tools/pack_fw.py`) before erasing Sectors 4–11 (`0x08010000`, 960 KB); supports Wi-Fi staging from Web Studio (`POST /api/sys/reboot`), `fwupdate` XMODEM-1K CLI / `tools/uart_upload.py --fw`, and `KEY0` SD-less UART3 Rescue DFU.
+  - **STM32F407 Console Bootloader & OTA/UART DFU** (`bootloader/`): 23 KB bare-metal bootloader in Flash Sectors 0–3 (`0x08000000`, 64 KB) with polling SDIO/FatFs + landscape ILI9341 progress UI; validates `SD:/system/fw_update.bin` (`4WFU` header + IEEE `CRC-32` via `tools/pack_fw.py`) before erasing Sectors 4–11 (`0x08010000`, 960 KB); supports Wi-Fi staging from Web Studio (`POST /api/sys/reboot`), `fwupdate` XMODEM-1K CLI / `tools/uart_upload.py --fw`, and `KEY0` SD-less UART3 Rescue DFU.
+- [x] **Memory step M2-a (LVGL 128 KB pool in External SRAM + 64 KB 0-WS App Sandbox, SDK API v4)**:
+  - Moved LVGL widget heap (`LV_MEM_ADR = 0x68040000`, `128 KB`) to External FSMC SRAM, dropping internal OS `RAM` utilization to ~50% (`32 KB / 64 KB`).
+  - Expanded 0-WS internal SRAM `APP_RAM` sandbox from `32 KB` to **`64 KB`** (`0x20010000..0x2001FFFF`: `60 KB` code+data+bss + `4 KB` stack, MPU Region 2 `64 KB`), doubled C-Script VM capacity (`4096` tokens, `384` idents, `64` functions), and preserved transparent loader compatibility with legacy SDK v1–v3 `.bin` binaries linked at `0x20018000`.
 
 ## Next
 
-- [ ] Memory step M2-a (LVGL pool to external SRAM, 64 KB app sandbox) when needed.
+- [ ] Widget Tile #4 (`Reserved` slot on Home Page 2): Clock / Timer & Stopwatch or Notes / Todo app.
+- [ ] `W25Q128` 16 MB SPI Flash library / LittleFS (`/flash`) for SD-less pinned games & wallpapers.
 
 ## Later
 

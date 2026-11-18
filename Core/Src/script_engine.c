@@ -11,16 +11,16 @@
  *   - All hardware interaction goes through standard SDK SVC system calls.
  * ========================================================================== */
 
-#define MAX_TOKENS        2048U
-#define MAX_IDENTS        224U
+#define MAX_TOKENS        4096U
+#define MAX_IDENTS        384U
 #define MAX_IDENT_LEN     20U
-#define MAX_GLOBALS       128U
-#define MAX_LOCALS        64U
-#define MAX_FUNCS         32U
+#define MAX_GLOBALS       192U
+#define MAX_LOCALS        96U
+#define MAX_FUNCS         64U
 #define MAX_PARAMS        8U
 #define MAX_CALL_DEPTH    24U
 #define MAX_LOOP_DEPTH    16U
-#define MAX_STR_POOL      2048U
+#define MAX_STR_POOL      4096U
 
 typedef enum {
     TOK_EOF = 0,
@@ -122,7 +122,7 @@ typedef enum {
 } FlowState_t;
 
 typedef struct {
-    /* Tokenizer & symbol tables (ALL in 0-WS Internal SRAM sandbox 0x20018000!) */
+    /* Tokenizer & symbol tables (in 0-WS Internal SRAM sandbox 0x20010000) */
     Token_t   tokens[MAX_TOKENS];
     uint32_t  num_tokens;
     char      idents[MAX_IDENTS][MAX_IDENT_LEN];
@@ -130,7 +130,7 @@ typedef struct {
     char      str_pool[MAX_STR_POOL];
     uint32_t  str_pool_used;
 
-    /* Variables & functions (in 0-WS Internal SRAM sandbox 0x20018000!) */
+    /* Variables & functions (in 0-WS Internal SRAM sandbox 0x20010000) */
     VarSlot_t globals[MAX_GLOBALS];
     uint16_t  num_globals;
     int16_t   global_ById[MAX_IDENTS]; /* O(1) lookup: ident_id -> globals[] index, or -1 */
@@ -159,7 +159,7 @@ typedef struct {
     char        fmt_buf[96];
 } ScriptVM_t;
 
-_Static_assert(sizeof(ScriptVM_t) <= SCRIPT_VM_INTERNAL_MAX, "ScriptVM_t exceeds 28 KB internal sandbox");
+_Static_assert(sizeof(ScriptVM_t) <= SCRIPT_VM_INTERNAL_MAX, "ScriptVM_t exceeds 60 KB internal sandbox");
 
 #define VM     ((ScriptVM_t *)SCRIPT_VM_INTERNAL_ADDR)
 #define TOKENS (VM->tokens)

@@ -12,7 +12,7 @@ The console embeds a sandboxed C interpreter ([Core/Src/script_engine.c](../Core
 - **Zero compilation step**: Copy any `.c` text file to `/games/<name>.c` on the MicroSD card. It immediately appears as a cyan tile in the **Games Hub** and can also be launched from the **SD File Explorer**.
 - **Hardware-enforced MPU sandbox**: The script runs inside the unprivileged `SandboxTask` (`CONTROL.nPRIV = 1`). All hardware access goes through the exact same `SVC` system calls and syscall gate as compiled `.bin` SDK apps.
 - **Fast 0-WS execution**:
-  - The interpreter state (`ScriptVM_t`: token stream, symbol tables, variables, call stack) resides in the 28 KB 0-Wait-State internal SRAM sandbox (`0x20018000..0x2001EFFF`), eliminating FSMC bus contention during LCD rendering.
+  - The interpreter state (`ScriptVM_t`: token stream, symbol tables, variables, call stack) resides in the 60 KB 0-Wait-State internal SRAM sandbox (`0x20010000..0x2001EFFF`), eliminating FSMC bus contention during LCD rendering.
   - Script source text (`0x68080000`, up to 64 KB) and user arrays (`0x680D0000`, up to 192 KB) reside in external FSMC SRAM.
 
 ---
@@ -79,7 +79,7 @@ All scalar variables are stored as signed 32-bit integers (`int32_t`), while arr
   - `do { ... } while (...);`
   - `for (int i = 0; i < N; i++) { ... }`
   - `break;`, `continue;`, `return;`, `return expr;`
-- **User functions** (up to 32 functions, up to 8 parameters each, recursion supported up to depth 24):
+- **User functions** (up to 64 functions, up to 8 parameters each, recursion supported up to depth 24):
   ```c
   int clamp_x(int x, int w) {
       if (x < 0) return 0;
@@ -92,11 +92,11 @@ All scalar variables are stored as signed 32-bit integers (`int32_t`), while arr
 | Resource | Limit | Location |
 |----------|-------|----------|
 | Script source file size | 64 KB | `0x68080000` (External SRAM) |
-| Tokens (`MAX_TOKENS`) | 2048 | `0x20018000` (Internal 0-WS SRAM) |
-| Unique identifiers (`MAX_IDENTS`) | 224 (up to 19 chars) | `0x20018000` (Internal 0-WS SRAM) |
-| Global variables (`MAX_GLOBALS`) | 128 | `0x20018000` (Internal 0-WS SRAM) |
-| Active local variables (`MAX_LOCALS`) | 64 | `0x20018000` (Internal 0-WS SRAM) |
-| User functions (`MAX_FUNCS`) | 32 | `0x20018000` (Internal 0-WS SRAM) |
+| Tokens (`MAX_TOKENS`) | 4096 | `0x20010000` (Internal 0-WS SRAM) |
+| Unique identifiers (`MAX_IDENTS`) | 384 (up to 19 chars) | `0x20010000` (Internal 0-WS SRAM) |
+| Global variables (`MAX_GLOBALS`) | 192 | `0x20010000` (Internal 0-WS SRAM) |
+| Active local variables (`MAX_LOCALS`) | 96 | `0x20010000` (Internal 0-WS SRAM) |
+| User functions (`MAX_FUNCS`) | 64 | `0x20010000` (Internal 0-WS SRAM) |
 | User array arena | 192 KB | `0x680D0000` (External SRAM) |
 
 If a syntax or runtime error occurs (e.g. undefined variable, array index out of bounds, missing semicolon), the engine displays a **`C-SCRIPT ERROR`** screen with the exact line number (`LINE: N`) and message. Press `ESC`, `A`, or `B` to return to the Games Hub.

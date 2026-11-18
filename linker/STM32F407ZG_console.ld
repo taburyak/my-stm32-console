@@ -11,11 +11,11 @@ ENTRY(Reset_Handler)
 /* Specify the memory areas */
 MEMORY
 {
-  CCMRAM    (xrw)    : ORIGIN = 0x10000000,   LENGTH = 64K
-  /* OS RAM; must match Core/Inc/memory_map.h (MM_APP_RAM_BASE) */
-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 96K
-  /* App sandbox (code + data + 4 KB task stack), filled at runtime by app_loader.c */
-  APP_RAM  (xrw)    : ORIGIN = 0x20018000,   LENGTH = 32K
+  CCMRAM   (xrw) : ORIGIN = 0x10000000,   LENGTH = 64K
+  /* OS RAM; must match Core/Inc/memory_map.h (MM_APP_RAM_BASE = 0x20010000) */
+  RAM      (xrw) : ORIGIN = 0x20000000,   LENGTH = 64K
+  /* App sandbox (60 KB code+data+bss + 4 KB task stack), filled at runtime by app_loader.c */
+  APP_RAM  (xrw) : ORIGIN = 0x20010000,   LENGTH = 64K
   /* Main OS starts after 64 KB Bootloader (Sectors 0..3) at Sector 4 (0x08010000) */
   FLASH    (rx)  : ORIGIN = 0x08010000,   LENGTH = 960K
   EXTSRAM  (xrw)    : ORIGIN = 0x68000000,   LENGTH = 1024K

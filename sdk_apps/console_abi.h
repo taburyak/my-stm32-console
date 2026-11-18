@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-#define SDK_API_VERSION         3U
+#define SDK_API_VERSION         4U
 
 #define SDK_SCREEN_W            320U
 #define SDK_SCREEN_H            240U

@@ -7,6 +7,9 @@
 #include "esp_companion.h"
 #include "console_abi.h"
 #include "fw_update.h"
+#include "memory_map.h"
+#include "ccmram.h"
+#include "lvgl.h"
 #include "stm32f4xx_ll_usart.h"
 #include "cmsis_os2.h"
 #include "FreeRTOS.h"
@@ -21,15 +24,21 @@ extern UART_HandleTypeDef huart3;
 #define CLI_RING_SIZE   128U
 #define CLI_LINE_MAX    128U
 #define CLI_CAT_LIMIT   8192U
+#define CLI_HIST_DEPTH  8U
 
 static volatile uint8_t  s_ring[CLI_RING_SIZE];
 static volatile uint16_t s_ring_head = 0U;
 static volatile uint16_t s_ring_tail = 0U;
 
 static char    s_line[CLI_LINE_MAX];
-static uint8_t s_line_len = 0U;
+static uint8_t s_line_len    = 0U;
 static bool    s_last_was_cr = false;
-static char    s_cwd[96] = "";
+static uint8_t s_esc_state   = 0U; /* 0=normal, 1=got ESC, 2=got ESC [ */
+static char    s_cwd[96]     = "";
+
+CCMRAM_BUF static char s_hist[CLI_HIST_DEPTH][CLI_LINE_MAX];
+static uint8_t s_hist_count = 0U;
+static int8_t  s_hist_nav   = -1;
 
 static void cli_puts(const char *s)
 {
@@ -176,21 +185,22 @@ static void resolve_sd_path(const char *in, char *out, size_t max_len)
 static void cmd_help(void)
 {
     cli_puts(
-        "STM32 Console CLI Commands:\r\n"
+        "STM32 Console CLI Commands (Up/Down = history, Ctrl+L = clear):\r\n"
         "  help | -help | /help   Show this help\r\n"
-        "  pwd                    Print current SD directory\r\n"
-        "  cd [dir]               Change SD directory (supports .. and /)\r\n"
+        "  pwd / cd [dir]         Print or change SD directory (.. and /)\r\n"
         "  ls [dir]               List SD directory (default: cwd)\r\n"
-        "  cat <file>             Print text file from SD (max 8 KB)\r\n"
+        "  mkdir <dir>            Create directory on SD\r\n"
+        "  cp <src> <dst>         Copy file on SD\r\n"
+        "  mv <src> <dst>         Rename or move file/folder on SD\r\n"
         "  rm <file>              Delete file or empty dir on SD\r\n"
-        "  run <app>              Run .bin/.c app (e.g. 'run tetris' or 'run /games/tetris.bin')\r\n"
-        "  stop                   Stop running app/script\r\n"
-        "  sysinfo                Firmware, heap, SD, USB & companion info\r\n"
-        "  temp                   Read MCU, DS18B20 & outdoor temperatures\r\n"
-        "  shot                   Capture 320x240 screenshot to SD\r\n"
-        "  esp <status|wifi|wth|sync>  Query/sync ESP32-C6 companion\r\n"
-        "  fwupdate               Receive fw_update.bin via XMODEM-CRC/1K and flash\r\n"
-        "  reboot                 Reset console\r\n"
+        "  cat <file>             Print text file from SD (max 8 KB)\r\n"
+        "  rx <file>              Receive file into SD via XMODEM-CRC/1K\r\n"
+        "  df | mem               Detailed RAM, LVGL pool, heap & SD usage\r\n"
+        "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
+        "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
+        "  esp <status|wifi [ssid pass]|wth|sync|speedtest>\r\n"
+        "  fwupdate               Receive fw_update.bin via XMODEM-1K and flash\r\n"
+        "  clear | reboot         Clear terminal or reset console\r\n"
     );
 }
 
@@ -369,6 +379,190 @@ static void cmd_rm(const char *arg)
     }
 }
 
+static bool split_two_args(const char *arg, char *a1, size_t max1, char *a2, size_t max2)
+{
+    const char *p = skip_ws(arg);
+    if (*p == '\0') return false;
+
+    size_t i = 0U;
+    if (*p == '"')
+    {
+        p++;
+        while (*p != '\0' && *p != '"' && i + 1U < max1) a1[i++] = *p++;
+        if (*p == '"') p++;
+    }
+    else
+    {
+        while (*p != '\0' && *p != ' ' && *p != '\t' && i + 1U < max1) a1[i++] = *p++;
+    }
+    a1[i] = '\0';
+
+    p = skip_ws(p);
+    if (*p == '\0')
+    {
+        a2[0] = '\0';
+        return false;
+    }
+
+    size_t j = 0U;
+    if (*p == '"')
+    {
+        p++;
+        while (*p != '\0' && *p != '"' && j + 1U < max2) a2[j++] = *p++;
+    }
+    else
+    {
+        while (*p != '\0' && j + 1U < max2) a2[j++] = *p++;
+        while (j > 0U && (a2[j - 1U] == ' ' || a2[j - 1U] == '\t')) j--;
+    }
+    a2[j] = '\0';
+    return (a1[0] != '\0' && a2[0] != '\0');
+}
+
+static void cmd_mkdir(const char *arg)
+{
+    if (!SDCard_IsMounted())
+    {
+        cli_puts("ERR: SD card not mounted\r\n");
+        return;
+    }
+    char path[96];
+    resolve_sd_path(arg, path, sizeof(path));
+    if (path[0] == '\0')
+    {
+        cli_puts("Usage: mkdir <dir>\r\n");
+        return;
+    }
+    FRESULT res = f_mkdir(path);
+    if (res == FR_OK)
+    {
+        printf("Created '/%s'\r\n", path);
+    }
+    else
+    {
+        printf("ERR: f_mkdir('/%s') failed (FR=%d)\r\n", path, (int)res);
+    }
+}
+
+static void cmd_mv(const char *arg)
+{
+    if (!SDCard_IsMounted())
+    {
+        cli_puts("ERR: SD card not mounted\r\n");
+        return;
+    }
+    char raw_src[96], raw_dst[96], src[96], dst[96];
+    if (!split_two_args(arg, raw_src, sizeof(raw_src), raw_dst, sizeof(raw_dst)))
+    {
+        cli_puts("Usage: mv <src> <dst>\r\n");
+        return;
+    }
+    resolve_sd_path(raw_src, src, sizeof(src));
+    resolve_sd_path(raw_dst, dst, sizeof(dst));
+    FRESULT res = f_rename(src, dst);
+    if (res == FR_OK)
+    {
+        printf("Moved '/%s' -> '/%s'\r\n", src, dst);
+    }
+    else
+    {
+        printf("ERR: f_rename failed (FR=%d)\r\n", (int)res);
+    }
+}
+
+static void cmd_cp(const char *arg)
+{
+    if (!SDCard_IsMounted())
+    {
+        cli_puts("ERR: SD card not mounted\r\n");
+        return;
+    }
+    char raw_src[96], raw_dst[96], src[96], dst[96];
+    if (!split_two_args(arg, raw_src, sizeof(raw_src), raw_dst, sizeof(raw_dst)))
+    {
+        cli_puts("Usage: cp <src> <dst>\r\n");
+        return;
+    }
+    resolve_sd_path(raw_src, src, sizeof(src));
+    resolve_sd_path(raw_dst, dst, sizeof(dst));
+    if (strcmp(src, dst) == 0)
+    {
+        cli_puts("ERR: source and destination are identical\r\n");
+        return;
+    }
+
+    static FIL fs, fd;
+    __attribute__((aligned(4))) static uint8_t cbuf[512];
+    if (f_open(&fs, src, FA_READ) != FR_OK)
+    {
+        printf("ERR: cannot open '/%s'\r\n", src);
+        return;
+    }
+    if (f_open(&fd, dst, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+    {
+        (void)f_close(&fs);
+        printf("ERR: cannot create '/%s'\r\n", dst);
+        return;
+    }
+
+    uint32_t total = 0U;
+    bool ok = true;
+    for (;;)
+    {
+        UINT br = 0U, bw = 0U;
+        if (f_read(&fs, cbuf, sizeof(cbuf), &br) != FR_OK) { ok = false; break; }
+        if (br == 0U) break;
+        if (f_write(&fd, cbuf, br, &bw) != FR_OK || bw != br) { ok = false; break; }
+        total += bw;
+    }
+    (void)f_close(&fs);
+    (void)f_close(&fd);
+
+    if (ok)
+    {
+        printf("Copied '/%s' -> '/%s' (%lu B)\r\n", src, dst, (unsigned long)total);
+    }
+    else
+    {
+        (void)f_unlink(dst);
+        cli_puts("ERR: copy failed\r\n");
+    }
+}
+
+static void cmd_df(void)
+{
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    uint32_t lv_used = mon.total_size - mon.free_size;
+
+    printf("Int SRAM:   64 KB OS + 64 KB App Sandbox @ 0x%08lX (%lu KB img + %lu KB stk)\r\n",
+           (unsigned long)MM_APP_RAM_BASE,
+           (unsigned long)(MM_APP_IMAGE_MAX_SIZE / 1024UL),
+           (unsigned long)(MM_APP_STACK_SIZE / 1024UL));
+    printf("LVGL Pool:  %lu / %lu B used (%u%%, max %lu B, frag %u%%) @ 0x%08lX\r\n",
+           (unsigned long)lv_used, (unsigned long)mon.total_size,
+           (unsigned int)mon.used_pct, (unsigned long)mon.max_used,
+           (unsigned int)mon.frag_pct, (unsigned long)MM_EXT_LVGL_MEM_BASE);
+    printf("RTOS Heap:  %lu B free (min-ever %lu B) [15 KB CCM + %lu KB Ext]\r\n",
+           (unsigned long)xPortGetFreeHeapSize(),
+           (unsigned long)xPortGetMinimumEverFreeHeapSize(),
+           (unsigned long)(MM_EXT_OS_HEAP_SIZE / 1024UL));
+    printf("App ExtRAM: %lu KB @ 0x%08lX\r\n",
+           (unsigned long)(MM_EXT_APP_SIZE / 1024UL),
+           (unsigned long)MM_EXT_APP_BASE);
+
+    uint32_t total_mb = 0U, free_mb = 0U;
+    if (SDCard_IsMounted() && SDCard_GetFreeSpace(&total_mb, &free_mb))
+    {
+        printf("SD Card:    %lu MB free / %lu MB total\r\n",
+               (unsigned long)free_mb, (unsigned long)total_mb);
+    }
+    else
+    {
+        printf("SD Card:    %s\r\n", SDCard_IsMounted() ? "Mounted" : "Not mounted");
+    }
+}
+
 static void cmd_run(const char *arg)
 {
     if (AppLoader_IsRunning())
@@ -401,32 +595,32 @@ static void cmd_run(const char *arg)
     }
     else
     {
-        char cand[96];
+        char cand[160];
         bool found = false;
         if (s_cwd[0] != '\0')
         {
-            snprintf(cand, sizeof(cand), "%s/%s.bin", s_cwd, p);
+            snprintf(cand, sizeof(cand), "%.80s/%.64s.bin", s_cwd, p);
             if (f_stat(cand, &fno) == FR_OK)
             {
-                snprintf(target, sizeof(target), "%s", cand);
+                snprintf(target, sizeof(target), "%.95s", cand);
                 found = true;
             }
             else
             {
-                snprintf(cand, sizeof(cand), "%s/%s.c", s_cwd, p);
+                snprintf(cand, sizeof(cand), "%.80s/%.64s.c", s_cwd, p);
                 if (f_stat(cand, &fno) == FR_OK)
                 {
-                    snprintf(target, sizeof(target), "%s", cand);
+                    snprintf(target, sizeof(target), "%.95s", cand);
                     found = true;
                 }
             }
         }
         if (!found)
         {
-            snprintf(target, sizeof(target), "games/%s.bin", p);
+            snprintf(target, sizeof(target), "games/%.80s.bin", p);
             if (f_stat(target, &fno) != FR_OK)
             {
-                snprintf(target, sizeof(target), "games/%s.c", p);
+                snprintf(target, sizeof(target), "games/%.80s.c", p);
             }
         }
     }
@@ -544,13 +738,45 @@ static void cmd_esp(const char *arg)
                (unsigned long)ESPCompanion_GetTxPackets(),
                ESPCompanion_IsWifiConnected() ? "Connected" : "Disconnected");
     }
-    else if (str_eq_ci(sub, "wifi"))
+    else if (str_eq_ci(sub, "wifi") || strncmp(sub, "wifi ", 5) == 0 || strncmp(sub, "WIFI ", 5) == 0)
     {
-        printf("SSID: %s  IP: %s  RSSI: %d dBm  Status: %d\r\n",
-               ESPCompanion_GetWifiSsid(),
-               ESPCompanion_GetWifiIp(),
-               (int)ESPCompanion_GetWifiRssi(),
-               (int)ESPCompanion_GetWifiStatus());
+        const char *warg = skip_ws(sub + 4);
+        if (*warg == '\0')
+        {
+            printf("SSID: %s  IP: %s  RSSI: %d dBm  Status: %d\r\n",
+                   ESPCompanion_GetWifiSsid(),
+                   ESPCompanion_GetWifiIp(),
+                   (int)ESPCompanion_GetWifiRssi(),
+                   (int)ESPCompanion_GetWifiStatus());
+        }
+        else
+        {
+            char ssid[34] = {0}, pass[64] = {0};
+            if (!split_two_args(warg, ssid, sizeof(ssid), pass, sizeof(pass)))
+            {
+                snprintf(ssid, sizeof(ssid), "%.33s", warg);
+                pass[0] = '\0';
+            }
+            bool sd_saved = SDCard_IsMounted() && ESPCompanion_SaveWifiToSD(ssid, pass);
+            bool sent     = ESPCompanion_SendWifiCredentials(ssid, pass);
+            printf("Wi-Fi SSID='%s': SD=%s, ESP32=%s\r\n",
+                   ssid, sd_saved ? "saved" : "skip", sent ? "connecting" : "offline");
+        }
+    }
+    else if (str_eq_ci(sub, "speedtest") || str_eq_ci(sub, "spd"))
+    {
+        const ESP_SpeedTestInfo_t *spd = ESPCompanion_GetSpeedTest();
+        if (ESPCompanion_StartSpeedTest())
+        {
+            cli_puts("SpeedTest started on ESP32-C6 (run 'esp spd' again in ~3s for results)...\r\n");
+        }
+        if (spd != NULL && spd->state == 2U)
+        {
+            printf("Last SpeedTest: Ping=%u ms  Wi-Fi=%u.%u Mbps  UART6=%u.%u KB/s\r\n",
+                   (unsigned int)spd->ping_ms,
+                   (unsigned int)(spd->dl_kbps / 1000U), (unsigned int)((spd->dl_kbps % 1000U) / 100U),
+                   (unsigned int)(spd->link_kbs_x10 / 10U), (unsigned int)(spd->link_kbs_x10 % 10U));
+        }
     }
     else if (str_eq_ci(sub, "wth"))
     {
@@ -577,7 +803,7 @@ static void cmd_esp(const char *arg)
     }
     else
     {
-        cli_puts("Usage: esp <status|wifi|wth|sync>\r\n");
+        cli_puts("Usage: esp <status|wifi [ssid pass]|wth|sync|speedtest>\r\n");
     }
 }
 
@@ -624,23 +850,20 @@ static bool cli_uart3_getc(uint8_t *out, uint32_t timeout_ms)
     return false;
 }
 
-static void cmd_fwupdate(void)
+static bool is_text_ext(const char *path)
 {
-    if (!SDCard_IsMounted())
-    {
-        cli_puts("ERR: SD card not mounted (hold KEY0 on boot for SD-less Rescue DFU)\r\n");
-        return;
-    }
+    return ends_with_ci(path, ".c")   || ends_with_ci(path, ".h")   ||
+           ends_with_ci(path, ".txt") || ends_with_ci(path, ".md")  ||
+           ends_with_ci(path, ".ini") || ends_with_ci(path, ".cfg") ||
+           ends_with_ci(path, ".json")|| ends_with_ci(path, ".csv");
+}
 
-    cli_puts("Ready for xmodem-1k fw_update.bin (30s timeout)...\r\n");
-    osDelay(20);
-
-    (void)f_mkdir("system");
+static bool cli_receive_xmodem_to_file(const char *sd_path, bool strip_cpmeof, uint32_t *out_bytes)
+{
     static FIL f;
-    if (f_open(&f, FW_UPDATE_SD_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+    if (f_open(&f, sd_path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
     {
-        cli_puts("ERR: cannot open SD:/system/fw_update.bin\r\n");
-        return;
+        return false;
     }
 
     HAL_NVIC_DisableIRQ(USART3_IRQn);
@@ -661,7 +884,7 @@ static void cmd_fwupdate(void)
     bool ok = started;
     uint8_t expected_blk = 1U;
     uint32_t total_rx = 0U;
-    static uint8_t pkt[1024U + 4U];
+    __attribute__((aligned(4))) static uint8_t pkt[1024U + 4U];
 
     while (ok)
     {
@@ -694,24 +917,32 @@ static void cmd_fwupdate(void)
         if (!got_pkt || (uint8_t)(pkt[0] + pkt[1]) != 0xFFU ||
             cli_crc16(&pkt[2], blk_sz) != (((uint16_t)pkt[blk_sz + 2U] << 8) | pkt[blk_sz + 3U]))
         {
-            cli_putc(0x15U); /* NAK */
+            cli_putc(0x15U);
             if (!cli_uart3_getc(&first, 2000U)) ok = false;
             continue;
         }
 
         if (pkt[0] == expected_blk)
         {
+            uint32_t wr_len = blk_sz;
+            if (strip_cpmeof)
+            {
+                while (wr_len > 0U && pkt[2U + wr_len - 1U] == 0x1AU)
+                {
+                    wr_len--;
+                }
+            }
             UINT bw = 0U;
-            if (f_write(&f, &pkt[2], (UINT)blk_sz, &bw) != FR_OK || bw != blk_sz)
+            if (wr_len > 0U && (f_write(&f, &pkt[2], (UINT)wr_len, &bw) != FR_OK || bw != wr_len))
             {
                 cli_putc(0x18U);
                 ok = false;
                 break;
             }
-            total_rx += blk_sz;
+            total_rx += wr_len;
             expected_blk++;
         }
-        cli_putc(0x06U); /* ACK */
+        cli_putc(0x06U);
         if (!cli_uart3_getc(&first, 3000U)) ok = false;
     }
 
@@ -719,7 +950,59 @@ static void cmd_fwupdate(void)
     __HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
     HAL_NVIC_EnableIRQ(USART3_IRQn);
 
-    if (!ok || total_rx < sizeof(FwUpdate_Header_t))
+    if (!ok)
+    {
+        (void)f_unlink(sd_path);
+        return false;
+    }
+    if (out_bytes != NULL) *out_bytes = total_rx;
+    return true;
+}
+
+static void cmd_rx(const char *arg)
+{
+    if (!SDCard_IsMounted())
+    {
+        cli_puts("ERR: SD card not mounted\r\n");
+        return;
+    }
+    char path[96];
+    resolve_sd_path(arg, path, sizeof(path));
+    if (path[0] == '\0')
+    {
+        cli_puts("Usage: rx <dest_file>\r\n");
+        return;
+    }
+
+    printf("Ready for xmodem-1k -> '/%s' (30s timeout)...\r\n", path);
+    osDelay(20);
+
+    uint32_t bytes = 0U;
+    if (cli_receive_xmodem_to_file(path, is_text_ext(path), &bytes))
+    {
+        printf("\r\nSaved '/%s' (%lu B)\r\n", path, (unsigned long)bytes);
+    }
+    else
+    {
+        cli_puts("\r\nERR: XMODEM receive failed.\r\n");
+    }
+}
+
+static void cmd_fwupdate(void)
+{
+    if (!SDCard_IsMounted())
+    {
+        cli_puts("ERR: SD card not mounted (hold KEY0 on boot for SD-less Rescue DFU)\r\n");
+        return;
+    }
+
+    cli_puts("Ready for xmodem-1k fw_update.bin (30s timeout)...\r\n");
+    osDelay(20);
+
+    (void)f_mkdir("system");
+    uint32_t total_rx = 0U;
+    if (!cli_receive_xmodem_to_file(FW_UPDATE_SD_PATH, false, &total_rx) ||
+        total_rx < sizeof(FwUpdate_Header_t))
     {
         (void)f_unlink(FW_UPDATE_SD_PATH);
         cli_puts("\r\nERR: XMODEM transfer failed.\r\n");
@@ -727,6 +1010,8 @@ static void cmd_fwupdate(void)
     }
 
     /* Verify 4WFU header & CRC-32 before rebooting */
+    static FIL f;
+    __attribute__((aligned(4))) static uint8_t vbuf[1024];
     if (f_open(&f, FW_UPDATE_SD_PATH, FA_READ) != FR_OK)
     {
         cli_puts("\r\nERR: cannot re-open fw_update.bin\r\n");
@@ -749,9 +1034,9 @@ static void cmd_fwupdate(void)
     uint32_t rem = hdr.image_size;
     while (rem > 0U)
     {
-        UINT chunk = (rem > 1024U) ? 1024U : (UINT)rem;
-        if (f_read(&f, pkt, chunk, &br) != FR_OK || br != chunk) break;
-        crc = cli_crc32_update(crc, pkt, br);
+        UINT chunk = (rem > sizeof(vbuf)) ? (UINT)sizeof(vbuf) : (UINT)rem;
+        if (f_read(&f, vbuf, chunk, &br) != FR_OK || br != chunk) break;
+        crc = cli_crc32_update(crc, vbuf, br);
         rem -= br;
     }
     (void)f_close(&f);
@@ -803,6 +1088,18 @@ static void cli_exec(char *line)
     {
         cmd_ls(arg);
     }
+    else if (str_eq_ci(cmd, "mkdir"))
+    {
+        cmd_mkdir(arg);
+    }
+    else if (str_eq_ci(cmd, "mv"))
+    {
+        cmd_mv(arg);
+    }
+    else if (str_eq_ci(cmd, "cp"))
+    {
+        cmd_cp(arg);
+    }
     else if (str_eq_ci(cmd, "cat"))
     {
         cmd_cat(arg);
@@ -810,6 +1107,18 @@ static void cli_exec(char *line)
     else if (str_eq_ci(cmd, "rm"))
     {
         cmd_rm(arg);
+    }
+    else if (str_eq_ci(cmd, "rx"))
+    {
+        cmd_rx(arg);
+    }
+    else if (str_eq_ci(cmd, "df") || str_eq_ci(cmd, "mem") || str_eq_ci(cmd, "free"))
+    {
+        cmd_df();
+    }
+    else if (str_eq_ci(cmd, "clear") || str_eq_ci(cmd, "cls"))
+    {
+        cli_puts("\x1b[2J\x1b[H");
     }
     else if (str_eq_ci(cmd, "run"))
     {
@@ -877,6 +1186,44 @@ void UARTCli_Reset(void)
     s_ring_tail   = s_ring_head;
     s_line_len    = 0U;
     s_last_was_cr = false;
+    s_esc_state   = 0U;
+    s_hist_nav    = -1;
+}
+
+static void cli_hist_push(const char *cmd_line)
+{
+    if (cmd_line == NULL || cmd_line[0] == '\0') return;
+    if (s_hist_count > 0U && strcmp(s_hist[0], cmd_line) == 0) return;
+
+    uint8_t top = (s_hist_count < CLI_HIST_DEPTH) ? s_hist_count : (CLI_HIST_DEPTH - 1U);
+    for (uint8_t i = top; i > 0U; i--)
+    {
+        memcpy(s_hist[i], s_hist[i - 1U], CLI_LINE_MAX);
+    }
+    strncpy(s_hist[0], cmd_line, CLI_LINE_MAX - 1U);
+    s_hist[0][CLI_LINE_MAX - 1U] = '\0';
+    if (s_hist_count < CLI_HIST_DEPTH)
+    {
+        s_hist_count++;
+    }
+}
+
+static void cli_replace_line(const char *new_str)
+{
+    while (s_line_len > 0U)
+    {
+        s_line_len--;
+        cli_puts("\b \b");
+    }
+    if (new_str != NULL)
+    {
+        size_t n = strlen(new_str);
+        if (n >= CLI_LINE_MAX) n = CLI_LINE_MAX - 1U;
+        memcpy(s_line, new_str, n);
+        s_line[n] = '\0';
+        s_line_len = (uint8_t)n;
+        cli_puts(s_line);
+    }
 }
 
 void UARTCli_Poll(void)
@@ -891,6 +1238,62 @@ void UARTCli_Poll(void)
         uint8_t b = s_ring[s_ring_tail];
         s_ring_tail = (uint16_t)((s_ring_tail + 1U) % CLI_RING_SIZE);
 
+        /* ANSI Escape sequence parser for Up/Down Arrow history */
+        if (s_esc_state == 1U)
+        {
+            s_esc_state = (b == '[') ? 2U : 0U;
+            continue;
+        }
+        else if (s_esc_state == 2U)
+        {
+            s_esc_state = 0U;
+            if (b == 'A') /* Up Arrow */
+            {
+                if (s_hist_count > 0U && (s_hist_nav + 1) < (int8_t)s_hist_count)
+                {
+                    s_hist_nav++;
+                    cli_replace_line(s_hist[(uint8_t)s_hist_nav]);
+                }
+            }
+            else if (b == 'B') /* Down Arrow */
+            {
+                if (s_hist_nav > 0)
+                {
+                    s_hist_nav--;
+                    cli_replace_line(s_hist[(uint8_t)s_hist_nav]);
+                }
+                else if (s_hist_nav == 0)
+                {
+                    s_hist_nav = -1;
+                    cli_replace_line("");
+                }
+            }
+            continue;
+        }
+
+        if (b == 0x1BU) /* ESC */
+        {
+            s_esc_state = 1U;
+            continue;
+        }
+        if (b == 0x03U) /* Ctrl+C */
+        {
+            s_line_len    = 0U;
+            s_hist_nav    = -1;
+            s_last_was_cr = false;
+            cli_puts("^C\r\n");
+            cli_prompt();
+            continue;
+        }
+        if (b == 0x0CU) /* Ctrl+L */
+        {
+            s_line[s_line_len] = '\0';
+            cli_puts("\x1b[2J\x1b[H");
+            cli_prompt();
+            if (s_line_len > 0U) cli_puts(s_line);
+            continue;
+        }
+
         if (b == '\r' || b == '\n')
         {
             if (b == '\n' && s_last_was_cr)
@@ -901,8 +1304,10 @@ void UARTCli_Poll(void)
             s_last_was_cr = (b == '\r');
             cli_puts("\r\n");
             s_line[s_line_len] = '\0';
+            s_hist_nav = -1;
             if (s_line_len > 0U && strcmp(s_line, "UPLD!") != 0)
             {
+                cli_hist_push(s_line);
                 cli_exec(s_line);
             }
             s_line_len = 0U;

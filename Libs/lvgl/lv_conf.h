@@ -56,11 +56,12 @@
 #endif
 
 #if LV_MEM_CUSTOM == 0
+    #include "memory_map.h"
     /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)*/
-    #define LV_MEM_SIZE (48U * 1024U)          /* 48 KB in fast Internal SRAM */
+    #define LV_MEM_SIZE MM_EXT_LVGL_MEM_SIZE   /* 128 KB in External FSMC SRAM (M2-a) */
 
     /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
-    #define LV_MEM_ADR 0                       /* 0: allocate in Internal SRAM */
+    #define LV_MEM_ADR  MM_EXT_LVGL_MEM_BASE   /* 0x68040000..0x6805FFFF */
     /*Instead of an address give a memory allocator that will be called to get a memory pool for LVGL. E.g. my_malloc*/
     #if LV_MEM_ADR == 0
         #undef LV_MEM_POOL_INCLUDE

@@ -364,7 +364,10 @@ def upload_xmodem(ser: Any, payload: bytes) -> bool:
     while (time.monotonic() - t0) < 30.0:
         b = ser.read(1)
         if b == b"C":
-            break
+            time.sleep(0.025)
+            if ser.in_waiting == 0:
+                break
+            ser.read(ser.in_waiting)
     else:
         print("[uart_upload] Timeout waiting for XMODEM 'C' poll.", file=sys.stderr)
         return False
@@ -376,6 +379,7 @@ def upload_xmodem(ser: Any, payload: bytes) -> bool:
 
     seq = 1
     offset = 0
+    retries = 0
     while offset < len(padded):
         block = padded[offset : offset + blk_size]
         crc = crc16_ccitt(block)
@@ -387,11 +391,16 @@ def upload_xmodem(ser: Any, payload: bytes) -> bool:
         if resp == bytes([ACK]):
             offset += blk_size
             seq = (seq + 1) & 0xFF
+            retries = 0
             print(f"\r[uart_upload] XMODEM-1K {min(offset, len(payload))}/{len(payload)} bytes", end="", flush=True)
         elif resp == bytes([CAN]):
             print("\n[uart_upload] Cancelled by console.", file=sys.stderr)
             return False
         else:
+            retries += 1
+            if retries > 10:
+                print(f"\n[uart_upload] Aborting after {retries} retries on block {seq}.", file=sys.stderr)
+                return False
             print(f"\n[uart_upload] Retrying block {seq} (got {resp!r})...")
 
     ser.write(bytes([EOT]))

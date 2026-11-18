@@ -4,12 +4,13 @@ DIY retro game & developer console built on **STM32F407ZGT6** (168 MHz Cortex-M4
 
 ## Key Features
 
-- **RTOS & MPU Sandbox**: FreeRTOS multitasking (`GuiRenderTask`, `InputAudioTask`, `StorageIoTask` in 0-WS CCM RAM) + hardware **MPU** isolation for unprivileged native `.bin` SDK apps (`APP_RAM` 32 KB + `EXT_APP` 512 KB).
-- **Display & Touch UI**: LVGL 8.3 desktop on a 2.8" **ILI9341** 320×240 FSMC display with DMA2 double-buffered rendering, **XPT2046** 4-point touch calibration, 4 color themes, custom `.bmp` wallpapers, and a 2-page swipeable Home screen (`Launcher` + `Widgets`).
-- **On-Device & Web Development**:
+- **RTOS, Bootloader & 64 KB MPU Sandbox**: 64 KB bare-metal SD/XMODEM Bootloader (`0x08000000`) + FreeRTOS multitasking (`GuiRenderTask`, `InputAudioTask`, `StorageIoTask` in 0-WS CCM RAM) + hardware **MPU** isolation for unprivileged native `.bin` SDK apps (`APP_RAM` 64 KB @ `0x20010000` + `EXT_APP` 512 KB, backward-compatible with legacy SDK v1–v3 apps).
+- **Display & Touch UI**: LVGL 8.3 desktop (128 KB pool in External FSMC SRAM) on a 2.8" **ILI9341** 320×240 FSMC display with DMA2 rendering, **XPT2046** 4-point touch calibration, 4 color themes, custom `.bmp` wallpapers, Idle Weather/Clock Screensaver, and a 2-page swipeable 4-tile Home screen (`Launcher` + `Widgets`).
+- **On-Device, Terminal & Web Development**:
   - Built-in **C-Script interpreter** (`Core/Src/script_engine.c`) for running `.c` source games/tools directly from SD without a PC compiler.
   - On-console **SD File Manager & Code Editor** (new file/folder, rename, copy, move, delete, edit, save & run).
-  - Wireless **Web Studio (`http://stm32-console.local`)** via ESP32-C6 over `USART6` (`PC6`/`PC7` @ `921600` baud): live telemetry, SD explorer, universal text/code editor, inline `.bmp`/`.png`/`.jpg` image viewer, live screen capture (`📸 Capture Screen`), virtual web gamepad (`🎮 Gamepad`), wallpaper setter, and instant `Save & Run`.
+  - Interactive **PC Terminal CLI** over `USART3` (`115200` 8N1: command history, `ls`, `cd`, `mkdir`, `cp`, `mv`, `rm`, `cat`, `rx` XMODEM, `df`, `run`, `esp`, `fwupdate`).
+  - Wireless **Web Studio (`http://stm32-console.local`)** via ESP32-C6 over `USART6` (`PC6`/`PC7` @ `921600` baud): live telemetry, SD explorer, universal text/code editor, inline `.bmp`/`.png`/`.jpg` image viewer, live screen capture (`📸 Capture Screen`), virtual web gamepad (`🎮 Gamepad`), **Wi-Fi OTA updater (`⚡ OTA`)** for both ESP32-C6 and STM32F407, wallpaper setter, and instant `Save & Run`.
 - **Input & Peripherals**:
   - **USB Host (TinyUSB)**: USB HID Keyboard, Mouse (with live cursor), and Gamepad (`D-Pad` + dual analog sticks).
   - **Storage**: microSD card (`SDIO` 4-bit DMA + FatFs), `W25Q128` SPI Flash (16 MB), `AT24C02` I2C EEPROM (settings persistence).

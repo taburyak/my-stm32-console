@@ -155,10 +155,11 @@ static uint32_t AppLoader_Crc32(const uint8_t *data, uint32_t len)
     return crc ^ 0xFFFFFFFFUL;
 }
 
-/* Checks the image loaded at APP_SANDBOX_BASE_ADDR; sets s_last_error on failure */
-static bool AppLoader_ValidateImage(const SDK_AppHeader_t *hdr, uint32_t size)
+/* Checks the image loaded at APP_SANDBOX_BASE_ADDR; sets s_last_error on failure.
+ * Also supports legacy SDK v1..v3 apps linked at 0x20018000 by sliding them in-place. */
+static bool AppLoader_ValidateAndPlaceImage(uint32_t size, const SDK_AppHeader_t **out_hdr)
 {
-    const uint32_t base = APP_SANDBOX_BASE_ADDR;
+    const SDK_AppHeader_t *hdr = (const SDK_AppHeader_t *)APP_SANDBOX_BASE_ADDR;
 
     if (hdr->magic != SDK_APP_MAGIC)
     {
@@ -176,31 +177,54 @@ static bool AppLoader_ValidateImage(const SDK_AppHeader_t *hdr, uint32_t size)
         s_last_error = "Bad image header";
         return false;
     }
-    uint32_t stored_crc = *(const uint32_t *)(base + size - 4U);
-    if (AppLoader_Crc32((const uint8_t *)base, size - 4U) != stored_crc)
+    uint32_t stored_crc = *(const uint32_t *)(APP_SANDBOX_BASE_ADDR + size - 4U);
+    if (AppLoader_Crc32((const uint8_t *)APP_SANDBOX_BASE_ADDR, size - 4U) != stored_crc)
     {
         s_last_error = "CRC mismatch\n(file corrupted)";
         return false;
     }
-    if ((hdr->entry & 1U) == 0U || (hdr->entry & ~1U) < (base + hdr->header_size) ||
-        (hdr->entry & ~1U) >= (base + size - 4U))
+
+    uint32_t link_base = APP_SANDBOX_BASE_ADDR;
+    uint32_t max_span  = APP_SANDBOX_MAX_SIZE;
+    if (hdr->api_version <= 3U && (hdr->entry & ~1U) >= MM_APP_LEGACY_BASE)
     {
-        s_last_error = "Bad entry point";
-        return false;
+        link_base = MM_APP_LEGACY_BASE;
+        max_span  = MM_APP_LEGACY_MAX_SIZE;
     }
-    if (hdr->bss_end < (base + size) || hdr->bss_end > (base + APP_SANDBOX_MAX_SIZE))
+
+    if (size > max_span)
     {
         s_last_error = "App RAM too large";
         return false;
     }
+    if ((hdr->entry & 1U) == 0U || (hdr->entry & ~1U) < (link_base + hdr->header_size) ||
+        (hdr->entry & ~1U) >= (link_base + size - 4U))
+    {
+        s_last_error = "Bad entry point";
+        return false;
+    }
+    if (hdr->bss_end < (link_base + size) || hdr->bss_end > (link_base + max_span))
+    {
+        s_last_error = "App RAM too large";
+        return false;
+    }
+
+    if (link_base != APP_SANDBOX_BASE_ADDR)
+    {
+        memmove((void *)link_base, (const void *)APP_SANDBOX_BASE_ADDR, size);
+        memset((void *)APP_SANDBOX_BASE_ADDR, 0, link_base - APP_SANDBOX_BASE_ADDR);
+        hdr = (const SDK_AppHeader_t *)link_base;
+    }
+
+    *out_hdr = hdr;
     return true;
 }
 
 /* Starts the image already placed at APP_SANDBOX_BASE_ADDR */
 static bool AppLoader_StartLoadedImage(uint32_t size)
 {
-    const SDK_AppHeader_t *hdr = (const SDK_AppHeader_t *)APP_SANDBOX_BASE_ADDR;
-    if (!AppLoader_ValidateImage(hdr, size))
+    const SDK_AppHeader_t *hdr = NULL;
+    if (!AppLoader_ValidateAndPlaceImage(size, &hdr))
     {
         printf("[LOADER] Rejected: %s\r\n", s_last_error);
         return false;
@@ -260,7 +284,7 @@ static bool AppLoader_StartLoadedImage(uint32_t size)
 
     printf("[LOADER] Loaded '%.16s' API %u (%lu bytes) at 0x%08lX. Launching in Sandbox!\r\n",
            hdr->name, (unsigned int)hdr->api_version, (unsigned long)size,
-           (unsigned long)APP_SANDBOX_BASE_ADDR);
+           (unsigned long)hdr);
 
     return true;
 }

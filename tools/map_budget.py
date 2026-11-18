@@ -4,7 +4,7 @@ map_budget.py - Linker .map file memory budget analyzer for STM32F407 Console OS
 
 Parses:
   - build/<preset>/my-stm32-console.map (OS kernel: FLASH, RAM, CCMRAM, APP_RAM, EXTSRAM)
-  - build/<preset>/sdk_apps/*.map       (SDK apps: APP_RAM 28 KB code+data+bss, EXT_RAM 512 KB)
+  - build/<preset>/sdk_apps/*.map       (SDK apps: APP_RAM 60 KB code+data+bss, EXT_RAM 512 KB)
 
 Checks region utilization against budgets, breaks down top symbols/modules per region,
 and exits with a non-zero code when --strict is passed and a budget threshold is exceeded.
@@ -247,7 +247,7 @@ def print_sdk_apps_report(sdk_dir: pathlib.Path, warn_pct: float) -> bool:
 
     budget_ok = True
     print("=" * 78)
-    print(f"  SDK APPS SANDBOX BUDGET (APP_RAM = 28 KB code+data+bss, EXT_RAM = 512 KB)")
+    print(f"  SDK APPS SANDBOX BUDGET (APP_RAM = 60 KB code+data+bss, EXT_RAM = 512 KB)")
     print("=" * 78)
     print(f"{'App':<18} {'Image (.bin)':>14} {'BSS':>10} {'APP_RAM Total':>18} {'EXT_RAM (.ext_bss)':>20}")
     print("-" * 78)

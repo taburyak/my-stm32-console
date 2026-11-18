@@ -7,12 +7,16 @@
  * and APP_RAM in sdk_apps/app_sram.ld.
  */
 
-/* ---- Internal SRAM: OS 0x20000000..0x20017FFF, App sandbox 0x20018000..0x2001FFFF ---- */
-#define MM_APP_RAM_BASE              0x20018000UL
-#define MM_APP_RAM_SIZE              (32UL * 1024UL)
+/* ---- Internal SRAM: OS 0x20000000..0x2000FFFF (64 KB), App sandbox 0x20010000..0x2001FFFF (64 KB) ---- */
+#define MM_APP_RAM_BASE              0x20010000UL
+#define MM_APP_RAM_SIZE              (64UL * 1024UL)
 #define MM_APP_STACK_SIZE            (4UL * 1024UL)
 #define MM_APP_IMAGE_MAX_SIZE        (MM_APP_RAM_SIZE - MM_APP_STACK_SIZE)
 #define MM_APP_STACK_BASE            (MM_APP_RAM_BASE + MM_APP_IMAGE_MAX_SIZE)
+
+/* Legacy SDK v1..v3 link base (0x20018000..0x2001EFFF, 28 KB inside the 64 KB sandbox) */
+#define MM_APP_LEGACY_BASE           0x20018000UL
+#define MM_APP_LEGACY_MAX_SIZE       (28UL * 1024UL)
 
 /* ---- External FSMC SRAM (IS62WV51216, 1 MB, Bank1 NE3) ---- */
 #define MM_EXT_BASE                  0x68000000UL
@@ -28,9 +32,13 @@
 #define MM_EXT_IMAGE_BUF             0x68010000UL
 #define MM_EXT_IMAGE_BUF_SIZE        (192UL * 1024UL)
 
-/* OS heap (FreeRTOS heap_5, region 2): 0x68040000..0x6807FFFF */
-#define MM_EXT_OS_HEAP_BASE          0x68040000UL
-#define MM_EXT_OS_HEAP_SIZE          (256UL * 1024UL)
+/* LVGL dynamic widget pool (M2-a): 0x68040000..0x6805FFFF (128 KB) */
+#define MM_EXT_LVGL_MEM_BASE         0x68040000UL
+#define MM_EXT_LVGL_MEM_SIZE         (128UL * 1024UL)
+
+/* OS heap (FreeRTOS heap_5, region 2): 0x68060000..0x6807FFFF (128 KB) */
+#define MM_EXT_OS_HEAP_BASE          0x68060000UL
+#define MM_EXT_OS_HEAP_SIZE          (128UL * 1024UL)
 
 /* App data sandbox (.ext_bss): 0x68080000..0x680FFFFF */
 #define MM_EXT_APP_BASE              0x68080000UL
@@ -43,7 +51,8 @@ _Static_assert(MM_APP_RAM_BASE + MM_APP_RAM_SIZE == 0x20020000UL, "App RAM must 
 _Static_assert(MM_EXT_TEXT_PREVIEW >= MM_EXT_LVGL_DRAW_BUF + MM_EXT_LVGL_DRAW_BUF_SIZE, "Ext overlap: LVGL buf / text");
 _Static_assert(MM_EXT_BMP_LINE_BUF >= MM_EXT_TEXT_PREVIEW + MM_EXT_TEXT_PREVIEW_SIZE, "Ext overlap: text / BMP line");
 _Static_assert(MM_EXT_IMAGE_BUF >= MM_EXT_BMP_LINE_BUF + MM_EXT_BMP_LINE_BUF_SIZE, "Ext overlap: BMP line / image");
-_Static_assert(MM_EXT_OS_HEAP_BASE >= MM_EXT_IMAGE_BUF + MM_EXT_IMAGE_BUF_SIZE, "Ext overlap: image / OS heap");
+_Static_assert(MM_EXT_LVGL_MEM_BASE >= MM_EXT_IMAGE_BUF + MM_EXT_IMAGE_BUF_SIZE, "Ext overlap: image / LVGL pool");
+_Static_assert(MM_EXT_OS_HEAP_BASE >= MM_EXT_LVGL_MEM_BASE + MM_EXT_LVGL_MEM_SIZE, "Ext overlap: LVGL pool / OS heap");
 _Static_assert(MM_EXT_APP_BASE >= MM_EXT_OS_HEAP_BASE + MM_EXT_OS_HEAP_SIZE, "Ext overlap: OS heap / app");
 _Static_assert(MM_EXT_APP_BASE + MM_EXT_APP_SIZE <= MM_EXT_BASE + MM_EXT_SIZE, "Ext app region exceeds SRAM");
 

@@ -2,7 +2,7 @@
 
 ## Overview
 `arkanoid.c` is an unprivileged SDK game for **my-stm32-console** (STM32F407ZGT6). The loader copies it into the
-internal SRAM sandbox (`0x20018000`) and runs it through the system calls in `console_sdk.h`.
+internal SRAM sandbox (`0x20010000`, 64 KB) and runs it through the system calls in `console_sdk.h`.
 
 The same source is also built into the firmware by CMake and shown in the Games launcher as the built-in game,
 so it is available without an SD card.

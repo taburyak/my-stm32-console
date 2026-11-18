@@ -165,8 +165,8 @@ Converts PNG, BMP, or JPG images into RGB565 formats ready for the console UI or
 ## 4. Linker Memory Budget Analyzer (`tools/map_budget.py`)
 
 Parses `build/Debug/my-stm32-console.map` and all `build/Debug/sdk_apps/*.map` to display:
-- OS region usage (`FLASH` 1 MB, `RAM` 96 KB, `CCMRAM` 64 KB, `APP_RAM` 32 KB, `EXTSRAM` 1 MB) and the largest symbols in each region.
-- Every SDK app's `.bin` size, `.bss` size, total `APP_RAM` usage (out of 28 KB), and `.ext_bss` usage (out of 512 KB).
+- OS region usage (`FLASH` 960 KB, `RAM` 64 KB, `CCMRAM` 64 KB, `APP_RAM` 64 KB, `EXTSRAM` 1 MB) and the largest symbols in each region.
+- Every SDK app's `.bin` size, `.bss` size, total `APP_RAM` usage (out of 60 KB), and `.ext_bss` usage (out of 512 KB).
 
 ```powershell
 python tools/map_budget.py --build-dir build/Debug --top 10
@@ -181,5 +181,5 @@ python tools/map_budget.py --build-dir build/Debug --top 10
   - **Upload & Run SDK App over USART3**: Prompts for an SDK app name from a dropdown, builds it, and uploads + runs it via `uart_upload.py`.
   - **Memory Budget Report (`map_budget.py`)**: Prints the full memory budget table.
 - **`Run and Debug` (`F5`)**:
-  - **Cortex Debug + SDK App Symbols (`0x20018000`)**: Flashes the OS, prompts you to pick an SDK app, loads its debug symbols at `0x20018000` (`add-symbol-file`), and sets a breakpoint at `app_main`.
-  - **Cortex Attach + SDK App Symbols (`0x20018000`)**: Attaches to a running console without resetting it and loads the selected SDK app's symbols at `0x20018000`.
+  - **Cortex Debug + SDK App Symbols (`0x20010000`)**: Flashes the OS, prompts you to pick an SDK app, loads its debug symbols at `0x20010000` (`add-symbol-file`), and sets a breakpoint at `app_main`.
+  - **Cortex Attach + SDK App Symbols (`0x20010000`)**: Attaches to a running console without resetting it and loads the selected SDK app's symbols at `0x20010000`.

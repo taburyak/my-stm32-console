@@ -243,6 +243,9 @@ int main(void)
   printf("[MEM] App RAM   0x%08lX..0x%08lX (image %lu KB, stack %lu KB)\r\n",
          (unsigned long)MM_APP_RAM_BASE, (unsigned long)(MM_APP_RAM_BASE + MM_APP_RAM_SIZE - 1UL),
          (unsigned long)(MM_APP_IMAGE_MAX_SIZE / 1024UL), (unsigned long)(MM_APP_STACK_SIZE / 1024UL));
+  printf("[MEM] LVGL pool 0x%08lX..0x%08lX (%lu KB)\r\n",
+         (unsigned long)MM_EXT_LVGL_MEM_BASE, (unsigned long)(MM_EXT_LVGL_MEM_BASE + MM_EXT_LVGL_MEM_SIZE - 1UL),
+         (unsigned long)(MM_EXT_LVGL_MEM_SIZE / 1024UL));
   printf("[MEM] OS heap   0x%08lX..0x%08lX\r\n",
          (unsigned long)MM_EXT_OS_HEAP_BASE, (unsigned long)(MM_EXT_OS_HEAP_BASE + MM_EXT_OS_HEAP_SIZE - 1UL));
   printf("[MEM] App ext   0x%08lX..0x%08lX\r\n",
@@ -1027,7 +1030,7 @@ static void MX_FSMC_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-_Static_assert(MM_APP_RAM_SIZE == (32UL * 1024UL), "MPU Region 2 size must match MM_APP_RAM_SIZE");
+_Static_assert(MM_APP_RAM_SIZE == (64UL * 1024UL), "MPU Region 2 size must match MM_APP_RAM_SIZE");
 _Static_assert(MM_EXT_APP_SIZE == (512UL * 1024UL), "MPU Region 4 size must match MM_EXT_APP_SIZE");
 
 void MPU_Config_UserSandbox(void)
@@ -1065,10 +1068,10 @@ void MPU_Config_UserSandbox(void)
   MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  // Region 2: App sandbox in internal SRAM (code + data + stack); overrides Region 1
+  // Region 2: App sandbox in internal SRAM (64 KB: 60 KB code+data+bss + 4 KB stack); overrides Region 1
   MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
   MPU_InitStruct.BaseAddress      = MM_APP_RAM_BASE;
-  MPU_InitStruct.Size             = MPU_REGION_SIZE_32KB;
+  MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_ENABLE;
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
