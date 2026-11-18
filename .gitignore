@@ -27,6 +27,8 @@ Drivers/
 # CubeMX Logs and Temporary Files
 *.log
 .mxproject
+__pycache__/
+*.py[cod]
 
 # Diferent files
 my-stm32-console-rule.md
