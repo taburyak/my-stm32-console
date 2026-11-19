@@ -18,6 +18,7 @@
 #include "XPT2046_touch.h"
 #include "ili9341_simple.h"
 #include "lv_port_console.h"
+#include "audio_player.h"
 
 extern RTC_HandleTypeDef  hrtc;
 extern IWDG_HandleTypeDef hiwdg;
@@ -2754,8 +2755,24 @@ typedef enum {
     FILE_ACT_RENAME,
     FILE_ACT_COPY,
     FILE_ACT_MOVE,
-    FILE_ACT_DELETE
+    FILE_ACT_DELETE,
+    FILE_ACT_AUDIO_PLAY,
+    FILE_ACT_AUDIO_PAUSE,
+    FILE_ACT_AUDIO_STOP
 } File_Action_t;
+
+static bool Is_Audio_File(const char *name)
+{
+    static const char *const s_exts[] = { ".mp3", ".ogg", ".wav", ".wma", ".aac", ".m4a", ".mid", ".midi", ".flac" };
+    for (uint32_t i = 0U; i < sizeof(s_exts) / sizeof(s_exts[0]); i++)
+    {
+        if (Ends_With_IgnoreCase(name, s_exts[i]))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 static void file_action_btn_cb(lv_event_t * e)
 {
@@ -2830,6 +2847,21 @@ static void file_action_btn_cb(lv_event_t * e)
             Open_Delete_Confirm_Dialog();
             break;
 
+        case FILE_ACT_AUDIO_PLAY:
+            if (!AudioPlayer_Play(s_action_file_path))
+            {
+                Beeper_ErrorAlert();
+            }
+            break;
+
+        case FILE_ACT_AUDIO_PAUSE:
+            AudioPlayer_TogglePause();
+            break;
+
+        case FILE_ACT_AUDIO_STOP:
+            AudioPlayer_Stop();
+            break;
+
         default:
             break;
     }
@@ -2895,8 +2927,15 @@ static void Open_File_Action_Menu(const char *rel_path, const char *item_name)
 
     lv_obj_t *btn_primary1 = NULL;
     lv_obj_t *btn_primary2 = NULL;
+    lv_obj_t *btn_primary3 = NULL;
 
-    if (is_c)
+    if (Is_Audio_File(item_name))
+    {
+        btn_primary1 = Create_Action_Btn(workspace_cont, 8,   44, 96, 38, LV_SYMBOL_PLAY " Play",   0x00A859, FILE_ACT_AUDIO_PLAY);
+        btn_primary2 = Create_Action_Btn(workspace_cont, 112, 44, 96, 38, LV_SYMBOL_PAUSE " Pause", 0x0277BD, FILE_ACT_AUDIO_PAUSE);
+        btn_primary3 = Create_Action_Btn(workspace_cont, 216, 44, 96, 38, LV_SYMBOL_STOP " Stop",   0x455A64, FILE_ACT_AUDIO_STOP);
+    }
+    else if (is_c)
     {
         btn_primary1 = Create_Action_Btn(workspace_cont, 8,   44, 148, 38, LV_SYMBOL_PLAY " Run Script", 0x00A859, FILE_ACT_RUN_SCRIPT);
         btn_primary2 = Create_Action_Btn(workspace_cont, 164, 44, 148, 38, LV_SYMBOL_EDIT " Edit Code",  0x0277BD, FILE_ACT_OPEN);
@@ -2925,6 +2964,7 @@ static void Open_File_Action_Menu(const char *rel_path, const char *item_name)
         lv_group_add_obj(grp, btn_back);
         if (btn_primary1 != NULL) lv_group_add_obj(grp, btn_primary1);
         if (btn_primary2 != NULL) lv_group_add_obj(grp, btn_primary2);
+        if (btn_primary3 != NULL) lv_group_add_obj(grp, btn_primary3);
         lv_group_add_obj(grp, btn_ren);
         lv_group_add_obj(grp, btn_copy);
         lv_group_add_obj(grp, btn_move);
