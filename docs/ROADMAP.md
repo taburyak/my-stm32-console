@@ -82,6 +82,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 
 - [x] Release (`-Os`) profile for daily use; Debug with `-Og` (`cmake/gcc-arm-none-eabi.cmake`).
 - [x] Map-file analysis script with memory budget checks (`tools/map_budget.py`).
-- [ ] `-Wextra`, cppcheck / clang-tidy, `.clang-format`.
+- [x] `-Wextra` for project-owned sources and SDK apps (warning-free build) + `.clang-format` project style (vendor trees excluded via `.clang-format-ignore`).
+- [ ] cppcheck / clang-tidy static analysis.
 - [x] Firmware version (`CONSOLE_FW_VERSION_STR`) & SDK API version (`SDK_API_VERSION`) shown in SysInfo.
 - [ ] Host-side unit tests for game logic.

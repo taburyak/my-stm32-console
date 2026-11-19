@@ -133,6 +133,41 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/esp_companion.c
 )
 
+# Stricter warnings for project-owned sources only (third-party LVGL/TinyUSB/HAL/FatFs and pure CubeMX files keep -Wall)
+set(CONSOLE_OWNED_SOURCES
+    Core/Src/main.c
+    Core/Src/stm32f4xx_it.c
+    Core/Src/app_files.c
+    Core/Src/app_loader.c
+    Core/Src/app_services.c
+    Core/Src/app_storage.c
+    Core/Src/beeper.c
+    Core/Src/buttons_manager.c
+    Core/Src/ccmram.c
+    Core/Src/esp_companion.c
+    Core/Src/os_tasks.c
+    Core/Src/script_engine.c
+    Core/Src/sdcard_fatfs.c
+    Core/Src/sram_ext.c
+    Core/Src/status_led.c
+    Core/Src/system_post.c
+    Core/Src/temp_sensor.c
+    Core/Src/uart_cli.c
+    Core/Src/uart_loader.c
+    Core/Src/ui_manager.c
+    Core/Src/usb_host_manager.c
+    Libs/lvgl_port/lv_port_console.c
+    Libs/ILI9341/src/ili9341_simple.c
+    Libs/XPT2046/XPT2046_touch.c
+    Libs/AT24XXX/AT24Cxx.c
+    Libs/W25QXX/w25qxx.c
+    Libs/DS18B20/onewire.c
+    Libs/DS18B20/ds18b20.c
+    bootloader/Src/boot_main.c
+    bootloader/Src/boot_sd_diskio.c
+)
+set_source_files_properties(${CONSOLE_OWNED_SOURCES} PROPERTIES COMPILE_OPTIONS "-Wextra")
+
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc

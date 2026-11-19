@@ -147,11 +147,12 @@ _Static_assert(USER_GPIO_COUNT <= (sizeof(s_user_gpio) / sizeof(s_user_gpio[0]))
 
 static int32_t AppSvc_GpioCheck(uint32_t pin)
 {
-    if (USER_GPIO_COUNT == 0U)
-    {
-        return SDK_ERR_NOT_SUPPORTED;
-    }
+#if (USER_GPIO_COUNT == 0U)
+    (void)pin;
+    return SDK_ERR_NOT_SUPPORTED;
+#else
     return (pin < USER_GPIO_COUNT) ? SDK_OK : SDK_ERR_INVALID;
+#endif
 }
 
 int32_t AppSvc_GpioGetCaps(SDK_GpioCaps_t *dst)
@@ -293,6 +294,7 @@ void AppSvc_ResetHardware(void)
     lcdWaitDMAIdle(&hdma_memtomem_dma2_stream0);
     (void)ESPCompanion_HudRestore();
 
+#if (USER_GPIO_COUNT > 0U)
     for (uint32_t i = 0U; i < USER_GPIO_COUNT; i++)
     {
         GPIO_InitTypeDef init = {0};
@@ -301,4 +303,5 @@ void AppSvc_ResetHardware(void)
         init.Pull = GPIO_NOPULL;
         HAL_GPIO_Init(s_user_gpio[i].port, &init);
     }
+#endif
 }

@@ -1,0 +1,6 @@
+# Vendor / third-party trees: never reformat (clang-format >= 18)
+Drivers/**
+Middlewares/**
+Libs/lvgl/**
+Libs/tinyusb/**
+Libs/esp32_companion/**

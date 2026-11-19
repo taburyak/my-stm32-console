@@ -133,6 +133,7 @@ void LVGL_Port_OnFlushFinished(void)
  */
 static void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
+    (void)indev_drv;
     uint16_t touch_x = 0;
     uint16_t touch_y = 0;
 
@@ -155,6 +156,7 @@ static void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
  */
 static void mouse_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
 {
+    (void)indev_drv;
     static int16_t last_x = 160;
     static int16_t last_y = 120;
     USB_MouseEvent_t m_state;
@@ -191,6 +193,7 @@ static void mouse_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
  */
 static void keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
 {
+    (void)indev_drv;
     static uint32_t last_key = 0;
     static bool send_release_next = false;
 

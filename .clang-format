@@ -1,0 +1,51 @@
+# Project style for owned sources (Core/, bootloader/, sdk_apps/, Libs/lvgl_port/, board drivers).
+# Third-party trees are excluded via .clang-format-ignore (clang-format >= 18).
+# Format new/edited code only; do not mass-reformat existing files.
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++11
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+ContinuationIndentWidth: 4
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: Always
+  AfterCaseLabel: true
+  BeforeElse: true
+  BeforeWhile: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterEnum: false
+  AfterExternBlock: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+IndentCaseLabels: true
+SpaceBeforeParens: ControlStatements
+Cpp11BracedListStyle: false
+
+PointerAlignment: Right
+DerivePointerAlignment: true
+
+AlignConsecutiveMacros: AcrossComments
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: Consecutive
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+AlignAfterOpenBracket: Align
+
+SortIncludes: Never
+IncludeBlocks: Preserve
+ReflowComments: false
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false

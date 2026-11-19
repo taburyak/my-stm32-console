@@ -6,7 +6,7 @@ file(MAKE_DIRECTORY "${SDK_APPS_OUT_DIR}")
 
 set(SDK_APP_CFLAGS
     -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
-    -O2 -g -std=gnu11 -ffreestanding -nostdlib -Wall)
+    -O2 -g -std=gnu11 -ffreestanding -nostdlib -Wall -Wextra)
 
 set(SDK_APP_COMMON_DEPS
     "${SDK_APPS_SRC_DIR}/console_sdk.h"

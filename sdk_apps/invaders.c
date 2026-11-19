@@ -330,7 +330,7 @@ static void fleet_step(uint32_t now)
     int16_t nx = (int16_t)(s_fx + s_fdir * FLEET_STEP);
     int16_t left  = (int16_t)(nx + minc * PITCH_X);
     int16_t right = (int16_t)(nx + maxc * PITCH_X + SPR_W);
-    if ((left < 0) || (right > SDK_SCREEN_W))
+    if ((left < 0) || (right > (int16_t)SDK_SCREEN_W))
     {
         int16_t bx = (int16_t)(s_fx + minc * PITCH_X);
         int16_t bw = (int16_t)((maxc - minc) * PITCH_X + SPR_W);
@@ -560,7 +560,7 @@ static void update_ufo(uint32_t now)
         return;
     }
     s_ufo_x = (int16_t)(s_ufo_x + s_ufo_dir);
-    if ((s_ufo_x < 0) || (s_ufo_x > SDK_SCREEN_W - UFO_W))
+    if ((s_ufo_x < 0) || (s_ufo_x > (int16_t)(SDK_SCREEN_W - UFO_W)))
     {
         s_ufo_on = false;
         sys_lcd_fill_rect((uint16_t)((s_ufo_x < 0) ? 0 : (SDK_SCREEN_W - UFO_W)), UFO_Y, UFO_W, UFO_H, BG);
@@ -673,7 +673,7 @@ static void play_frame(const SDK_Input_t *in, uint32_t now)
     if (in->held & KEY_LEFT)  s_px = (int16_t)(s_px - PLAYER_SPEED);
     if (in->held & KEY_RIGHT) s_px = (int16_t)(s_px + PLAYER_SPEED);
     if (s_px < 0) s_px = 0;
-    if (s_px > SDK_SCREEN_W - SPR_W) s_px = SDK_SCREEN_W - SPR_W;
+    if (s_px > (int16_t)(SDK_SCREEN_W - SPR_W)) s_px = (int16_t)(SDK_SCREEN_W - SPR_W);
     if (s_px != old_px) draw_player(s_spr_player);
 
     if ((in->pressed & (KEY_A | KEY_UP | KEY_B)) && !s_shot.on)

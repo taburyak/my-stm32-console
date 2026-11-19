@@ -142,7 +142,7 @@ static void draw_ground_scroll(void)
             uint16_t c;
             if (y < 2U)      c = 0x07E0U;
             else if (y < 3U) c = 0x0400U;
-            else             c = (((x + s_ground_off + y) % GROUND_PERIOD) < (GROUND_PERIOD / 2U)) ? 0xB3A0U : 0x8A60U;
+            else             c = (((x + s_ground_off + y) % GROUND_PERIOD) < (GROUND_PERIOD / 2)) ? 0xB3A0U : 0x8A60U;
             s_grass_strip[y * SDK_SCREEN_W + x] = c;
         }
     }

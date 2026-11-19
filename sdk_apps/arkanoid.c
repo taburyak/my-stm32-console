@@ -211,7 +211,7 @@ static void draw_ball(void)
         sys_lcd_fill_rect((uint16_t)s_drawn_ball_x, (uint16_t)s_drawn_ball_y, BALL, BALL, COLOR_DARK_BG);
         redraw_bricks_in(s_drawn_ball_x, s_drawn_ball_y, BALL, BALL);
     }
-    if (y < SDK_SCREEN_H - BALL)
+    if ((y >= 0) && (y < (int16_t)(SDK_SCREEN_H - BALL)))
     {
         sys_lcd_fill_rect((uint16_t)x, (uint16_t)y, BALL, BALL, COLOR_WHITE);
         s_drawn_ball_x = x;
@@ -425,7 +425,7 @@ static void update_ball(uint32_t now)
         }
         collide_paddle();
 
-        if (s_ball_y > SDK_SCREEN_H * FP)
+        if (s_ball_y > (int32_t)(SDK_SCREEN_H * FP))
         {
             draw_ball();
             if (--s_lives == 0U)

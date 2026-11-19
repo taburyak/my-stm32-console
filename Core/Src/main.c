@@ -161,6 +161,7 @@ int __io_putchar(int ch)
 
 int _write(int file, char *ptr, int len)
 {
+    (void)file;
     if (!UARTLoader_IsSessionActive())
     {
         HAL_UART_Transmit(&huart3, (uint8_t*) ptr, len, HAL_MAX_DELAY);
@@ -1130,6 +1131,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  (void)argument;
   /* SVCall must stay unmasked (priority 0) until FreeRTOS issues 'svc 0' with BASEPRI set;
    * afterwards app syscalls run below all peripheral IRQs and above PendSV. */
   HAL_NVIC_SetPriority(SVCall_IRQn, 14U, 0U);
