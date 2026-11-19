@@ -8,6 +8,7 @@
 #include "console_abi.h"
 #include "fw_update.h"
 #include "vs1053.h"
+#include "audio_player.h"
 #include "memory_map.h"
 #include "ccmram.h"
 #include "lvgl.h"
@@ -202,6 +203,7 @@ static void cmd_help(void)
         "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
         "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
         "  snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]]  VS1053 audio\r\n"
+        "  snd play <file> | stop | pause | status   Play MP3/Ogg/AAC/WMA/WAV/MIDI from SD\r\n"
         "  esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n"
         "  fwupdate[-fast]        Receive fw_update.bin via XMODEM-1K (-fast: 230400)\r\n"
         "  clear | reboot         Clear terminal or reset console\r\n"
@@ -1154,10 +1156,58 @@ static void cmd_snd(const char *arg)
     }
     else if (str_eq_ci(word, "init"))
     {
+        if (AudioPlayer_GetState() != AUDIO_STATE_IDLE)
+        {
+            cli_puts("ERR: stop playback first ('snd stop')\r\n");
+            return;
+        }
         cli_puts(VS1053_Init(&hspi2) ? "VS1053 init OK\r\n" : "ERR: VS1053 init failed (check wiring/power)\r\n");
+    }
+    else if (str_eq_ci(word, "play"))
+    {
+        char path[96];
+        resolve_sd_path(val, path, sizeof(path));
+        if (*val == '\0' || path[0] == '\0')
+        {
+            cli_puts("Usage: snd play <file>  (mp3, ogg, aac/m4a, wma, wav, mid)\r\n");
+            return;
+        }
+        if (!AudioPlayer_Play(path))
+        {
+            printf("ERR: cannot play '/%s' (file missing, SD not mounted or VS1053 absent)\r\n", path);
+        }
+    }
+    else if (str_eq_ci(word, "stop"))
+    {
+        AudioPlayer_Stop();
+    }
+    else if (str_eq_ci(word, "pause"))
+    {
+        AudioPlayer_TogglePause();
+    }
+    else if (str_eq_ci(word, "status"))
+    {
+        CCMRAM_BUF static AudioPlayer_Status_t st;
+        AudioPlayer_GetStatus(&st);
+        static const char *const s_names[] = { "idle", "playing", "paused" };
+        printf("State: %s\r\n", s_names[st.state]);
+        if (st.state != AUDIO_STATE_IDLE)
+        {
+            uint32_t pct = (st.file_size > 0U) ? (uint32_t)(((uint64_t)st.bytes_sent * 100U) / st.file_size) : 0U;
+            printf("File:  /%s (%lu%% of %lu KB)\r\n", st.path, (unsigned long)pct,
+                   (unsigned long)(st.file_size / 1024U));
+            printf("Time:  %02lu:%02lu  %s %lu Hz %s %lu kbps\r\n", (unsigned long)(st.decode_sec / 60U),
+                   (unsigned long)(st.decode_sec % 60U), st.format, (unsigned long)st.sample_rate,
+                   st.stereo ? "stereo" : "mono", (unsigned long)st.kbps);
+        }
     }
     else if (str_eq_ci(word, "test"))
     {
+        if (AudioPlayer_GetState() != AUDIO_STATE_IDLE)
+        {
+            cli_puts("ERR: stop playback first ('snd stop')\r\n");
+            return;
+        }
         char *end = NULL;
         uint32_t req_hz = (*val != '\0') ? (uint32_t)strtoul(val, &end, 10) : 1000U;
         const char *ds = (end != NULL) ? skip_ws(end) : "";
@@ -1206,7 +1256,8 @@ static void cmd_snd(const char *arg)
     }
     else
     {
-        cli_puts("Usage: snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]]\r\n");
+        cli_puts("Usage: snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]|\r\n"
+                 "            play <file>|stop|pause|status]\r\n");
     }
 }
 

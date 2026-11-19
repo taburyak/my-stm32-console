@@ -45,6 +45,7 @@
 #include "uart_cli.h"
 #include "temp_sensor.h"
 #include "vs1053.h"
+#include "audio_player.h"
 #include "esp_companion.h"
 #include "ccmram.h"
 /* USER CODE END Includes */
@@ -1274,6 +1275,7 @@ void StartDefaultTask(void *argument)
 
   /* 7.6. Probe the optional VS1053 audio decoder on SPI2 (P19 header + PA2 XRESET) */
   (void)VS1053_Init(&hspi2);
+  AudioPlayer_Init();
 
   /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & USART3 Uploader + CLI */
   UIManager_Init();

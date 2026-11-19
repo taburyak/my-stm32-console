@@ -25,6 +25,7 @@ extern "C" {
 /* SCI_MODE bits */
 #define VS1053_SM_DIFF          (1U << 0)
 #define VS1053_SM_RESET         (1U << 2)
+#define VS1053_SM_CANCEL        (1U << 3)
 #define VS1053_SM_TESTS         (1U << 5)
 #define VS1053_SM_SDINEW        (1U << 11)
 
@@ -39,8 +40,26 @@ bool     VS1053_IsPresent(void);
 uint8_t  VS1053_GetVersion(void);
 bool     VS1053_IsReady(void);
 
+/* All accessors are serialized by a recursive bus mutex once the RTOS runs (SPI2 is shared) */
 uint16_t VS1053_ReadReg(uint8_t addr);
 void     VS1053_WriteReg(uint8_t addr, uint16_t value);
+uint16_t VS1053_ReadWram(uint16_t addr);
+
+/**
+ * @brief Stream audio file bytes to SDI in 32-byte DMA bursts while DREQ is high (non-blocking on DREQ).
+ * @return Number of bytes accepted; 0 means the decoder FIFO is full and the caller should yield.
+ */
+uint32_t VS1053_SdiFeed(const uint8_t *data, uint32_t len);
+
+/**
+ * @brief Finish a stream per datasheet 10.5: endFillByte flush + SM_CANCEL handshake (soft reset fallback).
+ * @param cancel true when stopping mid-file, false after the whole file was sent.
+ * @return true if the decoder acknowledged SM_CANCEL without a soft reset.
+ */
+bool     VS1053_EndPlayback(bool cancel);
+
+/** @brief Average stream byte rate measured by the decoder (bytes/s, 0 when idle) */
+uint32_t VS1053_GetByteRate(void);
 
 /** @brief Output attenuation per channel in 0.5 dB steps: 0 = loudest, 254 = silent */
 void     VS1053_SetVolume(uint8_t left, uint8_t right);

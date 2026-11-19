@@ -29,6 +29,9 @@
 #define MM_EXT_TEXT_PREVIEW_SIZE     (8UL * 1024UL)
 #define MM_EXT_BMP_LINE_BUF          0x6800A000UL
 #define MM_EXT_BMP_LINE_BUF_SIZE     (8UL * 1024UL)
+/* Audio player SD read buffer + FatFs FIL (SDIO DMA target), keeps 2.6 KB out of internal SRAM */
+#define MM_EXT_AUDIO_BUF             0x6800C000UL
+#define MM_EXT_AUDIO_BUF_SIZE        (4UL * 1024UL)
 #define MM_EXT_IMAGE_BUF             0x68010000UL
 #define MM_EXT_IMAGE_BUF_SIZE        (192UL * 1024UL)
 
@@ -50,7 +53,8 @@ _Static_assert((MM_EXT_APP_BASE % MM_EXT_APP_SIZE) == 0UL, "Ext app base must be
 _Static_assert(MM_APP_RAM_BASE + MM_APP_RAM_SIZE == 0x20020000UL, "App RAM must end at the top of SRAM2");
 _Static_assert(MM_EXT_TEXT_PREVIEW >= MM_EXT_LVGL_DRAW_BUF + MM_EXT_LVGL_DRAW_BUF_SIZE, "Ext overlap: LVGL buf / text");
 _Static_assert(MM_EXT_BMP_LINE_BUF >= MM_EXT_TEXT_PREVIEW + MM_EXT_TEXT_PREVIEW_SIZE, "Ext overlap: text / BMP line");
-_Static_assert(MM_EXT_IMAGE_BUF >= MM_EXT_BMP_LINE_BUF + MM_EXT_BMP_LINE_BUF_SIZE, "Ext overlap: BMP line / image");
+_Static_assert(MM_EXT_AUDIO_BUF >= MM_EXT_BMP_LINE_BUF + MM_EXT_BMP_LINE_BUF_SIZE, "Ext overlap: BMP line / audio");
+_Static_assert(MM_EXT_IMAGE_BUF >= MM_EXT_AUDIO_BUF + MM_EXT_AUDIO_BUF_SIZE, "Ext overlap: audio / image");
 _Static_assert(MM_EXT_LVGL_MEM_BASE >= MM_EXT_IMAGE_BUF + MM_EXT_IMAGE_BUF_SIZE, "Ext overlap: image / LVGL pool");
 _Static_assert(MM_EXT_OS_HEAP_BASE >= MM_EXT_LVGL_MEM_BASE + MM_EXT_LVGL_MEM_SIZE, "Ext overlap: LVGL pool / OS heap");
 _Static_assert(MM_EXT_APP_BASE >= MM_EXT_OS_HEAP_BASE + MM_EXT_OS_HEAP_SIZE, "Ext overlap: OS heap / app");

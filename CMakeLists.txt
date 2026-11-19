@@ -132,6 +132,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/uart_cli.c
     Core/Src/temp_sensor.c
     Core/Src/esp_companion.c
+    Core/Src/audio_player.c
 )
 
 # Stricter warnings for project-owned sources only (third-party LVGL/TinyUSB/HAL/FatFs and pure CubeMX files keep -Wall)
@@ -142,6 +143,7 @@ set(CONSOLE_OWNED_SOURCES
     Core/Src/app_loader.c
     Core/Src/app_services.c
     Core/Src/app_storage.c
+    Core/Src/audio_player.c
     Core/Src/beeper.c
     Core/Src/buttons_manager.c
     Core/Src/ccmram.c
