@@ -23,6 +23,7 @@ typedef enum {
     UI_SCREEN_WEATHER,       /* Full-screen Weather Forecast & Indoor/Outdoor Station */
     UI_SCREEN_CALENDAR,      /* Interactive Monthly Calendar */
     UI_SCREEN_SPEEDTEST,     /* Network & USART6 Companion Link Benchmark */
+    UI_SCREEN_TIMER,         /* Stopwatch & Countdown Timer */
     UI_SCREEN_SCREENSAVER    /* Idle Desk Clock & Weather / Sensor Station */
 } UI_Screen_t;
 

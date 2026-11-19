@@ -5,7 +5,7 @@ DIY retro game & developer console built on **STM32F407ZGT6** (168 MHz Cortex-M4
 ## Key Features
 
 - **RTOS, Bootloader & 64 KB MPU Sandbox**: 64 KB bare-metal SD/XMODEM Bootloader (`0x08000000`) + FreeRTOS multitasking (`GuiRenderTask`, `InputAudioTask`, `StorageIoTask` in 0-WS CCM RAM) + hardware **MPU** isolation for unprivileged native `.bin` SDK apps (`APP_RAM` 64 KB @ `0x20010000` + `EXT_APP` 512 KB, backward-compatible with legacy SDK v1–v3 apps).
-- **Display & Touch UI**: LVGL 8.3 desktop (128 KB pool in External FSMC SRAM) on a 2.8" **ILI9341** 320×240 FSMC display with DMA2 rendering, **XPT2046** 4-point touch calibration, 4 color themes, custom `.bmp` wallpapers, Idle Weather/Clock Screensaver, and a 2-page swipeable 4-tile Home screen (`Launcher` + `Widgets`).
+- **Display & Touch UI**: LVGL 8.3 desktop (128 KB pool in External FSMC SRAM) on a 2.8" **ILI9341** 320×240 FSMC display with DMA2 rendering, **XPT2046** 4-point touch calibration, 4 color themes, custom `.bmp` wallpapers, Idle Weather/Clock Screensaver, and a 2-page swipeable 4-tile Home screen (`Launcher` + `Widgets`) including `Weather`, `Calendar`, `SpeedTest`, and `Timer` (stopwatch + countdown).
 - **On-Device, Terminal & Web Development**:
   - Built-in **C-Script interpreter** (`Core/Src/script_engine.c`) for running `.c` source games/tools directly from SD without a PC compiler.
   - On-console **SD File Manager & Code Editor** (new file/folder, rename, copy, move, delete, edit, save & run).

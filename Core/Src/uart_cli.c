@@ -20,6 +20,7 @@
 #include <string.h>
 
 extern UART_HandleTypeDef huart3;
+extern IWDG_HandleTypeDef hiwdg;
 
 #define CLI_RING_SIZE   128U
 #define CLI_LINE_MAX    128U
@@ -840,6 +841,7 @@ static bool cli_uart3_getc(uint8_t *out, uint32_t timeout_ms)
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < timeout_ms)
     {
+        (void)HAL_IWDG_Refresh(&hiwdg);
         if (LL_USART_IsActiveFlag_ORE(USART3)) LL_USART_ClearFlag_ORE(USART3);
         if (LL_USART_IsActiveFlag_RXNE(USART3))
         {

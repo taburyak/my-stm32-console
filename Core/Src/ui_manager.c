@@ -153,9 +153,11 @@ static void Build_Wifi_Screen(void);
 static void Build_Weather_Screen(void);
 static void Build_Calendar_Screen(void);
 static void Build_SpeedTest_Screen(void);
+static void Build_Timer_Screen(void);
 static void Build_Screensaver_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
+static void Timer_Update(void);
 
 static const uint32_t     s_ss_timeouts_ms[SS_TIMEOUT_COUNT] = { 0UL, 60000UL, 180000UL, 300000UL, 600000UL };
 static const char * const s_ss_labels[SS_TIMEOUT_COUNT]      = { "Off", "1m", "3m", "5m", "10m" };
@@ -168,6 +170,26 @@ static lv_obj_t *  s_ss_lbl_clock           = NULL;
 static lv_obj_t *  s_ss_lbl_date            = NULL;
 static lv_obj_t *  s_ss_lbl_temps           = NULL;
 static lv_obj_t *  s_lbl_idle_val           = NULL;
+
+typedef enum {
+    TIMER_MODE_STOPWATCH = 0,
+    TIMER_MODE_COUNTDOWN
+} Timer_Mode_t;
+
+static Timer_Mode_t s_timer_mode = TIMER_MODE_STOPWATCH;
+static bool        s_sw_running = false;
+static bool        s_cd_running = false;
+static uint32_t    s_sw_started_tick = 0U;
+static uint32_t    s_sw_elapsed_ms = 0U;
+static uint32_t    s_cd_started_tick = 0U;
+static uint32_t    s_cd_remaining_ms = 0U;
+static uint32_t    s_cd_duration_ms = 5U * 60UL * 1000UL;
+static uint32_t    s_lap_times_ms[4] = {0};
+static uint8_t     s_lap_count = 0U;
+static uint32_t    s_timer_last_hud_sec = 0xFFFFFFFFUL;
+static lv_obj_t   *s_timer_lbl_time = NULL;
+static lv_obj_t   *s_timer_lbl_primary = NULL;
+static lv_obj_t   *s_timer_lbl_laps = NULL;
 
 /* ==========================================================================
  * EEPROM Settings Load / Save
@@ -750,6 +772,8 @@ void UIManager_Update(void)
         }
     }
 
+    Timer_Update();
+
     /* Idle Screensaver / Desk Weather Clock state machine */
     uint32_t ss_timeout   = s_ss_timeouts_ms[s_ss_timeout_idx % SS_TIMEOUT_COUNT];
     uint32_t now_tick     = HAL_GetTick();
@@ -845,6 +869,12 @@ void UIManager_ShowScreen(UI_Screen_t screen)
 {
     if (workspace_cont == NULL) return;
 
+    UI_Screen_t previous_screen = current_screen;
+    if (previous_screen == UI_SCREEN_TIMER && screen != UI_SCREEN_TIMER)
+    {
+        (void)ESPCompanion_HudRestore();
+    }
+
     current_screen     = screen;
     file_list_obj      = NULL;
     s_editor_ta        = NULL;
@@ -868,6 +898,9 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_ss_lbl_date      = NULL;
     s_ss_lbl_temps     = NULL;
     s_lbl_idle_val     = NULL;
+    s_timer_lbl_time    = NULL;
+    s_timer_lbl_primary = NULL;
+    s_timer_lbl_laps    = NULL;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -922,6 +955,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
         case UI_SCREEN_SPEEDTEST:
             lv_label_set_text(lbl_screen_title, "SpeedTest");
             Build_SpeedTest_Screen();
+            break;
+
+        case UI_SCREEN_TIMER:
+            lv_label_set_text(lbl_screen_title, "Timer");
+            Build_Timer_Screen();
             break;
 
         case UI_SCREEN_SCREENSAVER:
@@ -1179,24 +1217,6 @@ static void home_icon_event_cb(lv_event_t * e)
     }
 }
 
-static void reserved_tile_cb(lv_event_t * e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col == 1U)
-    {
-        s_home_active_col = 0U;
-        Beeper_Click();
-        lv_obj_set_tile_id(s_home_tv, 0, 0, LV_ANIM_ON);
-        lv_label_set_text(lbl_screen_title, "STM32 OS");
-        Sync_Home_Group_To_Active_Page();
-        return;
-    }
-    if (code == LV_EVENT_CLICKED)
-    {
-        Beeper_Click();
-    }
-}
-
 static lv_obj_t *Create_Desktop_Shortcut(lv_obj_t *parent, int16_t x, int16_t y,
                                          const char *symbol, const char *title,
                                          uint32_t accent_hex, UI_Screen_t target_screen)
@@ -1384,26 +1404,31 @@ static void Build_Home_Screen(void)
     }
     s_home_p1_btns[2] = s_btn;
 
-    /* Tile [3] Bottom-Right (168, 102): Reserved Slot */
-    lv_obj_t * r_btn = lv_btn_create(s_home_tile1);
-    lv_obj_set_size(r_btn, 136, 82);
-    lv_obj_set_pos(r_btn, 168, 102);
-    lv_obj_clear_flag(r_btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_style_radius(r_btn, 10, 0);
-    lv_obj_set_style_bg_color(r_btn, lv_color_hex(0x1B2234), 0);
-    lv_obj_set_style_bg_opa(r_btn, LV_OPA_60, 0);
-    lv_obj_set_style_border_width(r_btn, 2, 0);
-    lv_obj_set_style_border_color(r_btn, lv_color_hex(0x546E7A), 0);
-    lv_obj_set_style_border_color(r_btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(r_btn, 3, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_color(r_btn, lv_color_hex(0x283550), LV_STATE_FOCUSED);
-    lv_obj_t * r_lbl = lv_label_create(r_btn);
+    /* Tile [3] Bottom-Right (168, 102): Stopwatch & Countdown Timer */
+    lv_obj_t * r_btn = Create_Desktop_Shortcut(s_home_tile1, 168, 102, LV_SYMBOL_PLAY, "Timer",
+                                               0xB388FFU, UI_SCREEN_TIMER);
+    lv_obj_t * r_lbl = lv_obj_get_child(r_btn, 0);
     lv_label_set_recolor(r_lbl, true);
-    lv_obj_set_style_text_align(r_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(r_lbl, "#90A4AE " LV_SYMBOL_PLUS " Reserved#\n#546E7A Future Slot#");
-    lv_obj_center(r_lbl);
-    lv_obj_add_event_cb(r_btn, reserved_tile_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(r_btn, reserved_tile_cb, LV_EVENT_KEY, NULL);
+    if (s_timer_mode == TIMER_MODE_COUNTDOWN)
+    {
+        uint32_t cd_ms = s_cd_running ? s_cd_remaining_ms : s_cd_duration_ms;
+        lv_label_set_text_fmt(r_lbl,
+            "#B388FF " LV_SYMBOL_PLAY " Timer#\n#FFFFFF %02lu:%02lu#\n#90A4AE %s#",
+            (unsigned long)((cd_ms / 60000UL) % 100UL),
+            (unsigned long)((cd_ms / 1000UL) % 60UL),
+            s_cd_running ? "Running" : "Countdown");
+    }
+    else
+    {
+        uint32_t sw_ms = s_sw_elapsed_ms;
+        if (s_sw_running) sw_ms += (HAL_GetTick() - s_sw_started_tick);
+        lv_label_set_text_fmt(r_lbl,
+            "#B388FF " LV_SYMBOL_PLAY " Timer#\n#FFFFFF %02lu:%02lu.%02lu#\n#90A4AE %s#",
+            (unsigned long)((sw_ms / 60000UL) % 100UL),
+            (unsigned long)((sw_ms / 1000UL) % 60UL),
+            (unsigned long)((sw_ms / 10UL) % 100UL),
+            s_sw_running ? "Running" : "Stopwatch");
+    }
     s_home_p1_btns[3] = r_btn;
 
     lv_obj_t * btn_to_p1 = lv_btn_create(s_home_tile1);
@@ -4823,8 +4848,348 @@ static void Build_SpeedTest_Screen(void)
     }
 }
 
+/* ========================================================================== 
+ * 10. Stopwatch & Countdown Timer
+ * ========================================================================== */
+
+static uint32_t Timer_StopwatchElapsed(void)
+{
+    uint32_t elapsed = s_sw_elapsed_ms;
+    if (s_sw_running) elapsed += (HAL_GetTick() - s_sw_started_tick);
+    return elapsed;
+}
+
+static uint32_t Timer_CountdownRemaining(void)
+{
+    if (!s_cd_running) return s_cd_remaining_ms;
+    uint32_t passed = HAL_GetTick() - s_cd_started_tick;
+    return (passed >= s_cd_duration_ms) ? 0U : (s_cd_duration_ms - passed);
+}
+
+static void Timer_FormatMs(uint32_t ms, char *out, size_t out_size, bool centiseconds)
+{
+    uint32_t total_sec = ms / 1000UL;
+    if (centiseconds)
+    {
+        snprintf(out, out_size, "%02lu:%02lu.%02lu",
+                 (unsigned long)((total_sec / 60UL) % 100UL),
+                 (unsigned long)(total_sec % 60UL),
+                 (unsigned long)((ms / 10UL) % 100UL));
+    }
+    else
+    {
+        total_sec += (ms % 1000UL) != 0U ? 1U : 0U;
+        snprintf(out, out_size, "%02lu:%02lu",
+                 (unsigned long)((total_sec / 60UL) % 100UL),
+                 (unsigned long)(total_sec % 60UL));
+    }
+}
+
+static void Timer_UpdateHud(uint32_t ms)
+{
+    if (current_screen != UI_SCREEN_TIMER || !ESPCompanion_IsConnected()) return;
+    uint32_t sec = ms / 1000UL;
+    if (sec == s_timer_last_hud_sec) return;
+    s_timer_last_hud_sec = sec;
+
+    char value[16];
+    char line[52];
+    Timer_FormatMs(ms, value, sizeof(value), s_timer_mode == TIMER_MODE_STOPWATCH);
+    snprintf(line, sizeof(line), "%s %s",
+             (s_timer_mode == TIMER_MODE_STOPWATCH) ? "STOPWATCH" : "COUNTDOWN", value);
+    (void)ESPCompanion_HudSetLine(1, line);
+    if (s_timer_mode == TIMER_MODE_STOPWATCH)
+    {
+        snprintf(line, sizeof(line), "LAPS: %u   %s", (unsigned int)s_lap_count,
+                 s_sw_running ? "RUNNING" : "PAUSED");
+    }
+    else
+    {
+        snprintf(line, sizeof(line), "STATUS: %s", s_cd_running ? "RUNNING" : ((ms == 0U) ? "DONE" : "PAUSED"));
+    }
+    (void)ESPCompanion_HudSetLine(2, line);
+}
+
+static void Timer_Update(void)
+{
+    if (s_cd_running)
+    {
+        s_cd_remaining_ms = Timer_CountdownRemaining();
+        if (s_cd_remaining_ms == 0U)
+        {
+            static const Beeper_Note_t alarm[] = {
+                {1U, 180U}, {0U, 80U}, {1U, 180U}, {0U, 80U}, {1U, 450U}
+            };
+            s_cd_running = false;
+            Beeper_PlaySequence(alarm, sizeof(alarm) / sizeof(alarm[0]), false);
+            (void)ESPCompanion_SetLedRgb(64U, 0U, 0U);
+            (void)ESPCompanion_HudSetLine(2, "STATUS: TIMER FINISHED");
+        }
+    }
+
+    uint32_t now_ms = (s_timer_mode == TIMER_MODE_STOPWATCH) ? Timer_StopwatchElapsed() :
+                      Timer_CountdownRemaining();
+    Timer_UpdateHud(now_ms);
+    if (current_screen != UI_SCREEN_TIMER || s_timer_lbl_time == NULL) return;
+
+    char value[16];
+    Timer_FormatMs(now_ms, value, sizeof(value), s_timer_mode == TIMER_MODE_STOPWATCH);
+    lv_label_set_text(s_timer_lbl_time, value);
+
+    if (s_timer_mode == TIMER_MODE_STOPWATCH)
+    {
+        lv_label_set_text(s_timer_lbl_primary, s_sw_running ? LV_SYMBOL_PAUSE " Pause" : LV_SYMBOL_PLAY " Start");
+        char laps[96];
+        if (s_lap_count == 0U)
+        {
+            snprintf(laps, sizeof(laps), "Laps: press [Lap] while running");
+        }
+        else
+        {
+            int pos = 0;
+            for (uint8_t i = 0U; i < s_lap_count && i < 4U; i++)
+            {
+                char lap[12];
+                Timer_FormatMs(s_lap_times_ms[i], lap, sizeof(lap), true);
+                pos += snprintf(laps + pos, sizeof(laps) - (size_t)pos, "%sL%u %s",
+                                (i == 0U) ? "" : "   ", (unsigned int)(i + 1U), lap);
+                if (pos >= (int)sizeof(laps) - 1) break;
+            }
+        }
+        lv_label_set_text(s_timer_lbl_laps, laps);
+    }
+    else
+    {
+        lv_label_set_text(s_timer_lbl_primary, s_cd_running ? LV_SYMBOL_PAUSE " Pause" : LV_SYMBOL_PLAY " Start");
+        lv_label_set_text(s_timer_lbl_laps, s_cd_running ? "Counting down..." :
+                          ((now_ms == 0U) ? "Time is up" : "Adjust with -/+ buttons"));
+    }
+}
+
+typedef enum {
+    TIMER_CMD_MODE_SW = 1,
+    TIMER_CMD_MODE_CD,
+    TIMER_CMD_PRIMARY,
+    TIMER_CMD_RESET,
+    TIMER_CMD_LAP,
+    TIMER_CMD_SUB_10,
+    TIMER_CMD_ADD_10,
+    TIMER_CMD_SUB_60,
+    TIMER_CMD_ADD_60
+} Timer_Command_t;
+
+static void timer_control_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_home_active_col = 1U;
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+        return;
+    }
+    if (code != LV_EVENT_CLICKED) return;
+
+    Timer_Command_t cmd = (Timer_Command_t)(uintptr_t)lv_event_get_user_data(e);
+    uint32_t now = HAL_GetTick();
+    Beeper_Click();
+
+    switch (cmd)
+    {
+        case TIMER_CMD_MODE_SW:
+            s_timer_mode = TIMER_MODE_STOPWATCH;
+            s_pending_screen = (int8_t)UI_SCREEN_TIMER;
+            break;
+        case TIMER_CMD_MODE_CD:
+            s_timer_mode = TIMER_MODE_COUNTDOWN;
+            if (!s_cd_running && s_cd_remaining_ms == 0U) s_cd_remaining_ms = s_cd_duration_ms;
+            s_pending_screen = (int8_t)UI_SCREEN_TIMER;
+            break;
+        case TIMER_CMD_PRIMARY:
+            if (s_timer_mode == TIMER_MODE_STOPWATCH)
+            {
+                if (s_sw_running)
+                {
+                    s_sw_elapsed_ms += (now - s_sw_started_tick);
+                    s_sw_running = false;
+                }
+                else
+                {
+                    s_sw_started_tick = now;
+                    s_sw_running = true;
+                }
+            }
+            else if (s_cd_running)
+            {
+                s_cd_remaining_ms = Timer_CountdownRemaining();
+                s_cd_duration_ms = s_cd_remaining_ms;
+                s_cd_running = false;
+            }
+            else
+            {
+                if (s_cd_remaining_ms == 0U) s_cd_remaining_ms = s_cd_duration_ms;
+                if (s_cd_remaining_ms > 0U)
+                {
+                    s_cd_duration_ms = s_cd_remaining_ms;
+                    s_cd_started_tick = now;
+                    s_cd_running = true;
+                }
+            }
+            break;
+        case TIMER_CMD_RESET:
+            if (s_timer_mode == TIMER_MODE_STOPWATCH)
+            {
+                s_sw_running = false;
+                s_sw_elapsed_ms = 0U;
+                s_lap_count = 0U;
+                memset(s_lap_times_ms, 0, sizeof(s_lap_times_ms));
+            }
+            else
+            {
+                s_cd_running = false;
+                s_cd_remaining_ms = s_cd_duration_ms = 5U * 60UL * 1000UL;
+                (void)ESPCompanion_SetLedRgb(0U, 0U, 0U);
+            }
+            break;
+        case TIMER_CMD_LAP:
+            if (s_timer_mode == TIMER_MODE_STOPWATCH && s_sw_running)
+            {
+                if (s_lap_count < 4U)
+                {
+                    s_lap_times_ms[s_lap_count++] = Timer_StopwatchElapsed();
+                }
+                else
+                {
+                    for (uint8_t i = 1U; i < 4U; i++) s_lap_times_ms[i - 1U] = s_lap_times_ms[i];
+                    s_lap_times_ms[3] = Timer_StopwatchElapsed();
+                }
+            }
+            break;
+        case TIMER_CMD_SUB_10:
+        case TIMER_CMD_ADD_10:
+        case TIMER_CMD_SUB_60:
+        case TIMER_CMD_ADD_60:
+            if (s_timer_mode == TIMER_MODE_COUNTDOWN && !s_cd_running)
+            {
+                int32_t delta = (cmd == TIMER_CMD_SUB_10) ? -10 : ((cmd == TIMER_CMD_ADD_10) ? 10 :
+                                ((cmd == TIMER_CMD_SUB_60) ? -60 : 60));
+                int32_t next = (int32_t)(s_cd_duration_ms / 1000UL) + delta;
+                if (next < 1) next = 1;
+                if (next > 5999) next = 5999;
+                s_cd_remaining_ms = s_cd_duration_ms = (uint32_t)next * 1000UL;
+            }
+            break;
+    }
+    s_timer_last_hud_sec = 0xFFFFFFFFUL;
+    Timer_Update();
+}
+
+static lv_obj_t *Timer_CreateButton(lv_obj_t *parent, int16_t x, int16_t y, int16_t w,
+                                    const char *text, Timer_Command_t cmd, uint32_t color)
+{
+    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, w, 30);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(color), 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(btn, 2, LV_STATE_FOCUSED);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(btn, timer_control_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)cmd);
+    lv_obj_add_event_cb(btn, timer_control_cb, LV_EVENT_KEY, (void *)(uintptr_t)cmd);
+    return btn;
+}
+
+static void Build_Timer_Screen(void)
+{
+    uint32_t accent = s_themes[s_theme_id % THEME_COUNT].title_col;
+    if (s_cd_remaining_ms == 0U) s_cd_remaining_ms = s_cd_duration_ms;
+
+    lv_obj_t *back = Timer_CreateButton(workspace_cont, 6, 4, 60, LV_SYMBOL_LEFT " Back",
+                                        TIMER_CMD_MODE_SW, 0x37474F);
+    lv_obj_remove_event_cb(back, timer_control_cb);
+    lv_obj_add_event_cb(back, btn_widget_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back, btn_widget_back_cb, LV_EVENT_KEY, NULL);
+
+    lv_obj_t *tab_sw = Timer_CreateButton(workspace_cont, 74, 4, 118, "Stopwatch",
+                                          TIMER_CMD_MODE_SW,
+                                          (s_timer_mode == TIMER_MODE_STOPWATCH) ? accent : 0x37474F);
+    lv_obj_t *tab_cd = Timer_CreateButton(workspace_cont, 196, 4, 118, "Countdown",
+                                          TIMER_CMD_MODE_CD,
+                                          (s_timer_mode == TIMER_MODE_COUNTDOWN) ? accent : 0x37474F);
+
+    lv_obj_t *card = lv_obj_create(workspace_cont);
+    lv_obj_set_size(card, 308, 70);
+    lv_obj_set_pos(card, 6, 40);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x101826), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(accent), 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_radius(card, 8, 0);
+
+    s_timer_lbl_time = lv_label_create(card);
+    lv_obj_set_style_text_font(s_timer_lbl_time, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_timer_lbl_time, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(s_timer_lbl_time);
+
+    s_timer_lbl_laps = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(s_timer_lbl_laps, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_pos(s_timer_lbl_laps, 10, 114);
+    lv_obj_set_width(s_timer_lbl_laps, 300);
+    lv_label_set_long_mode(s_timer_lbl_laps, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *primary;
+    lv_obj_t *secondary = NULL;
+    lv_obj_t *reset;
+    lv_obj_t *adj[4] = {NULL};
+    if (s_timer_mode == TIMER_MODE_STOPWATCH)
+    {
+        primary = Timer_CreateButton(workspace_cont, 6, 142, 98, LV_SYMBOL_PLAY " Start",
+                                     TIMER_CMD_PRIMARY, 0x008C5A);
+        secondary = Timer_CreateButton(workspace_cont, 111, 142, 98, "Lap",
+                                       TIMER_CMD_LAP, 0x0277BD);
+        reset = Timer_CreateButton(workspace_cont, 216, 142, 98, LV_SYMBOL_REFRESH " Reset",
+                                   TIMER_CMD_RESET, 0x8E2424);
+    }
+    else
+    {
+        adj[0] = Timer_CreateButton(workspace_cont, 6, 116, 70, "-1m", TIMER_CMD_SUB_60, 0x455A64);
+        adj[1] = Timer_CreateButton(workspace_cont, 82, 116, 70, "-10s", TIMER_CMD_SUB_10, 0x455A64);
+        adj[2] = Timer_CreateButton(workspace_cont, 168, 116, 70, "+10s", TIMER_CMD_ADD_10, 0x00695C);
+        adj[3] = Timer_CreateButton(workspace_cont, 244, 116, 70, "+1m", TIMER_CMD_ADD_60, 0x00695C);
+        primary = Timer_CreateButton(workspace_cont, 6, 162, 148, LV_SYMBOL_PLAY " Start",
+                                     TIMER_CMD_PRIMARY, 0x008C5A);
+        reset = Timer_CreateButton(workspace_cont, 166, 162, 148, LV_SYMBOL_REFRESH " Reset",
+                                   TIMER_CMD_RESET, 0x8E2424);
+        lv_obj_set_pos(s_timer_lbl_laps, 10, 148);
+    }
+    s_timer_lbl_primary = lv_obj_get_child(primary, 0);
+
+    (void)ESPCompanion_HudClear();
+    (void)ESPCompanion_HudSetLine(0, "=== TIMER / STOPWATCH ===");
+    s_timer_last_hud_sec = 0xFFFFFFFFUL;
+    Timer_Update();
+
+    lv_group_t *grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, tab_sw);
+        lv_group_add_obj(grp, tab_cd);
+        for (uint8_t i = 0U; i < 4U; i++)
+        {
+            if (adj[i] != NULL) lv_group_add_obj(grp, adj[i]);
+        }
+        lv_group_add_obj(grp, primary);
+        if (secondary != NULL) lv_group_add_obj(grp, secondary);
+        lv_group_add_obj(grp, reset);
+        lv_group_add_obj(grp, back);
+        lv_group_focus_obj(primary);
+    }
+}
+
 /* ==========================================================================
- * 10. Idle Screensaver / Desk Weather & Sensor Clock
+ * 11. Idle Screensaver / Desk Weather & Sensor Clock
  * ========================================================================== */
 
 static void screensaver_wake_cb(lv_event_t * e)

@@ -42,9 +42,11 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
   - Moved LVGL widget heap (`LV_MEM_ADR = 0x68040000`, `128 KB`) to External FSMC SRAM, dropping internal OS `RAM` utilization to ~50% (`32 KB / 64 KB`).
   - Expanded 0-WS internal SRAM `APP_RAM` sandbox from `32 KB` to **`64 KB`** (`0x20010000..0x2001FFFF`: `60 KB` code+data+bss + `4 KB` stack, MPU Region 2 `64 KB`), doubled C-Script VM capacity (`4096` tokens, `384` idents, `64` functions), and preserved transparent loader compatibility with legacy SDK v1–v3 `.bin` binaries linked at `0x20018000`.
 
+- [x] Widget Tile #4: `Timer` app with persistent Stopwatch state (Start/Pause, Reset, 4 rolling Laps) and Countdown Timer with `-1m/-10s/+10s/+1m` controls, completion buzzer/RGB LED, and ESP32-C6 Game HUD telemetry.
+
 ## Next
 
-- [ ] Widget Tile #4 (`Reserved` slot on Home Page 2): Clock / Timer & Stopwatch or Notes / Todo app.
+- [ ] Office screen (`Notes`, `Todo`, and related productivity tools) with its own 4-tile workspace.
 - [ ] `W25Q128` 16 MB SPI Flash library / LittleFS (`/flash`) for SD-less pinned games & wallpapers.
 
 ## Later
