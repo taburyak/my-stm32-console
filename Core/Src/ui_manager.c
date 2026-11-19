@@ -4778,7 +4778,7 @@ static void Build_SpeedTest_Screen(void)
 
     /* Bottom Summary / Progress Bar Panel */
     lv_obj_t * sum = lv_obj_create(workspace_cont);
-    lv_obj_set_size(sum, 308, 78);
+    lv_obj_set_size(sum, 308, 82);
     lv_obj_set_pos(sum, 6, 132);
     lv_obj_clear_flag(sum, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(sum, lv_color_hex(0x101624), 0);
@@ -4787,8 +4787,8 @@ static void Build_SpeedTest_Screen(void)
     lv_obj_set_style_pad_all(sum, 6, 0);
 
     lv_obj_t * bar = lv_bar_create(sum);
-    lv_obj_set_size(bar, 292, 14);
-    lv_obj_set_pos(bar, 0, 2);
+    lv_obj_set_size(bar, 292, 10);
+    lv_obj_set_pos(bar, 0, 0);
     lv_bar_set_range(bar, 0, 100);
     lv_obj_set_style_bg_color(bar, lv_color_hex(0x1E293B), LV_PART_MAIN);
     lv_obj_set_style_bg_color(bar, lv_color_hex(0x00FF66), LV_PART_INDICATOR);
@@ -4806,38 +4806,40 @@ static void Build_SpeedTest_Screen(void)
     }
     lv_bar_set_value(bar, pct, LV_ANIM_OFF);
 
-    lv_obj_t * slbl = lv_label_create(sum);
-    lv_label_set_recolor(slbl, true);
-    lv_obj_set_style_text_color(slbl, lv_color_hex(0xE2E8F0), 0);
-    lv_obj_set_pos(slbl, 0, 22);
-    lv_obj_set_width(slbl, 292);
+    /* Plain single-color labels: LVGL 8 recolor tags break when a colored span wraps to a new line */
+    lv_obj_t * lbl_state = lv_label_create(sum);
+    lv_obj_set_width(lbl_state, 292);
+    lv_obj_set_pos(lbl_state, 0, 14);
+
+    lv_obj_t * lbl_detail = lv_label_create(sum);
+    lv_obj_set_width(lbl_detail, 292);
+    lv_obj_set_style_text_color(lbl_detail, lv_color_hex(0x90A4AE), 0);
 
     if (!esp_online)
     {
-        lv_label_set_text(slbl,
-            "#FF5555 Companion link inactive.#\n"
-            "#90A4AE Connect ESP32-C6 to P13 (PC6/PC7 @ 921600).#");
+        lv_obj_set_style_text_color(lbl_state, lv_color_hex(0xFF5555), 0);
+        lv_label_set_text(lbl_state, "Companion link inactive.");
+        lv_label_set_text(lbl_detail, "Connect ESP32-C6 to P13 (PC6/PC7 @ 921600).");
     }
     else if (spd->state == 1U)
     {
-        lv_label_set_text(slbl,
-            "#00E5FF Running 3-stage benchmark on ESP32-C6...#\n"
-            "#90A4AE 1) HTTP Ping  2) 512KB Wi-Fi DL  3) 32KB UART6#");
+        lv_obj_set_style_text_color(lbl_state, lv_color_hex(0x00E5FF), 0);
+        lv_label_set_text(lbl_state, "Running 3-stage benchmark...");
+        lv_label_set_text(lbl_detail, "1) HTTP ping  2) 512 KB Wi-Fi DL  3) 32 KB UART6");
     }
     else if (spd->state == 2U)
     {
-        lv_label_set_text_fmt(slbl,
-            "#00FF66 Benchmark Complete!# IP: #00E5FF %s#\n"
-            "#90A4AE UART6 theoretical max: 90.0 KB/s (8N1 framed)#",
-            ESPCompanion_GetWifiIp());
+        lv_obj_set_style_text_color(lbl_state, lv_color_hex(0x00FF66), 0);
+        lv_label_set_text(lbl_state, "Benchmark complete!");
+        lv_label_set_text_fmt(lbl_detail, "IP: %s  |  UART6 max 90.0 KB/s (8N1)", ESPCompanion_GetWifiIp());
     }
     else
     {
-        lv_label_set_text_fmt(slbl,
-            "#FFFFFF Ready:# Press #00FF66 [Start]# to test Wi-Fi & UART6.\n"
-            "#90A4AE Host: http://stm32-console.local (%s)#",
-            ESPCompanion_GetWifiIp());
+        lv_obj_set_style_text_color(lbl_state, lv_color_hex(0xFFFFFF), 0);
+        lv_label_set_text(lbl_state, "Press [Start] to test Wi-Fi & UART6.");
+        lv_label_set_text_fmt(lbl_detail, "Host: stm32-console.local (%s)", ESPCompanion_GetWifiIp());
     }
+    lv_obj_align_to(lbl_detail, lbl_state, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 1);
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)

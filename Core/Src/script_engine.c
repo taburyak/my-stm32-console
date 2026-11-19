@@ -922,6 +922,8 @@ static void sc_skip_stmt(void)
 
 /* ==========================================================================
  * Built-in SDK API Functions Callable from C-Scripts
+ * Keep the Web Studio autocomplete tables (CS_FUNCS / CS_ALIASES / CS_CONSTS in
+ * Libs/esp32_companion/src/web_ui.h) in sync when adding functions or constants.
  * ========================================================================== */
 
 static bool sc_call_builtin(const char *name, int32_t *args, uint8_t argc, uint16_t line, int32_t *out)
