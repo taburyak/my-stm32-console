@@ -61,7 +61,9 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 
 ## Later
 
-- [ ] Audio: centralized `VS1053` MP3/WAV/MIDI/Ogg/FLAC audio decoder module on STM32 console (SPI + DREQ/XDCS/XCS pins, stereo 3.5mm jack / line-out):
+- [~] Audio: centralized `VS1053` MP3/WAV/MIDI/Ogg/FLAC audio decoder module on STM32 console (SPI + DREQ/XDCS/XCS pins, stereo 3.5mm jack / line-out):
+  - [x] Hardware link & driver (`Libs/VS1053`): `SPI2` (`PB13` SCK, `PC3` MOSI, `PC2` MISO via header `P19`), `PB12` XCS, `PC0` XDCS, `PC13` DREQ, `PA2` XRESET (header `P15`, CAN2/RS-485 jumpers removed); hardware + soft reset, RT-MIDI boot-mode fix, `SCI_CLOCKF` 3.0x with SPI 1.3 → 5.25 MHz, volume, sine test; CLI `snd [info|init|test [hz] [sec]|vol <l> [r]]`. Module SD slot unused; `PC6` (`USART6_TX` to ESP32) left unconnected. Use 3-pole stereo headphones/speakers on `SPK` (a 4-pole TRRS headset loses ground and cancels mono audio).
+  - [ ] MP3/WAV/Ogg streaming from SD in a background task (`SPI2_TX` DMA on `DMA1 Stream4`, DREQ-paced 32-byte chunks).
   - System clicks and UI feedback.
   - In-game music, PCM SFX and General MIDI synth for SDK apps (`sys_audio_*`).
   - Internet Radio streaming: ESP32-C6 fetches HTTP audio stream over Wi-Fi, chunks it via framed UART4 packets into STM32 ring buffer, STM32 DMA streams to VS1053 via SPI.

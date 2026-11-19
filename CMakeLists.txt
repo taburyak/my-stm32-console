@@ -100,6 +100,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/W25QXX/w25qxx.c
     Libs/DS18B20/onewire.c
     Libs/DS18B20/ds18b20.c
+    Libs/VS1053/vs1053.c
     FATFS/App/fatfs.c
     FATFS/Target/sd_diskio.c
     FATFS/Target/bsp_driver_sd.c
@@ -163,6 +164,7 @@ set(CONSOLE_OWNED_SOURCES
     Libs/W25QXX/w25qxx.c
     Libs/DS18B20/onewire.c
     Libs/DS18B20/ds18b20.c
+    Libs/VS1053/vs1053.c
     bootloader/Src/boot_main.c
     bootloader/Src/boot_sd_diskio.c
 )
@@ -176,6 +178,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/AT24XXX
     Libs/W25QXX
     Libs/DS18B20
+    Libs/VS1053
     FATFS/App
     FATFS/Target
     Libs/lvgl

@@ -7,6 +7,7 @@
 #include "esp_companion.h"
 #include "console_abi.h"
 #include "fw_update.h"
+#include "vs1053.h"
 #include "memory_map.h"
 #include "ccmram.h"
 #include "lvgl.h"
@@ -21,6 +22,7 @@
 
 extern UART_HandleTypeDef huart3;
 extern IWDG_HandleTypeDef hiwdg;
+extern SPI_HandleTypeDef  hspi2;
 
 #define CLI_RING_SIZE   128U
 #define CLI_LINE_MAX    128U
@@ -199,6 +201,7 @@ static void cmd_help(void)
         "  df | mem               Detailed RAM, LVGL pool, heap & SD usage\r\n"
         "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
         "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
+        "  snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]]  VS1053 audio\r\n"
         "  esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n"
         "  fwupdate[-fast]        Receive fw_update.bin via XMODEM-1K (-fast: 230400)\r\n"
         "  clear | reboot         Clear terminal or reset console\r\n"
@@ -1126,6 +1129,87 @@ static void cmd_fwupdate(bool fast)
     NVIC_SystemReset();
 }
 
+static void cmd_snd(const char *arg)
+{
+    const char *sub = skip_ws(arg);
+    char word[8] = {0};
+    size_t wi = 0U;
+    while (*sub != '\0' && *sub != ' ' && *sub != '\t' && wi + 1U < sizeof(word))
+    {
+        word[wi++] = *sub++;
+    }
+    const char *val = skip_ws(sub);
+
+    if (word[0] == '\0' || str_eq_ci(word, "info"))
+    {
+        printf("VS1053:   %s (version %u, DREQ=%u)\r\n",
+               VS1053_IsPresent() ? "present" : "NOT detected",
+               (unsigned int)VS1053_GetVersion(), VS1053_IsReady() ? 1U : 0U);
+        if (VS1053_IsPresent())
+        {
+            printf("MODE=0x%04X STATUS=0x%04X CLOCKF=0x%04X VOL=0x%04X\r\n",
+                   (unsigned int)VS1053_ReadReg(VS1053_SCI_MODE), (unsigned int)VS1053_ReadReg(VS1053_SCI_STATUS),
+                   (unsigned int)VS1053_ReadReg(VS1053_SCI_CLOCKF), (unsigned int)VS1053_ReadReg(VS1053_SCI_VOL));
+        }
+    }
+    else if (str_eq_ci(word, "init"))
+    {
+        cli_puts(VS1053_Init(&hspi2) ? "VS1053 init OK\r\n" : "ERR: VS1053 init failed (check wiring/power)\r\n");
+    }
+    else if (str_eq_ci(word, "test"))
+    {
+        char *end = NULL;
+        uint32_t req_hz = (*val != '\0') ? (uint32_t)strtoul(val, &end, 10) : 1000U;
+        const char *ds = (end != NULL) ? skip_ws(end) : "";
+        uint32_t secs = (*ds != '\0') ? (uint32_t)strtoul(ds, NULL, 10) : 0U;
+        uint32_t steps = (secs == 0U) ? 30U : ((secs > 30U) ? 600U : secs * 20U);
+        uint32_t act_hz = 0U;
+        uint8_t code = VS1053_SineCode((req_hz == 0U) ? 1000U : req_hz, &act_hz);
+        if (!VS1053_SineStart(code))
+        {
+            cli_puts("ERR: VS1053 not detected (try 'snd init')\r\n");
+            return;
+        }
+        printf("Sine test %lu Hz for %lu.%lu s...\r\n", (unsigned long)act_hz,
+               (unsigned long)(steps / 20U), (unsigned long)((steps % 20U) / 2U));
+        for (uint32_t i = 0U; i < steps; i++)
+        {
+            osDelay(50);
+            (void)HAL_IWDG_Refresh(&hiwdg);
+        }
+        VS1053_SineStop();
+        cli_puts("Done.\r\n");
+    }
+    else if (str_eq_ci(word, "vol"))
+    {
+        if (*val == '\0')
+        {
+            cli_puts("Usage: snd vol <0-254> [right]  (0 = loudest, 0.5 dB per step)\r\n");
+            return;
+        }
+        char *end = NULL;
+        uint32_t l = (uint32_t)strtoul(val, &end, 10);
+        const char *rs = (end != NULL) ? skip_ws(end) : "";
+        uint32_t r = (*rs != '\0') ? (uint32_t)strtoul(rs, NULL, 10) : l;
+        if (l > 254U) l = 254U;
+        if (r > 254U) r = 254U;
+        VS1053_SetVolume((uint8_t)l, (uint8_t)r);
+        printf("Volume attenuation L=%lu R=%lu (0.5 dB steps)\r\n", (unsigned long)l, (unsigned long)r);
+    }
+    else if (str_eq_ci(word, "diff"))
+    {
+        if (str_eq_ci(val, "on") || str_eq_ci(val, "off"))
+        {
+            VS1053_SetDifferential(str_eq_ci(val, "on"));
+        }
+        printf("Differential output (TRRS headset mode): %s\r\n", VS1053_IsDifferential() ? "ON" : "OFF");
+    }
+    else
+    {
+        cli_puts("Usage: snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]]\r\n");
+    }
+}
+
 static void cli_exec(char *line)
 {
     const char *p = skip_ws(line);
@@ -1214,6 +1298,10 @@ static void cli_exec(char *line)
     else if (str_eq_ci(cmd, "esp"))
     {
         cmd_esp(arg);
+    }
+    else if (str_eq_ci(cmd, "snd"))
+    {
+        cmd_snd(arg);
     }
     else if (str_eq_ci(cmd, "fwupdate"))
     {

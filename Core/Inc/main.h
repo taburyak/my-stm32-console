@@ -60,6 +60,8 @@ void Error_Handler(void);
 #define LD0_GPIO_Port GPIOE
 #define LD1_Pin GPIO_PIN_4
 #define LD1_GPIO_Port GPIOE
+#define VS_DREQ_Pin GPIO_PIN_13
+#define VS_DREQ_GPIO_Port GPIOC
 #define KEY_0_Pin GPIO_PIN_6
 #define KEY_0_GPIO_Port GPIOF
 #define KEY_0_EXTI_IRQn EXTI9_5_IRQn
@@ -74,6 +76,10 @@ void Error_Handler(void);
 #define KEY_3_EXTI_IRQn EXTI9_5_IRQn
 #define LCD_BL_Pin GPIO_PIN_10
 #define LCD_BL_GPIO_Port GPIOF
+#define VS_XDCS_Pin GPIO_PIN_0
+#define VS_XDCS_GPIO_Port GPIOC
+#define VS_XRESET_Pin GPIO_PIN_2
+#define VS_XRESET_GPIO_Port GPIOA
 #define T_CLK_Pin GPIO_PIN_5
 #define T_CLK_GPIO_Port GPIOA
 #define T_CS_Pin GPIO_PIN_0
@@ -85,6 +91,8 @@ void Error_Handler(void);
 #define T_PEN_Pin GPIO_PIN_11
 #define T_PEN_GPIO_Port GPIOF
 #define T_PEN_EXTI_IRQn EXTI15_10_IRQn
+#define VS_XCS_Pin GPIO_PIN_12
+#define VS_XCS_GPIO_Port GPIOB
 #define BEEPER_Pin GPIO_PIN_7
 #define BEEPER_GPIO_Port GPIOG
 #define W25_CS_Pin GPIO_PIN_8
