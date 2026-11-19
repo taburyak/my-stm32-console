@@ -14,6 +14,8 @@
 #define AUDIO_READ_BUF_SIZE     2048U
 #define AUDIO_FIFO_WAIT_MS      3U    /* VS1053 FIFO (2 KB) lasts ~50 ms at 320 kbps */
 #define AUDIO_FLAG_CMD          0x0001U
+#define AUDIO_READ_RETRIES      3U
+#define AUDIO_RETRY_DELAY_MS    20U
 
 typedef enum
 {
@@ -27,7 +29,8 @@ CCMRAM_BUF static StackType_t  s_task_stack[AUDIO_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t s_task_tcb;
 static osThreadId_t            s_task = NULL;
 
-/* Read buffer and FIL (with its sector buffer) are SDIO DMA targets: external FSMC SRAM, never CCM */
+/* Read buffer and FIL live in external FSMC SRAM to save internal RAM; sd_diskio bounces
+ * ext-SRAM buffers through its internal scratch sector, so SDIO DMA never targets FSMC */
 static uint8_t *const s_buf  = (uint8_t *)MM_EXT_AUDIO_BUF;
 static FIL *const     s_file = (FIL *)(MM_EXT_AUDIO_BUF + AUDIO_READ_BUF_SIZE);
 _Static_assert(AUDIO_READ_BUF_SIZE + sizeof(FIL) <= MM_EXT_AUDIO_BUF_SIZE, "Audio buffers exceed MM_EXT_AUDIO_BUF");
@@ -127,18 +130,41 @@ static void ap_handle_cmd(void)
     }
 }
 
+/* A failed read leaves the FIL in a sticky error state: reopen and seek back to the unread offset */
+static FRESULT ap_read_retry(UINT *br)
+{
+    FRESULT fr = f_read(s_file, s_buf, AUDIO_READ_BUF_SIZE, br);
+    for (uint32_t attempt = 1U; fr != FR_OK && attempt <= AUDIO_READ_RETRIES; attempt++)
+    {
+        printf("[AUDIO] SD read error %d at %lu, retry %lu\r\n", (int)fr, (unsigned long)s_bytes_sent,
+               (unsigned long)attempt);
+        (void)f_close(s_file);
+        osDelay(AUDIO_RETRY_DELAY_MS);
+        fr = f_open(s_file, s_cur_path, FA_READ);
+        if (fr == FR_OK)
+        {
+            fr = f_lseek(s_file, s_bytes_sent);
+        }
+        if (fr == FR_OK)
+        {
+            fr = f_read(s_file, s_buf, AUDIO_READ_BUF_SIZE, br);
+        }
+    }
+    return fr;
+}
+
 /* @return true while the decoder keeps accepting data, false when its FIFO is full or the track ended */
 static bool ap_feed(void)
 {
     if (s_buf_pos >= s_buf_len)
     {
         UINT    br = 0U;
-        FRESULT fr = f_read(s_file, s_buf, AUDIO_READ_BUF_SIZE, &br);
+        FRESULT fr = ap_read_retry(&br);
         if (fr != FR_OK || br == 0U)
         {
             if (fr != FR_OK)
             {
-                printf("[AUDIO] SD read error %d\r\n", (int)fr);
+                printf("[AUDIO] SD read failed (%d), stopping\r\n", (int)fr);
             }
             ap_close(fr != FR_OK);
             printf("[AUDIO] Finished '/%s'\r\n", s_cur_path);

@@ -831,6 +831,19 @@ void BSP_SD_ReadCpltCallback(void)
 }
 
 /* USER CODE BEGIN ErrorAbortCallbacks */
+#define RW_ERROR_MSG       (uint32_t) 3
+
+/* DMA/SDIO error (e.g. RX overrun, CRC): wake the waiting SD_read/SD_write at once instead of
+ * letting it sit out SD_TIMEOUT while holding the FatFs volume lock (the UI would see FR_TIMEOUT) */
+void HAL_SD_ErrorCallback(SD_HandleTypeDef *hsd)
+{
+  (void)hsd;
+  const uint16_t msg = RW_ERROR_MSG;
+  if (SDQueueID != NULL)
+  {
+    (void)osMessageQueuePut(SDQueueID, (const void *)&msg, 0, 0);
+  }
+}
 /*
 void BSP_SD_AbortCallback(void)
 {
