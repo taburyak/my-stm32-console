@@ -47,12 +47,11 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 ## Next
 
 - [ ] Office screen (`Notes`, `Todo`, and related productivity tools) with its own 4-tile workspace.
-- [ ] Games Hub favorites cache (bounded recent/popular launcher):
-  - Keep the built-in Arkanoid tile plus up to 7 dynamic slots; do not enumerate every SD game on Home/Games startup.
-  - Record each launch from SD Files, Games, Web Studio, or UART/ESP RPC in `SD:/system/games_stats.cfg` (launch count + last-used tick).
-  - Rank tiles by launch count, then last-used time, with the newest item winning ties; evict the lowest-ranked dynamic tile when the 8-tile limit is reached.
-  - Newly installed or rarely used apps remain launchable from SD Explorer; they enter the Games Hub only after a successful launch.
-- [ ] `W25Q128` 16 MB SPI Flash library / LittleFS (`/flash`) for SD-less pinned games & wallpapers.
+- [ ] Pinned W25Q128 Games & Assets Library (`16 MB SPI Flash`, SD-independent) -- postponed:
+  - Current Games Hub remains SD-based: built-in games plus `.bin` / `.c` files and optional BMP icons from `SD:/games`.
+  - Initial pinning prototype did not appear in the Hub and caused a system reset/lost USB keyboard on one game, so all pin action and startup paths are disabled.
+  - Before re-enabling, validate catalog persistence, non-overlapping W25Q regions, shared external-SRAM buffers, SPI write/erase timing, and failure recovery independently of Games UI.
+- [x] UART3 OTA baud negotiation: keep interactive CLI/debug at `115200`, request a temporary `230400` XMODEM mode with an explicit PC/console handshake, and restore `115200` after success, timeout, or failure.
 - [ ] Architecture portability & hardware-capability revision:
   - Audit project structure, dead code/docs, stale comments, duplicate helpers, generated-vs-owned files, and magic constants; consolidate product configuration into explicit board/project headers.
   - Define portable service contracts and hardware capability discovery for display, touch/mouse/keyboard/gamepad, UART CLI/debug, storage (SD + W25Q), RTC/sensors, buzzer/audio, and optional ESP32 companion.

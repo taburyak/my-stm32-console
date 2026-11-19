@@ -200,7 +200,7 @@ static void cmd_help(void)
         "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
         "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
         "  esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n"
-        "  fwupdate               Receive fw_update.bin via XMODEM-1K and flash\r\n"
+        "  fwupdate[-fast]        Receive fw_update.bin via XMODEM-1K (-fast: 230400)\r\n"
         "  clear | reboot         Clear terminal or reset console\r\n"
     );
 }
@@ -846,6 +846,17 @@ static uint32_t cli_crc32_update(uint32_t crc, const uint8_t *buf, uint32_t len)
     return ~crc;
 }
 
+static void cli_uart3_set_baud(uint32_t baud)
+{
+    while (!LL_USART_IsActiveFlag_TC(USART3)) {}
+    LL_USART_Disable(USART3);
+    LL_USART_SetBaudRate(USART3, HAL_RCC_GetPCLK1Freq(), LL_USART_OVERSAMPLING_16, baud);
+    while (LL_USART_IsActiveFlag_RXNE(USART3)) (void)LL_USART_ReceiveData8(USART3);
+    if (LL_USART_IsActiveFlag_ORE(USART3)) LL_USART_ClearFlag_ORE(USART3);
+    LL_USART_Enable(USART3);
+    huart3.Init.BaudRate = baud;
+}
+
 static bool cli_uart3_getc(uint8_t *out, uint32_t timeout_ms)
 {
     uint32_t t0 = HAL_GetTick();
@@ -860,6 +871,39 @@ static bool cli_uart3_getc(uint8_t *out, uint32_t timeout_ms)
         }
     }
     return false;
+}
+
+static bool cli_negotiate_fast_xmodem(void)
+{
+    const uint8_t offer = 0xA5U;
+    const uint8_t ack   = 0x5AU;
+    const uint8_t ready = 0xAAU;
+
+    HAL_NVIC_DisableIRQ(USART3_IRQn);
+    __HAL_UART_DISABLE_IT(&huart3, UART_IT_RXNE);
+    while (LL_USART_IsActiveFlag_RXNE(USART3)) (void)LL_USART_ReceiveData8(USART3);
+
+    uint8_t response = 0U;
+    bool negotiated = false;
+    for (uint32_t attempt = 0U; attempt < 8U; attempt++)
+    {
+        cli_putc((char)offer);
+        if (cli_uart3_getc(&response, 250U) && response == ack)
+        {
+            cli_putc((char)ready);
+            negotiated = true;
+            break;
+        }
+    }
+
+    __HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
+    if (negotiated)
+    {
+        osDelay(100);
+        cli_uart3_set_baud(230400U);
+    }
+    return negotiated;
 }
 
 static bool is_text_ext(const char *path)
@@ -1000,7 +1044,7 @@ static void cmd_rx(const char *arg)
     }
 }
 
-static void cmd_fwupdate(void)
+static void cmd_fwupdate(bool fast)
 {
     if (!SDCard_IsMounted())
     {
@@ -1008,13 +1052,28 @@ static void cmd_fwupdate(void)
         return;
     }
 
-    cli_puts("Ready for xmodem-1k fw_update.bin (30s timeout)...\r\n");
-    osDelay(20);
+    if (fast)
+    {
+        if (!cli_negotiate_fast_xmodem())
+        {
+            cli_puts("\r\nERR: fast baud negotiation failed; UART3 remains at 115200.\r\n");
+            return;
+        }
+    }
+    else
+    {
+        cli_puts("Ready for xmodem-1k fw_update.bin (30s timeout)...\r\n");
+        osDelay(20);
+    }
 
     (void)f_mkdir("system");
     uint32_t total_rx = 0U;
-    if (!cli_receive_xmodem_to_file(FW_UPDATE_SD_PATH, false, &total_rx) ||
-        total_rx < sizeof(FwUpdate_Header_t))
+    bool received = cli_receive_xmodem_to_file(FW_UPDATE_SD_PATH, false, &total_rx);
+    if (fast)
+    {
+        cli_uart3_set_baud(115200U);
+    }
+    if (!received || total_rx < sizeof(FwUpdate_Header_t))
     {
         (void)f_unlink(FW_UPDATE_SD_PATH);
         cli_puts("\r\nERR: XMODEM transfer failed.\r\n");
@@ -1158,7 +1217,11 @@ static void cli_exec(char *line)
     }
     else if (str_eq_ci(cmd, "fwupdate"))
     {
-        cmd_fwupdate();
+        cmd_fwupdate(false);
+    }
+    else if (str_eq_ci(cmd, "fwupdate-fast"))
+    {
+        cmd_fwupdate(true);
     }
     else if (str_eq_ci(cmd, "reboot"))
     {
