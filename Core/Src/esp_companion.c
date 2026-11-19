@@ -1055,6 +1055,15 @@ bool ESPCompanion_SetLedRgb(uint8_t r, uint8_t g, uint8_t b)
     return s_is_connected;
 }
 
+bool ESPCompanion_HudSetPersistent(bool persistent)
+{
+    s_game_hud_dirty = persistent || s_game_hud_dirty;
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "STM32:GHUD_KEEP,%u\n", persistent ? 1U : 0U);
+    Send_Raw_Line(cmd);
+    return s_is_connected;
+}
+
 bool ESPCompanion_HudRestore(void)
 {
     if (!s_game_hud_dirty)
@@ -1062,7 +1071,7 @@ bool ESPCompanion_HudRestore(void)
         return true;
     }
     s_game_hud_dirty = false;
-    Send_Raw_Line("STM32:GHUD_EXIT\n");
+    Send_Raw_Line("STM32:GHUD_KEEP,0\nSTM32:GHUD_EXIT\n");
     return true;
 }
 

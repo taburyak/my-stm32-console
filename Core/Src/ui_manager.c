@@ -5167,6 +5167,7 @@ static void Build_Timer_Screen(void)
     s_timer_lbl_primary = lv_obj_get_child(primary, 0);
 
     (void)ESPCompanion_HudClear();
+    (void)ESPCompanion_HudSetPersistent(true);
     (void)ESPCompanion_HudSetLine(0, "=== TIMER / STOPWATCH ===");
     s_timer_last_hud_sec = 0xFFFFFFFFUL;
     Timer_Update();

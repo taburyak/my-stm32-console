@@ -121,6 +121,7 @@ bool ESPCompanion_StartSpeedTest(void);
 bool ESPCompanion_HudClear(void);
 bool ESPCompanion_HudSetLine(uint8_t line_idx, const char *text);
 bool ESPCompanion_SetLedRgb(uint8_t r, uint8_t g, uint8_t b);
+bool ESPCompanion_HudSetPersistent(bool persistent);
 bool ESPCompanion_HudRestore(void);
 bool ESPCompanion_SetIdleMode(bool idle);
 

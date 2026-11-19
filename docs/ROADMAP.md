@@ -47,7 +47,18 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` planned.
 ## Next
 
 - [ ] Office screen (`Notes`, `Todo`, and related productivity tools) with its own 4-tile workspace.
+- [ ] Games Hub favorites cache (bounded recent/popular launcher):
+  - Keep the built-in Arkanoid tile plus up to 7 dynamic slots; do not enumerate every SD game on Home/Games startup.
+  - Record each launch from SD Files, Games, Web Studio, or UART/ESP RPC in `SD:/system/games_stats.cfg` (launch count + last-used tick).
+  - Rank tiles by launch count, then last-used time, with the newest item winning ties; evict the lowest-ranked dynamic tile when the 8-tile limit is reached.
+  - Newly installed or rarely used apps remain launchable from SD Explorer; they enter the Games Hub only after a successful launch.
 - [ ] `W25Q128` 16 MB SPI Flash library / LittleFS (`/flash`) for SD-less pinned games & wallpapers.
+- [ ] Architecture portability & hardware-capability revision:
+  - Audit project structure, dead code/docs, stale comments, duplicate helpers, generated-vs-owned files, and magic constants; consolidate product configuration into explicit board/project headers.
+  - Define portable service contracts and hardware capability discovery for display, touch/mouse/keyboard/gamepad, UART CLI/debug, storage (SD + W25Q), RTC/sensors, buzzer/audio, and optional ESP32 companion.
+  - Treat every optional peripheral as degradable: no keyboard, mouse, gamepad, touch, audio board, SD, or ESP32 companion must remove another usable input/output path or break boot/UI.
+  - Separate board support from portable OS/services/apps: keep MCU/HAL-specific code, pin maps, memory layout, DMA constraints, clock/peripheral setup, and BSP calls behind `board/` or `bsp/` adapters with documented implementation points for STM32 and future Infineon/other MCUs.
+  - Produce a migration guide with required adapter APIs and validation checklist for display init/window drawing, UART debug/CLI, block storage, input polling/events, RTC/time, audio, companion link, and firmware update.
 
 ## Later
 

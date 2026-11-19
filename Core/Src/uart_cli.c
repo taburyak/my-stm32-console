@@ -199,7 +199,7 @@ static void cmd_help(void)
         "  df | mem               Detailed RAM, LVGL pool, heap & SD usage\r\n"
         "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
         "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
-        "  esp <status|wifi [ssid pass]|wth|sync|speedtest>\r\n"
+        "  esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n"
         "  fwupdate               Receive fw_update.bin via XMODEM-1K and flash\r\n"
         "  clear | reboot         Clear terminal or reset console\r\n"
     );
@@ -764,6 +764,16 @@ static void cmd_esp(const char *arg)
                    ssid, sd_saved ? "saved" : "skip", sent ? "connecting" : "offline");
         }
     }
+    else if (strncmp(sub, "hudkeep ", 8) == 0 || strncmp(sub, "HUDKEEP ", 8) == 0)
+    {
+        bool persistent = (atoi(skip_ws(sub + 8)) != 0);
+        bool ok = ESPCompanion_HudSetPersistent(persistent);
+        printf("HUD persistent: %s (%s)\r\n", persistent ? "ON" : "OFF", ok ? "sent" : "offline");
+        if (!persistent)
+        {
+            (void)ESPCompanion_HudRestore();
+        }
+    }
     else if (str_eq_ci(sub, "speedtest") || str_eq_ci(sub, "spd"))
     {
         const ESP_SpeedTestInfo_t *spd = ESPCompanion_GetSpeedTest();
@@ -804,7 +814,7 @@ static void cmd_esp(const char *arg)
     }
     else
     {
-        cli_puts("Usage: esp <status|wifi [ssid pass]|wth|sync|speedtest>\r\n");
+        cli_puts("Usage: esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n");
     }
 }
 
