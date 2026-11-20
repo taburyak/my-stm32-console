@@ -377,6 +377,23 @@ static void ap_handle_cmd(void)
             {
                 ap_open(s_cur_path); /* Play after Stop resumes the last track from the start */
             }
+            else
+            {
+                /* Nothing played yet (e.g. keyboard Play key): first track of SD:/Music, else of the root */
+                char first[AUDIO_PLAYER_PATH_MAX];
+                snprintf(s_cur_path, sizeof(s_cur_path), "Music/");
+                bool ok = ap_pick_track(1, false, true, first, sizeof(first));
+                if (!ok)
+                {
+                    s_cur_path[0] = '\0';
+                    ok = ap_pick_track(1, false, true, first, sizeof(first));
+                }
+                s_cur_path[0] = '\0';
+                if (ok)
+                {
+                    ap_open(first);
+                }
+            }
             s_track_seq++;
             break;
 

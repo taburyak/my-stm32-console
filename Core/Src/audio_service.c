@@ -30,6 +30,7 @@ _Static_assert(sizeof(AudioSvc_Config_t) == 8U, "Audio EEPROM block must fit one
 
 static AudioSvc_Config_t s_cfg;
 static AudioSvc_Config_t s_saved;
+static bool              s_muted = false;
 
 static uint8_t cfg_check(const AudioSvc_Config_t *c)
 {
@@ -57,8 +58,8 @@ void AudioSvc_Apply(void)
     {
         return;
     }
-    /* 0.5 dB attenuation steps: 100% = 0 dB, 1% = -49.5 dB, 0% = analog power-down level (mute) */
-    uint8_t att = (s_cfg.volume == 0U) ? 0xFEU : (uint8_t)(AUDIO_VOLUME_MAX - s_cfg.volume);
+    /* 0.5 dB attenuation steps: 100% = 0 dB, 1% = -49.5 dB, 0% or mute = analog power-down level */
+    uint8_t att = (s_cfg.volume == 0U || s_muted) ? 0xFEU : (uint8_t)(AUDIO_VOLUME_MAX - s_cfg.volume);
     VS1053_SetVolume(att, att);
 
     int8_t   treble = (int8_t)((int32_t)s_cfg.treble_biased - 8);
@@ -113,6 +114,18 @@ uint8_t AudioSvc_GetVolume(void)
 void AudioSvc_SetVolume(uint8_t percent)
 {
     s_cfg.volume = (percent > AUDIO_VOLUME_MAX) ? (uint8_t)AUDIO_VOLUME_MAX : percent;
+    s_muted      = false;
+    AudioSvc_Apply();
+}
+
+bool AudioSvc_IsMuted(void)
+{
+    return s_muted;
+}
+
+void AudioSvc_SetMuted(bool muted)
+{
+    s_muted = muted;
     AudioSvc_Apply();
 }
 

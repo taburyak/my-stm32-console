@@ -49,6 +49,26 @@ static volatile uint32_t s_vpad_exit_tick  = 0U;
 /* Lookup table: HID Scancode to ASCII [unshifted, shifted] */
 static uint8_t const keycode2ascii[128][2] = { HID_KEYCODE_TO_ASCII };
 
+/* Role of each mounted HID interface, decided from its protocol and report descriptor */
+typedef enum
+{
+    HID_ITF_KIND_NONE = 0,
+    HID_ITF_KIND_KEYBOARD,
+    HID_ITF_KIND_MOUSE,
+    HID_ITF_KIND_GAMEPAD,
+    HID_ITF_KIND_MEDIA      /* Consumer Control only (multimedia keys of a keyboard) */
+} HidItfKind_t;
+
+#define MEDIA_RID_NONE    0xFFFFU
+#define MEDIA_QUEUE_SIZE  8U
+
+static HidItfKind_t      s_itf_kind[CFG_TUH_HID];
+static uint16_t          s_media_rid[CFG_TUH_HID];  /* Consumer report ID (0 = no IDs), MEDIA_RID_NONE */
+static volatile uint16_t s_media_held = 0U;
+static volatile uint16_t s_media_queue[MEDIA_QUEUE_SIZE];
+static volatile uint8_t  s_media_head = 0U;
+static volatile uint8_t  s_media_tail = 0U;
+
 static void enqueue_app_key(uint8_t scancode, uint8_t ascii, bool is_pressed, uint8_t modifiers)
 {
     if (!AppLoader_IsRunning())
@@ -580,24 +600,112 @@ static void Parse_Gamepad_Report(uint8_t const *buf, uint16_t len)
  * TinyUSB Host HID Callbacks
  * ========================================================================== */
 
+/* Consumer Control (media keys) report: [report ID] + one 16-bit usage, 0 = released */
+static void Parse_Media_Report(uint8_t instance, uint8_t const *report, uint16_t len)
+{
+    uint16_t rid = s_media_rid[instance];
+    if (rid != 0U)
+    {
+        if (len < 1U || report[0] != (uint8_t)rid)
+        {
+            return; /* other collections of the interface, e.g. System Control (power / sleep) */
+        }
+        report++;
+        len--;
+    }
+    uint16_t usage = (len >= 2U) ? (uint16_t)(report[0] | ((uint16_t)report[1] << 8))
+                                 : ((len == 1U) ? report[0] : 0U);
+    if (usage != 0U && usage != s_media_held)
+    {
+        uint8_t next = (uint8_t)((s_media_head + 1U) % MEDIA_QUEUE_SIZE);
+        if (next != s_media_tail)
+        {
+            s_media_queue[s_media_head] = usage;
+            s_media_head = next;
+        }
+    }
+    s_media_held = usage;
+}
+
+bool USBHostManager_TakeMediaKey(uint16_t *usage)
+{
+    if (usage == NULL || s_media_tail == s_media_head)
+    {
+        return false;
+    }
+    *usage = s_media_queue[s_media_tail];
+    s_media_tail = (uint8_t)((s_media_tail + 1U) % MEDIA_QUEUE_SIZE);
+    return true;
+}
+
+uint16_t USBHostManager_GetMediaKeyHeld(void)
+{
+    return s_media_held;
+}
+
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_report, uint16_t desc_len)
 {
-    (void)desc_report;
-    (void)desc_len;
-
     uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
+    if (instance >= CFG_TUH_HID)
+    {
+        return;
+    }
+
+    /* Look at the top-level collections: a keyboard's second interface often holds only
+     * Consumer Control (media keys) and System Control, which must not become a keyboard or gamepad */
+    tuh_hid_report_info_t info[4];
+    uint8_t n = tuh_hid_parse_report_descriptor(info, 4U, desc_report, desc_len);
+    bool has_kbd = false, has_mouse = false, has_pad = false;
+    s_media_rid[instance] = MEDIA_RID_NONE;
+    for (uint8_t i = 0U; i < n; i++)
+    {
+        if (info[i].usage_page == HID_USAGE_PAGE_CONSUMER && info[i].usage == HID_USAGE_CONSUMER_CONTROL)
+        {
+            s_media_rid[instance] = info[i].report_id;
+        }
+        else if (info[i].usage_page == HID_USAGE_PAGE_DESKTOP)
+        {
+            has_kbd   |= (info[i].usage == HID_USAGE_DESKTOP_KEYBOARD);
+            has_mouse |= (info[i].usage == HID_USAGE_DESKTOP_MOUSE);
+            has_pad   |= (info[i].usage == HID_USAGE_DESKTOP_JOYSTICK) || (info[i].usage == HID_USAGE_DESKTOP_GAMEPAD);
+        }
+    }
+
+    HidItfKind_t kind;
+    if (s_media_rid[instance] != MEDIA_RID_NONE && !has_kbd && !has_mouse && !has_pad)
+    {
+        kind = HID_ITF_KIND_MEDIA;
+        /* Boot protocol (set on enumeration for boot-class interfaces) carries no media usages */
+        if (itf_protocol != HID_ITF_PROTOCOL_NONE)
+        {
+            (void)tuh_hid_set_protocol(dev_addr, instance, HID_PROTOCOL_REPORT);
+        }
+    }
+    else if (itf_protocol == HID_ITF_PROTOCOL_KEYBOARD)
+    {
+        kind = HID_ITF_KIND_KEYBOARD;
+    }
+    else if (itf_protocol == HID_ITF_PROTOCOL_MOUSE)
+    {
+        kind = HID_ITF_KIND_MOUSE;
+    }
+    else
+    {
+        kind = HID_ITF_KIND_GAMEPAD; /* Generic HID (Protocol 0) -> Gamepad STK-7024X */
+    }
+    s_itf_kind[instance] = kind;
 
     g_usb_dbg.last_host_id = 2U; /* CLASS_ACTIVE */
     g_usb_dbg.hid_state    = 6U; /* POLL */
 
-    if (itf_protocol == HID_ITF_PROTOCOL_KEYBOARD)
+    if (kind == HID_ITF_KIND_KEYBOARD)
     {
         is_kbd_ready = true;
         g_usb_dbg.detected_dev_type = USB_DEV_TYPE_KEYBOARD;
         printf("[USB] HID Keyboard Mounted (addr=%u, inst=%u)\r\n", dev_addr, instance);
         Beeper_BootMelody();
     }
-    else if (itf_protocol == HID_ITF_PROTOCOL_MOUSE)
+    else if (kind == HID_ITF_KIND_MOUSE)
     {
         is_mouse_ready = true;
         current_mouse_state.x = 160;
@@ -608,9 +716,14 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
         printf("[USB] HID Mouse Mounted (addr=%u, inst=%u)\r\n", dev_addr, instance);
         Beeper_BootMelody();
     }
+    else if (kind == HID_ITF_KIND_MEDIA)
+    {
+        s_media_held = 0U;
+        printf("[USB] HID Media Keys Mounted (addr=%u, inst=%u, report id %u)\r\n", dev_addr, instance,
+               (unsigned int)s_media_rid[instance]);
+    }
     else
     {
-        /* Generic HID (Protocol 0) -> Gamepad STK-7024X */
         is_gamepad_ready = true;
         g_usb_dbg.detected_dev_type = USB_DEV_TYPE_GAMEPAD;
         printf("[USB] HID Gamepad Mounted (addr=%u, inst=%u)\r\n", dev_addr, instance);
@@ -622,19 +735,28 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
-    uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
+    HidItfKind_t kind = (instance < CFG_TUH_HID) ? s_itf_kind[instance] : HID_ITF_KIND_NONE;
 
-    if (itf_protocol == HID_ITF_PROTOCOL_KEYBOARD)
+    if (kind == HID_ITF_KIND_KEYBOARD)
     {
         is_kbd_ready = false;
     }
-    else if (itf_protocol == HID_ITF_PROTOCOL_MOUSE)
+    else if (kind == HID_ITF_KIND_MOUSE)
     {
         is_mouse_ready = false;
     }
-    else
+    else if (kind == HID_ITF_KIND_GAMEPAD)
     {
         is_gamepad_ready = false;
+    }
+    else if (kind == HID_ITF_KIND_MEDIA)
+    {
+        s_media_held = 0U;
+    }
+    if (instance < CFG_TUH_HID)
+    {
+        s_itf_kind[instance]  = HID_ITF_KIND_NONE;
+        s_media_rid[instance] = MEDIA_RID_NONE;
     }
 
     if (!is_kbd_ready && !is_mouse_ready && !is_gamepad_ready)
@@ -658,17 +780,20 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         g_usb_dbg.raw_report[i] = report[i];
     }
 
-    uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
-
-    if (itf_protocol == HID_ITF_PROTOCOL_KEYBOARD)
+    HidItfKind_t kind = (instance < CFG_TUH_HID) ? s_itf_kind[instance] : HID_ITF_KIND_NONE;
+    if (kind == HID_ITF_KIND_KEYBOARD)
     {
         Parse_Keyboard_Report(report, len);
     }
-    else if (itf_protocol == HID_ITF_PROTOCOL_MOUSE)
+    else if (kind == HID_ITF_KIND_MOUSE)
     {
         Parse_Mouse_Report(report, len);
     }
-    else
+    else if (kind == HID_ITF_KIND_MEDIA)
+    {
+        Parse_Media_Report(instance, report, len);
+    }
+    else if (kind == HID_ITF_KIND_GAMEPAD)
     {
         Parse_Gamepad_Report(report, len);
     }

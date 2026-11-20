@@ -112,6 +112,14 @@ void    USBHostManager_SetVirtualPad(uint16_t mask, int8_t lx, int8_t ly);
 uint16_t USBHostManager_GetVirtualGameMask(void);
 uint16_t USBHostManager_ConsumeVirtualGameMask(void);
 
+/**
+ * @brief Next pressed multimedia key (HID Consumer usage, e.g. HID_USAGE_CONSUMER_VOLUME_INCREMENT)
+ *        from a keyboard's Consumer Control interface. Press edges only.
+ */
+bool     USBHostManager_TakeMediaKey(uint16_t *usage);
+/** @brief Consumer usage currently held down (0 = none), for auto-repeat of volume keys. */
+uint16_t USBHostManager_GetMediaKeyHeld(void);
+
 #ifdef __cplusplus
 }
 #endif

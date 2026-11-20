@@ -34,7 +34,11 @@ void AudioSvc_Apply(void);
 void AudioSvc_Save(void);
 
 uint8_t            AudioSvc_GetVolume(void);
+/** @brief Set volume (also clears mute); call AudioSvc_Save() to persist. */
 void               AudioSvc_SetVolume(uint8_t percent);
+/** @brief Temporary mute (not persisted): output attenuated to silence, volume kept. */
+bool               AudioSvc_IsMuted(void);
+void               AudioSvc_SetMuted(bool muted);
 int8_t             AudioSvc_GetBass(void);
 void               AudioSvc_SetBass(int8_t db);
 int8_t             AudioSvc_GetTreble(void);

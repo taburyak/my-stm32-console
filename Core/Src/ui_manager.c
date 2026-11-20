@@ -164,6 +164,7 @@ static void Build_Timer_Screen(void);
 static void Build_Sound_Screen(void);
 static void Build_Music_Screen(void);
 static void Music_Update(void);
+static void Media_Keys_Process(void);
 static void Screensaver_UpdateMusic(void);
 static const char *Home_PageTitle(uint8_t col);
 static void Build_Screensaver_Screen(void);
@@ -704,6 +705,8 @@ void UIManager_Update(void)
         UIManager_ShowScreen(target);
     }
 
+    Media_Keys_Process();
+
     static uint32_t last_status_tick = 0;
 
     if ((HAL_GetTick() - last_status_tick) < 250U)
@@ -741,7 +744,8 @@ void UIManager_Update(void)
 
     const char *c_hot = TempSensor_IsOverheated()       ? " #FF2222 HOT!#" : "";
     AudioPlayer_State_t mus_state = AudioPlayer_GetState();
-    const char *c_mus = (mus_state == AUDIO_STATE_PLAYING) ? "#FF40FF " LV_SYMBOL_AUDIO "# "
+    const char *c_mus = AudioSvc_IsMuted()                 ? "#FF5555 " LV_SYMBOL_MUTE "# "
+                      : (mus_state == AUDIO_STATE_PLAYING) ? "#FF40FF " LV_SYMBOL_AUDIO "# "
                       : (mus_state == AUDIO_STATE_PAUSED)  ? "#90A4AE " LV_SYMBOL_PAUSE "# " : "";
 
     lv_label_set_text_fmt(lbl_status_icons, "%s%s %s %s %s %s%s", c_mus, c_sd, c_kbd, c_mse, c_pad, c_esp, c_hot);
@@ -4052,6 +4056,121 @@ static void Build_Sound_Screen(void)
     if (grp != NULL && vol_up != NULL)
     {
         lv_group_focus_obj(vol_up);
+    }
+}
+
+/* ==========================================================================
+ * Keyboard Multimedia Keys (HID Consumer Control) + on-screen volume toast
+ * ========================================================================== */
+
+#define MEDIA_VOL_STEP         5U
+#define MEDIA_REPEAT_DELAY_MS  400U
+#define MEDIA_REPEAT_RATE_MS   120U
+#define MEDIA_SAVE_DELAY_MS    1000U
+#define MEDIA_TOAST_MS         1200U
+
+static lv_obj_t *s_media_toast       = NULL;
+static uint32_t  s_media_toast_tick  = 0U;
+static uint32_t  s_media_repeat_tick = 0U;
+static uint32_t  s_media_save_tick   = 0U;
+static bool      s_media_save_due    = false;
+
+static void Media_ShowToast(const char *text)
+{
+    if (s_media_toast == NULL)
+    {
+        /* Top layer: survives screen rebuilds (lv_obj_clean of the workspace) */
+        s_media_toast = lv_label_create(lv_layer_top());
+        lv_obj_set_style_bg_color(s_media_toast, lv_color_hex(0x101826), 0);
+        lv_obj_set_style_bg_opa(s_media_toast, LV_OPA_90, 0);
+        lv_obj_set_style_border_color(s_media_toast, lv_color_hex(0xFF40FF), 0);
+        lv_obj_set_style_border_width(s_media_toast, 1, 0);
+        lv_obj_set_style_radius(s_media_toast, 6, 0);
+        lv_obj_set_style_pad_all(s_media_toast, 6, 0);
+        lv_obj_set_style_text_color(s_media_toast, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_align(s_media_toast, LV_ALIGN_TOP_MID, 0, 30);
+    }
+    lv_label_set_text(s_media_toast, text);
+    lv_obj_clear_flag(s_media_toast, LV_OBJ_FLAG_HIDDEN);
+    s_media_toast_tick = HAL_GetTick();
+}
+
+static void Media_ChangeVolume(int32_t delta)
+{
+    int32_t vol = (int32_t)AudioSvc_GetVolume() + delta;
+    if (vol < 0) vol = 0;
+    if (vol > (int32_t)AUDIO_VOLUME_MAX) vol = (int32_t)AUDIO_VOLUME_MAX;
+    AudioSvc_SetVolume((uint8_t)vol);
+    s_media_save_due  = true;
+    s_media_save_tick = HAL_GetTick();
+    char txt[24];
+    snprintf(txt, sizeof(txt), "%s %u%%", (vol == 0) ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX, (unsigned int)vol);
+    Media_ShowToast(txt);
+    Sound_UpdateLabels();
+}
+
+static void Media_Keys_Process(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint16_t usage;
+    while (USBHostManager_TakeMediaKey(&usage))
+    {
+        lv_disp_trig_activity(NULL); /* media keys count as user activity for the screensaver */
+        s_media_repeat_tick = now + MEDIA_REPEAT_DELAY_MS;
+        switch (usage)
+        {
+            case HID_USAGE_CONSUMER_VOLUME_INCREMENT: Media_ChangeVolume((int32_t)MEDIA_VOL_STEP);  break;
+            case HID_USAGE_CONSUMER_VOLUME_DECREMENT: Media_ChangeVolume(-(int32_t)MEDIA_VOL_STEP); break;
+            case HID_USAGE_CONSUMER_MUTE:
+                AudioSvc_SetMuted(!AudioSvc_IsMuted());
+                Media_ShowToast(AudioSvc_IsMuted() ? LV_SYMBOL_MUTE " Muted" : LV_SYMBOL_VOLUME_MAX " Unmuted");
+                break;
+            case HID_USAGE_CONSUMER_PLAY_PAUSE:
+                AudioPlayer_TogglePause();
+                break;
+            case HID_USAGE_CONSUMER_STOP:
+                AudioPlayer_Stop();
+                Media_ShowToast(LV_SYMBOL_STOP " Stop");
+                break;
+            case HID_USAGE_CONSUMER_SCAN_NEXT_TRACK:
+                AudioPlayer_Next();
+                Media_ShowToast(LV_SYMBOL_NEXT " Next");
+                break;
+            case HID_USAGE_CONSUMER_SCAN_PREVIOUS_TRACK:
+                AudioPlayer_Prev();
+                Media_ShowToast(LV_SYMBOL_PREV " Previous");
+                break;
+            case HID_USAGE_CONSUMER_AL_CONSUMER_CONTROL_CONFIGURATION:
+                if (!AppLoader_IsRunning())
+                {
+                    s_pending_screen = (int8_t)UI_SCREEN_MUSIC; /* "media player" key opens the player */
+                }
+                break;
+            default:
+                printf("[MEDIA] Unhandled consumer usage 0x%04X\r\n", (unsigned int)usage);
+                break;
+        }
+    }
+
+    /* Held volume keys repeat (the keyboard only reports press and release) */
+    uint16_t held = USBHostManager_GetMediaKeyHeld();
+    if ((held == HID_USAGE_CONSUMER_VOLUME_INCREMENT || held == HID_USAGE_CONSUMER_VOLUME_DECREMENT) &&
+        (int32_t)(now - s_media_repeat_tick) >= 0)
+    {
+        s_media_repeat_tick = now + MEDIA_REPEAT_RATE_MS;
+        Media_ChangeVolume((held == HID_USAGE_CONSUMER_VOLUME_INCREMENT) ? (int32_t)MEDIA_VOL_STEP
+                                                                          : -(int32_t)MEDIA_VOL_STEP);
+    }
+
+    /* Persist the volume once the user stops adjusting it */
+    if (s_media_save_due && held == 0U && (now - s_media_save_tick) >= MEDIA_SAVE_DELAY_MS)
+    {
+        s_media_save_due = false;
+        AudioSvc_Save();
+    }
+    if (s_media_toast != NULL && (now - s_media_toast_tick) >= MEDIA_TOAST_MS)
+    {
+        lv_obj_add_flag(s_media_toast, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
