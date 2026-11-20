@@ -76,6 +76,20 @@ void Beeper_PlaySequence(const Beeper_Note_t *notes, uint32_t count, bool loop);
 void Beeper_StopSequence(void);
 bool Beeper_IsSequencePlaying(void);
 
+/* System (UI) sounds that may be rerouted to a better output than the buzzer */
+typedef enum {
+    BEEPER_SND_CLICK = 1,
+    BEEPER_SND_ERROR,
+    BEEPER_SND_NOTIFY
+} Beeper_SysSound_t;
+
+/**
+ * @brief Hook for Beeper_Click / Beeper_ErrorAlert / Beeper_BootMelody (thread context only).
+ *        Return true when the sound was played elsewhere (e.g. VS1053 speaker) to skip the buzzer.
+ */
+typedef bool (*Beeper_SysSoundHook_t)(Beeper_SysSound_t snd);
+void Beeper_SetSysSoundHook(Beeper_SysSoundHook_t hook);
+
 #ifdef __cplusplus
 }
 #endif

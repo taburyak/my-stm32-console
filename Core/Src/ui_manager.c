@@ -19,6 +19,8 @@
 #include "ili9341_simple.h"
 #include "lv_port_console.h"
 #include "audio_player.h"
+#include "audio_service.h"
+#include "vs1053.h"
 
 extern RTC_HandleTypeDef  hrtc;
 extern IWDG_HandleTypeDef hiwdg;
@@ -155,6 +157,7 @@ static void Build_Weather_Screen(void);
 static void Build_Calendar_Screen(void);
 static void Build_SpeedTest_Screen(void);
 static void Build_Timer_Screen(void);
+static void Build_Sound_Screen(void);
 static void Build_Screensaver_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
@@ -191,6 +194,10 @@ static uint32_t    s_timer_last_hud_sec = 0xFFFFFFFFUL;
 static lv_obj_t   *s_timer_lbl_time = NULL;
 static lv_obj_t   *s_timer_lbl_primary = NULL;
 static lv_obj_t   *s_timer_lbl_laps = NULL;
+static lv_obj_t   *s_snd_lbl_vol    = NULL;
+static lv_obj_t   *s_snd_lbl_bass   = NULL;
+static lv_obj_t   *s_snd_lbl_treble = NULL;
+static lv_obj_t   *s_snd_lbl_sys    = NULL;
 
 /* ==========================================================================
  * EEPROM Settings Load / Save
@@ -902,6 +909,10 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_timer_lbl_time    = NULL;
     s_timer_lbl_primary = NULL;
     s_timer_lbl_laps    = NULL;
+    s_snd_lbl_vol       = NULL;
+    s_snd_lbl_bass      = NULL;
+    s_snd_lbl_treble    = NULL;
+    s_snd_lbl_sys       = NULL;
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -966,6 +977,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
         case UI_SCREEN_SCREENSAVER:
             lv_label_set_text(lbl_screen_title, "Standby");
             Build_Screensaver_Screen();
+            break;
+
+        case UI_SCREEN_SOUND:
+            lv_label_set_text(lbl_screen_title, "Sound");
+            Build_Sound_Screen();
             break;
 
         default:
@@ -3770,6 +3786,11 @@ static void settings_action_btn_cb(lv_event_t * e)
             lv_label_set_text_fmt(s_lbl_idle_val, "Idle: %s", s_ss_labels[s_ss_timeout_idx]);
         }
     }
+    else if (action == 11) /* Sound settings screen */
+    {
+        s_pending_screen = (int8_t)UI_SCREEN_SOUND;
+        return;
+    }
 
     if (lbl_time_set != NULL)
     {
@@ -3777,18 +3798,138 @@ static void settings_action_btn_cb(lv_event_t * e)
     }
 }
 
-static void sound_switch_event_cb(lv_event_t * e)
+/* ==========================================================================
+ * Sound Settings Screen (volume, tone, system sounds; persisted by audio_service)
+ * ========================================================================== */
+
+typedef enum {
+    SND_ACT_VOL_DN = 1,
+    SND_ACT_VOL_UP,
+    SND_ACT_BASS_DN,
+    SND_ACT_BASS_UP,
+    SND_ACT_TREBLE_DN,
+    SND_ACT_TREBLE_UP,
+    SND_ACT_SYS_MODE,
+    SND_ACT_TEST,
+    SND_ACT_BACK
+} Sound_Action_t;
+
+#define SND_VOLUME_STEP 5U
+
+static void Sound_UpdateLabels(void)
 {
-    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED)
+    if (s_snd_lbl_vol == NULL)
     {
-        lv_obj_t * sw = lv_event_get_target(e);
-        bool sound_enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
-        Beeper_SetMuted(!sound_enabled);
-        if (sound_enabled)
-        {
+        return;
+    }
+    lv_label_set_text_fmt(s_snd_lbl_vol, "%u%%", (unsigned int)AudioSvc_GetVolume());
+    lv_label_set_text_fmt(s_snd_lbl_bass, "+%d dB", (int)AudioSvc_GetBass());
+    int t15 = (int)AudioSvc_GetTreble() * 15;
+    lv_label_set_text_fmt(s_snd_lbl_treble, "%s%d.%d dB", (t15 < 0) ? "-" : "+", abs(t15) / 10, abs(t15) % 10);
+    lv_label_set_text_fmt(s_snd_lbl_sys, "System sounds: %s", AudioSvc_SysModeName(AudioSvc_GetSysMode()));
+}
+
+static void sound_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+    Sound_Action_t act = (Sound_Action_t)(uintptr_t)lv_event_get_user_data(e);
+    uint8_t vol = AudioSvc_GetVolume();
+    switch (act)
+    {
+        case SND_ACT_VOL_DN:    AudioSvc_SetVolume((vol > SND_VOLUME_STEP) ? (uint8_t)(vol - SND_VOLUME_STEP) : 0U); break;
+        case SND_ACT_VOL_UP:    AudioSvc_SetVolume((uint8_t)(vol + SND_VOLUME_STEP)); break;
+        case SND_ACT_BASS_DN:   AudioSvc_SetBass((int8_t)(AudioSvc_GetBass() - 1)); break;
+        case SND_ACT_BASS_UP:   AudioSvc_SetBass((int8_t)(AudioSvc_GetBass() + 1)); break;
+        case SND_ACT_TREBLE_DN: AudioSvc_SetTreble((int8_t)(AudioSvc_GetTreble() - 1)); break;
+        case SND_ACT_TREBLE_UP: AudioSvc_SetTreble((int8_t)(AudioSvc_GetTreble() + 1)); break;
+        case SND_ACT_SYS_MODE:
+            AudioSvc_SetSysMode((AudioSvc_SysMode_t)(((uint32_t)AudioSvc_GetSysMode() + 1U) % (uint32_t)AUDIO_SYS_COUNT));
+            break;
+        case SND_ACT_BACK:
             Beeper_Click();
-        }
-        Settings_SaveToEEPROM();
+            s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
+            return;
+        default:
+            break;
+    }
+    AudioSvc_Save();
+    Sound_UpdateLabels();
+    /* Preview with the new settings: a click for volume/tone steps, the notify chime for mode and test */
+    if (act == SND_ACT_SYS_MODE || act == SND_ACT_TEST)
+    {
+        Beeper_BootMelody();
+    }
+    else
+    {
+        Beeper_Click();
+    }
+}
+
+static lv_obj_t *Sound_CreateBtn(int16_t x, int16_t y, int16_t w, const char *txt, Sound_Action_t act, uint32_t bg)
+{
+    lv_obj_t *btn = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn, w, 30);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(bg), 0);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, txt);
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(btn, sound_btn_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)act);
+    lv_obj_add_event_cb(btn, global_key_event_cb, LV_EVENT_KEY, NULL);
+    lv_group_t *grp = lv_group_get_default();
+    if (grp != NULL) lv_group_add_obj(grp, btn);
+    return btn;
+}
+
+static lv_obj_t *Sound_CreateRow(int16_t y, const char *name, Sound_Action_t dn, Sound_Action_t up,
+                                 lv_obj_t **out_up_btn)
+{
+    lv_obj_t *lbl = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_pos(lbl, 10, y + 7);
+    lv_label_set_text(lbl, name);
+
+    (void)Sound_CreateBtn(104, y, 44, LV_SYMBOL_MINUS, dn, 0x455A64);
+    lv_obj_t *val = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(val, lv_color_hex(s_themes[s_theme_id % THEME_COUNT].title_col), 0);
+    lv_obj_set_width(val, 112);
+    lv_obj_set_style_text_align(val, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(val, 152, y + 7);
+    lv_obj_t *up_btn = Sound_CreateBtn(268, y, 44, LV_SYMBOL_PLUS, up, 0x00695C);
+    if (out_up_btn != NULL)
+    {
+        *out_up_btn = up_btn;
+    }
+    return val;
+}
+
+static void Build_Sound_Screen(void)
+{
+    lv_obj_t *vol_up = NULL;
+    s_snd_lbl_vol    = Sound_CreateRow(8, LV_SYMBOL_VOLUME_MAX " Volume", SND_ACT_VOL_DN, SND_ACT_VOL_UP, &vol_up);
+    s_snd_lbl_bass   = Sound_CreateRow(46, "Bass", SND_ACT_BASS_DN, SND_ACT_BASS_UP, NULL);
+    s_snd_lbl_treble = Sound_CreateRow(84, "Treble", SND_ACT_TREBLE_DN, SND_ACT_TREBLE_UP, NULL);
+
+    lv_obj_t *btn_sys = Sound_CreateBtn(10, 122, 302, "", SND_ACT_SYS_MODE, 0x37474F);
+    s_snd_lbl_sys = lv_obj_get_child(btn_sys, 0);
+
+    lv_obj_t *hint = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_pos(hint, 10, 156);
+    lv_label_set_text(hint, VS1053_IsPresent() ? "Speaker = VS1053 when idle, buzzer during music"
+                                               : "VS1053 not detected: buzzer only");
+
+    (void)Sound_CreateBtn(10, 176, 148, LV_SYMBOL_LEFT " Back", SND_ACT_BACK, 0x37474F);
+    (void)Sound_CreateBtn(164, 176, 148, LV_SYMBOL_AUDIO " Test", SND_ACT_TEST, 0x0277BD);
+
+    Sound_UpdateLabels();
+    lv_group_t *grp = lv_group_get_default();
+    if (grp != NULL && vol_up != NULL)
+    {
+        lv_group_focus_obj(vol_up);
     }
 }
 
@@ -4069,24 +4210,11 @@ static void Build_Settings_Screen(void)
     Create_Setting_Btn(workspace_cont, 194, 6, 44, 26, "M+", 3);
     Create_Setting_Btn(workspace_cont, 242, 6, 66, 26, LV_SYMBOL_OK " Set", 5);
 
-    /* Row 2: Audio Mute + Stick Deadzone */
-    lv_obj_t * snd_lbl = lv_label_create(workspace_cont);
-    lv_obj_set_style_text_color(snd_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_pos(snd_lbl, 12, 42);
-    lv_label_set_text(snd_lbl, LV_SYMBOL_AUDIO " Sound:");
-
-    lv_obj_t * snd_sw = lv_switch_create(workspace_cont);
-    lv_obj_set_size(snd_sw, 44, 22);
-    lv_obj_set_pos(snd_sw, 88, 39);
-    if (!Beeper_IsMuted())
-    {
-        lv_obj_add_state(snd_sw, LV_STATE_CHECKED);
-    }
-    lv_obj_add_event_cb(snd_sw, sound_switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(snd_sw, global_key_event_cb, LV_EVENT_KEY, NULL);
-
+    /* Row 2: Sound settings + Stick Deadzone */
     lv_group_t * grp = lv_group_get_default();
-    if (grp != NULL) lv_group_add_obj(grp, snd_sw);
+    lv_obj_t * btn_snd = Create_Setting_Btn(workspace_cont, 12, 36, 128, 28, "", 11);
+    lv_label_set_text_fmt(lv_obj_get_child(btn_snd, 0), LV_SYMBOL_AUDIO " Sound %u%%",
+                          (unsigned int)AudioSvc_GetVolume());
 
     lv_obj_t * btn_dz = Create_Setting_Btn(workspace_cont, 146, 36, 162, 28, "", 6);
     lbl_dz_val = lv_obj_get_child(btn_dz, 0);

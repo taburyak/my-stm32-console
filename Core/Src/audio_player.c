@@ -1,4 +1,5 @@
 #include "audio_player.h"
+#include "beeper.h"
 #include "vs1053.h"
 #include "ccmram.h"
 #include "memory_map.h"
@@ -39,6 +40,7 @@ static uint32_t s_buf_pos = 0U;
 
 static volatile AudioPlayer_State_t s_state      = AUDIO_STATE_IDLE;
 static volatile ap_cmd_t            s_cmd        = AP_CMD_NONE;
+static volatile uint8_t             s_sfx_req    = 0U;
 static volatile uint32_t            s_file_size  = 0U;
 static volatile uint32_t            s_bytes_sent = 0U;
 static char                         s_req_path[AUDIO_PLAYER_PATH_MAX];
@@ -179,6 +181,128 @@ static bool ap_feed(void)
     return n > 0U;
 }
 
+/* ---- System sounds: tone segments synthesized on the fly as a 16 kHz 16-bit mono WAV stream ---- */
+
+#define SFX_RATE_HZ    16000U
+#define SFX_AMPLITUDE  9000  /* about -11 dBFS, before the global volume */
+
+typedef struct
+{
+    uint16_t hz;    /* 0 = rest */
+    uint16_t ms;
+    uint8_t  pluck; /* 1 = decay over the whole segment (tick), 0 = sustain with a short fade */
+} sfx_seg_t;
+
+static const sfx_seg_t s_sfx_click[]  = { { 2400U, 12U, 1U } };
+static const sfx_seg_t s_sfx_error[]  = { { 392U, 90U, 0U }, { 0U, 30U, 0U }, { 262U, 160U, 0U } };
+static const sfx_seg_t s_sfx_notify[] = { { 659U, 70U, 0U }, { 0U, 15U, 0U }, { 988U, 130U, 0U } };
+
+static const int16_t s_sine64[64] = {
+    0, 3212, 6393, 9512, 12539, 15446, 18204, 20787,
+    23170, 25329, 27245, 28898, 30273, 31356, 32137, 32609,
+    32767, 32609, 32137, 31356, 30273, 28898, 27245, 25329,
+    23170, 20787, 18204, 15446, 12539, 9512, 6393, 3212,
+    0, -3212, -6393, -9512, -12539, -15446, -18204, -20787,
+    -23170, -25329, -27245, -28898, -30273, -31356, -32137, -32609,
+    -32767, -32609, -32137, -31356, -30273, -28898, -27245, -25329,
+    -23170, -20787, -18204, -15446, -12539, -9512, -6393, -3212
+};
+
+/* @return false when a player command arrived and the sound must be cancelled */
+static bool sfx_send(const uint8_t *data, uint32_t len)
+{
+    uint32_t off = 0U;
+    while (off < len)
+    {
+        if (s_cmd != AP_CMD_NONE)
+        {
+            return false;
+        }
+        uint32_t n = VS1053_SdiFeed(&data[off], len - off);
+        off += n;
+        if (n == 0U)
+        {
+            osDelay(1U);
+        }
+    }
+    return true;
+}
+
+static void put_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static void ap_play_sfx(uint8_t kind)
+{
+    const sfx_seg_t *segs;
+    uint32_t         count;
+    switch (kind)
+    {
+        case BEEPER_SND_ERROR:  segs = s_sfx_error;  count = sizeof(s_sfx_error) / sizeof(s_sfx_error[0]);   break;
+        case BEEPER_SND_NOTIFY: segs = s_sfx_notify; count = sizeof(s_sfx_notify) / sizeof(s_sfx_notify[0]); break;
+        default:                segs = s_sfx_click;  count = sizeof(s_sfx_click) / sizeof(s_sfx_click[0]);   break;
+    }
+
+    uint32_t samples = 0U;
+    for (uint32_t s = 0U; s < count; s++)
+    {
+        samples += (SFX_RATE_HZ / 1000U) * segs[s].ms;
+    }
+
+    uint8_t hdr[44] = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ',
+                        16, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 16, 0,
+                        'd', 'a', 't', 'a', 0, 0, 0, 0 };
+    put_le32(&hdr[4], 36U + samples * 2U);
+    put_le32(&hdr[24], SFX_RATE_HZ);
+    put_le32(&hdr[28], SFX_RATE_HZ * 2U);
+    put_le32(&hdr[40], samples * 2U);
+    bool ok = sfx_send(hdr, sizeof(hdr));
+
+    uint8_t  chunk[32];
+    uint32_t ci = 0U;
+    for (uint32_t s = 0U; s < count && ok; s++)
+    {
+        uint32_t n      = (SFX_RATE_HZ / 1000U) * segs[s].ms;
+        uint32_t inc    = (uint32_t)(((uint64_t)segs[s].hz << 32) / SFX_RATE_HZ);
+        uint32_t attack = (n / 8U < 32U) ? (n / 8U) : 32U;
+        uint32_t fade   = segs[s].pluck ? (n - attack) : (n / 3U);
+        uint32_t phase  = 0U;
+        for (uint32_t i = 0U; i < n && ok; i++)
+        {
+            int32_t v = 0;
+            if (segs[s].hz != 0U)
+            {
+                v = ((int32_t)s_sine64[phase >> 26] * SFX_AMPLITUDE) >> 15;
+                if (i < attack)
+                {
+                    v = (v * (int32_t)i) / (int32_t)attack;
+                }
+                else if (i >= n - fade)
+                {
+                    v = (v * (int32_t)(n - i)) / (int32_t)fade;
+                }
+                phase += inc;
+            }
+            chunk[ci++] = (uint8_t)v;
+            chunk[ci++] = (uint8_t)((uint32_t)v >> 8);
+            if (ci == sizeof(chunk))
+            {
+                ok = sfx_send(chunk, ci);
+                ci = 0U;
+            }
+        }
+    }
+    if (ok && ci > 0U)
+    {
+        ok = sfx_send(chunk, ci);
+    }
+    (void)VS1053_EndPlayback(!ok);
+}
+
 static void AudioPlayerTask(void *argument)
 {
     (void)argument;
@@ -193,6 +317,12 @@ static void AudioPlayerTask(void *argument)
         if (s_cmd != AP_CMD_NONE)
         {
             ap_handle_cmd();
+        }
+        if (s_state == AUDIO_STATE_IDLE && s_sfx_req != 0U)
+        {
+            uint8_t kind = s_sfx_req;
+            s_sfx_req = 0U;
+            ap_play_sfx(kind);
         }
         wait = (s_state != AUDIO_STATE_PLAYING) || !ap_feed();
     }
@@ -239,6 +369,17 @@ void AudioPlayer_Stop(void)
 void AudioPlayer_TogglePause(void)
 {
     ap_post(AP_CMD_PAUSE, NULL);
+}
+
+bool AudioPlayer_PlaySysSound(uint8_t kind)
+{
+    if (s_task == NULL || !VS1053_IsPresent() || s_state != AUDIO_STATE_IDLE)
+    {
+        return false;
+    }
+    s_sfx_req = kind;
+    (void)osThreadFlagsSet(s_task, AUDIO_FLAG_CMD);
+    return true;
 }
 
 AudioPlayer_State_t AudioPlayer_GetState(void)

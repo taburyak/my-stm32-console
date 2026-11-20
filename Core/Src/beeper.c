@@ -21,6 +21,23 @@ static Beeper_Note_t s_seq[BEEPER_SEQ_MAX_NOTES];
 static uint8_t       s_seq_len  = 0;
 static bool          s_seq_loop = false;
 
+static Beeper_SysSoundHook_t s_sys_hook = NULL;
+
+void Beeper_SetSysSoundHook(Beeper_SysSoundHook_t hook)
+{
+    s_sys_hook = hook;
+}
+
+/* true when the system sound was muted or played by the hook (never from ISRs: SVC beeps stay on the buzzer) */
+static bool beeper_sys_handled(Beeper_SysSound_t snd)
+{
+    if (is_muted)
+    {
+        return true;
+    }
+    return (s_sys_hook != NULL) && (__get_IPSR() == 0U) && s_sys_hook(snd);
+}
+
 void Beeper_Init(void)
 {
     Beeper_Off();
@@ -50,11 +67,19 @@ void Beeper_Beep(uint16_t duration_ms)
 
 void Beeper_Click(void)
 {
+    if (beeper_sys_handled(BEEPER_SND_CLICK))
+    {
+        return;
+    }
     Beeper_Beep(15); /* Short 15 ms response time for buttons */
 }
 
 void Beeper_BootMelody(void)
 {
+    if (beeper_sys_handled(BEEPER_SND_NOTIFY))
+    {
+        return;
+    }
     current_pattern = PATTERN_BOOT;
     pattern_step = 0;
     pattern_next_tick = HAL_GetTick();
@@ -62,6 +87,10 @@ void Beeper_BootMelody(void)
 
 void Beeper_ErrorAlert(void)
 {
+    if (beeper_sys_handled(BEEPER_SND_ERROR))
+    {
+        return;
+    }
     current_pattern = PATTERN_ERROR;
     pattern_step = 0;
     pattern_next_tick = HAL_GetTick();

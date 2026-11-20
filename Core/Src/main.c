@@ -46,6 +46,7 @@
 #include "temp_sensor.h"
 #include "vs1053.h"
 #include "audio_player.h"
+#include "audio_service.h"
 #include "esp_companion.h"
 #include "ccmram.h"
 /* USER CODE END Includes */
@@ -1279,6 +1280,7 @@ void StartDefaultTask(void *argument)
 
   /* 8. Initialize Console UI Manager (Status Bar + Home Dashboard) & USART3 Uploader + CLI */
   UIManager_Init();
+  AudioSvc_Init();
   UARTLoader_Init();
   UARTCli_Init();
 

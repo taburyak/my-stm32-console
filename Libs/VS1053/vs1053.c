@@ -420,9 +420,11 @@ bool VS1053_EndPlayback(bool cancel)
     }
     if (!cleared)
     {
-        uint16_t vol = VS1053_ReadReg(VS1053_SCI_VOL);
+        uint16_t vol  = VS1053_ReadReg(VS1053_SCI_VOL);
+        uint16_t bass = VS1053_ReadReg(VS1053_SCI_BASS);
         (void)vs_soft_reset((uint16_t)(mode & VS1053_SM_DIFF));
         VS1053_WriteReg(VS1053_SCI_VOL, vol);
+        VS1053_WriteReg(VS1053_SCI_BASS, bass);
         printf("[VS1053] SM_CANCEL not acknowledged, decoder soft-reset\r\n");
     }
     vs_unlock();

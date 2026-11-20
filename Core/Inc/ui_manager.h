@@ -24,7 +24,8 @@ typedef enum {
     UI_SCREEN_CALENDAR,      /* Interactive Monthly Calendar */
     UI_SCREEN_SPEEDTEST,     /* Network & USART6 Companion Link Benchmark */
     UI_SCREEN_TIMER,         /* Stopwatch & Countdown Timer */
-    UI_SCREEN_SCREENSAVER    /* Idle Desk Clock & Weather / Sensor Station */
+    UI_SCREEN_SCREENSAVER,   /* Idle Desk Clock & Weather / Sensor Station */
+    UI_SCREEN_SOUND          /* Volume, bass/treble and system sound routing */
 } UI_Screen_t;
 
 /**

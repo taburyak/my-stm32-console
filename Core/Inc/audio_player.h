@@ -42,6 +42,12 @@ bool AudioPlayer_Play(const char *path);
 void AudioPlayer_Stop(void);
 void AudioPlayer_TogglePause(void);
 
+/**
+ * @brief Queue a short synthesized system sound (Beeper_SysSound_t) on the VS1053 when no track is loaded.
+ * @return false if the decoder is busy or absent, so the caller can fall back to the buzzer.
+ */
+bool AudioPlayer_PlaySysSound(uint8_t kind);
+
 AudioPlayer_State_t AudioPlayer_GetState(void);
 /** @brief Snapshot of the current track; decoder fields are only valid while not idle. */
 void AudioPlayer_GetStatus(AudioPlayer_Status_t *st);

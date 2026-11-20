@@ -9,6 +9,8 @@
 #include "fw_update.h"
 #include "vs1053.h"
 #include "audio_player.h"
+#include "audio_service.h"
+#include "beeper.h"
 #include "memory_map.h"
 #include "ccmram.h"
 #include "lvgl.h"
@@ -202,7 +204,8 @@ static void cmd_help(void)
         "  df | mem               Detailed RAM, LVGL pool, heap & SD usage\r\n"
         "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
         "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
-        "  snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]]  VS1053 audio\r\n"
+        "  snd [info|init|test [hz] [sec]|diff [on|off]]  VS1053 diagnostics\r\n"
+        "  snd vol [0-100] | bass [0-15] | treble [-8..7] | sys [off|buzzer|speaker]  Saved\r\n"
         "  snd play <file> | stop | pause | status   Play MP3/Ogg/AAC/WMA/WAV/MIDI from SD\r\n"
         "  esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n"
         "  fwupdate[-fast]        Receive fw_update.bin via XMODEM-1K (-fast: 230400)\r\n"
@@ -1149,9 +1152,10 @@ static void cmd_snd(const char *arg)
                (unsigned int)VS1053_GetVersion(), VS1053_IsReady() ? 1U : 0U);
         if (VS1053_IsPresent())
         {
-            printf("MODE=0x%04X STATUS=0x%04X CLOCKF=0x%04X VOL=0x%04X\r\n",
+            printf("MODE=0x%04X STATUS=0x%04X CLOCKF=0x%04X VOL=0x%04X BASS=0x%04X\r\n",
                    (unsigned int)VS1053_ReadReg(VS1053_SCI_MODE), (unsigned int)VS1053_ReadReg(VS1053_SCI_STATUS),
-                   (unsigned int)VS1053_ReadReg(VS1053_SCI_CLOCKF), (unsigned int)VS1053_ReadReg(VS1053_SCI_VOL));
+                   (unsigned int)VS1053_ReadReg(VS1053_SCI_CLOCKF), (unsigned int)VS1053_ReadReg(VS1053_SCI_VOL),
+                   (unsigned int)VS1053_ReadReg(VS1053_SCI_BASS));
         }
     }
     else if (str_eq_ci(word, "init"))
@@ -1162,6 +1166,7 @@ static void cmd_snd(const char *arg)
             return;
         }
         cli_puts(VS1053_Init(&hspi2) ? "VS1053 init OK\r\n" : "ERR: VS1053 init failed (check wiring/power)\r\n");
+        AudioSvc_Apply();
     }
     else if (str_eq_ci(word, "play"))
     {
@@ -1232,19 +1237,46 @@ static void cmd_snd(const char *arg)
     }
     else if (str_eq_ci(word, "vol"))
     {
-        if (*val == '\0')
+        if (*val != '\0')
         {
-            cli_puts("Usage: snd vol <0-254> [right]  (0 = loudest, 0.5 dB per step)\r\n");
-            return;
+            uint32_t v = (uint32_t)strtoul(val, NULL, 10);
+            AudioSvc_SetVolume((uint8_t)((v > AUDIO_VOLUME_MAX) ? AUDIO_VOLUME_MAX : v));
+            AudioSvc_Save();
         }
-        char *end = NULL;
-        uint32_t l = (uint32_t)strtoul(val, &end, 10);
-        const char *rs = (end != NULL) ? skip_ws(end) : "";
-        uint32_t r = (*rs != '\0') ? (uint32_t)strtoul(rs, NULL, 10) : l;
-        if (l > 254U) l = 254U;
-        if (r > 254U) r = 254U;
-        VS1053_SetVolume((uint8_t)l, (uint8_t)r);
-        printf("Volume attenuation L=%lu R=%lu (0.5 dB steps)\r\n", (unsigned long)l, (unsigned long)r);
+        printf("Volume: %u%%\r\n", (unsigned int)AudioSvc_GetVolume());
+    }
+    else if (str_eq_ci(word, "bass"))
+    {
+        if (*val != '\0')
+        {
+            AudioSvc_SetBass((int8_t)strtol(val, NULL, 10));
+            AudioSvc_Save();
+        }
+        printf("Bass boost: %d dB (below 100 Hz)\r\n", (int)AudioSvc_GetBass());
+    }
+    else if (str_eq_ci(word, "treble"))
+    {
+        if (*val != '\0')
+        {
+            AudioSvc_SetTreble((int8_t)strtol(val, NULL, 10));
+            AudioSvc_Save();
+        }
+        int t15 = (int)AudioSvc_GetTreble() * 15;
+        printf("Treble: %d (%s%d.%d dB above 3 kHz)\r\n", (int)AudioSvc_GetTreble(), (t15 < 0) ? "-" : "+",
+               abs(t15) / 10, abs(t15) % 10);
+    }
+    else if (str_eq_ci(word, "sys"))
+    {
+        for (uint32_t m = 0U; m < (uint32_t)AUDIO_SYS_COUNT; m++)
+        {
+            if (str_eq_ci(val, AudioSvc_SysModeName((AudioSvc_SysMode_t)m)))
+            {
+                AudioSvc_SetSysMode((AudioSvc_SysMode_t)m);
+                AudioSvc_Save();
+                Beeper_BootMelody();
+            }
+        }
+        printf("System sounds: %s\r\n", AudioSvc_SysModeName(AudioSvc_GetSysMode()));
     }
     else if (str_eq_ci(word, "diff"))
     {
@@ -1256,8 +1288,8 @@ static void cmd_snd(const char *arg)
     }
     else
     {
-        cli_puts("Usage: snd [info|init|test [hz] [sec]|vol <0-254> [right]|diff [on|off]|\r\n"
-                 "            play <file>|stop|pause|status]\r\n");
+        cli_puts("Usage: snd [info|init|test [hz] [sec]|vol [0-100]|bass [0-15]|treble [-8..7]|\r\n"
+                 "            sys [off|buzzer|speaker]|diff [on|off]|play <file>|stop|pause|status]\r\n");
     }
 }
 
