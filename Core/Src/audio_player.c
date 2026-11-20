@@ -1,4 +1,5 @@
 #include "audio_player.h"
+#include "app_services.h"
 #include "beeper.h"
 #include "vs1053.h"
 #include "ccmram.h"
@@ -11,40 +12,54 @@
 #include <stdio.h>
 #include <string.h>
 
-#define AUDIO_TASK_STACK_WORDS  512U  /* 2 KB: f_open with LFN keeps a 512 B name buffer on the stack */
+#define AUDIO_TASK_STACK_WORDS  768U  /* 3 KB: LFN f_open/f_readdir keep 512 B on the stack + track name copies */
 #define AUDIO_READ_BUF_SIZE     2048U
 #define AUDIO_FIFO_WAIT_MS      3U    /* VS1053 FIFO (2 KB) lasts ~50 ms at 320 kbps */
 #define AUDIO_FLAG_CMD          0x0001U
 #define AUDIO_READ_RETRIES      3U
 #define AUDIO_RETRY_DELAY_MS    20U
+#define AUDIO_PREV_RESTART_SEC  3U    /* "Prev" after this many seconds restarts the current track */
+#define AUDIO_NAME_MAX          96U
 
 typedef enum
 {
     AP_CMD_NONE = 0,
     AP_CMD_PLAY,
     AP_CMD_STOP,
-    AP_CMD_PAUSE
+    AP_CMD_PAUSE,
+    AP_CMD_NEXT,
+    AP_CMD_PREV
 } ap_cmd_t;
 
 CCMRAM_BUF static StackType_t  s_task_stack[AUDIO_TASK_STACK_WORDS];
 CCMRAM_BUF static StaticTask_t s_task_tcb;
 static osThreadId_t            s_task = NULL;
 
-/* Read buffer and FIL live in external FSMC SRAM to save internal RAM; sd_diskio bounces
- * ext-SRAM buffers through its internal scratch sector, so SDIO DMA never targets FSMC */
+/* Read buffer, FIL and the folder-scan DIR/FILINFO live in external FSMC SRAM to save internal RAM;
+ * sd_diskio bounces ext-SRAM buffers through its internal scratch sector, so SDIO DMA never targets FSMC */
+#define AP_ALIGN4(x)     (((x) + 3U) & ~3U)
+#define AP_FIL_OFFSET    AUDIO_READ_BUF_SIZE
+#define AP_DIR_OFFSET    (AP_FIL_OFFSET + AP_ALIGN4(sizeof(FIL)))
+#define AP_FNO_OFFSET    (AP_DIR_OFFSET + AP_ALIGN4(sizeof(DIR)))
 static uint8_t *const s_buf  = (uint8_t *)MM_EXT_AUDIO_BUF;
-static FIL *const     s_file = (FIL *)(MM_EXT_AUDIO_BUF + AUDIO_READ_BUF_SIZE);
-_Static_assert(AUDIO_READ_BUF_SIZE + sizeof(FIL) <= MM_EXT_AUDIO_BUF_SIZE, "Audio buffers exceed MM_EXT_AUDIO_BUF");
+static FIL *const     s_file = (FIL *)(MM_EXT_AUDIO_BUF + AP_FIL_OFFSET);
+static DIR *const     s_dir  = (DIR *)(MM_EXT_AUDIO_BUF + AP_DIR_OFFSET);
+static FILINFO *const s_fno  = (FILINFO *)(MM_EXT_AUDIO_BUF + AP_FNO_OFFSET);
+_Static_assert(AP_FNO_OFFSET + sizeof(FILINFO) <= MM_EXT_AUDIO_BUF_SIZE, "Audio buffers exceed MM_EXT_AUDIO_BUF");
 static uint32_t s_buf_len = 0U;
 static uint32_t s_buf_pos = 0U;
 
 static volatile AudioPlayer_State_t s_state      = AUDIO_STATE_IDLE;
+static volatile AudioPlayer_Mode_t  s_mode       = AUDIO_MODE_NORMAL;
 static volatile ap_cmd_t            s_cmd        = AP_CMD_NONE;
 static volatile uint8_t             s_sfx_req    = 0U;
 static volatile uint32_t            s_file_size  = 0U;
 static volatile uint32_t            s_bytes_sent = 0U;
+static volatile uint32_t            s_track_seq  = 0U;
 static char                         s_req_path[AUDIO_PLAYER_PATH_MAX];
 static char                         s_cur_path[AUDIO_PLAYER_PATH_MAX];
+static char                         s_title[AUDIO_PLAYER_TITLE_MAX];
+static char                         s_artist[AUDIO_PLAYER_TITLE_MAX];
 
 static void ap_post(ap_cmd_t cmd, const char *path)
 {
@@ -68,6 +83,119 @@ static void ap_close(bool cancel)
     (void)f_close(s_file);
     (void)VS1053_EndPlayback(cancel);
     s_state = AUDIO_STATE_IDLE;
+    s_track_seq++;
+}
+
+/* ---- ID3v2 title/artist (VS1053 skips the tag itself, we only peek at the text frames) ---- */
+
+static uint32_t ap_be32(const uint8_t *p, bool synchsafe)
+{
+    if (synchsafe)
+    {
+        return ((uint32_t)(p[0] & 0x7FU) << 21) | ((uint32_t)(p[1] & 0x7FU) << 14) |
+               ((uint32_t)(p[2] & 0x7FU) << 7) | (uint32_t)(p[3] & 0x7FU);
+    }
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static void ap_utf8_put(char *dst, uint32_t size, uint32_t *n, uint32_t cp)
+{
+    uint8_t  enc[3];
+    uint32_t len;
+    if (cp < 0x80U)       { enc[0] = (uint8_t)cp; len = 1U; }
+    else if (cp < 0x800U) { enc[0] = (uint8_t)(0xC0U | (cp >> 6)); enc[1] = (uint8_t)(0x80U | (cp & 0x3FU)); len = 2U; }
+    else                  { enc[0] = (uint8_t)(0xE0U | (cp >> 12)); enc[1] = (uint8_t)(0x80U | ((cp >> 6) & 0x3FU));
+                            enc[2] = (uint8_t)(0x80U | (cp & 0x3FU)); len = 3U; }
+    if (*n + len < size)
+    {
+        memcpy(&dst[*n], enc, len);
+        *n += len;
+    }
+}
+
+/* ID3 text frame (encoding byte + payload) -> NUL-terminated UTF-8 */
+static void ap_id3_text(const uint8_t *src, uint32_t len, char *dst, uint32_t size)
+{
+    uint32_t n = 0U;
+    if (len > 1U)
+    {
+        uint8_t enc = src[0];
+        src++;
+        len--;
+        if (enc == 1U || enc == 2U)
+        {
+            bool le = false;
+            if (enc == 1U && len >= 2U && src[0] == 0xFFU && src[1] == 0xFEU) { le = true; src += 2; len -= 2U; }
+            else if (enc == 1U && len >= 2U && src[0] == 0xFEU && src[1] == 0xFFU) { src += 2; len -= 2U; }
+            for (uint32_t i = 0U; i + 1U < len; i += 2U)
+            {
+                uint32_t cu = le ? ((uint32_t)src[i] | ((uint32_t)src[i + 1U] << 8))
+                                 : (((uint32_t)src[i] << 8) | (uint32_t)src[i + 1U]);
+                if (cu == 0U) break;
+                ap_utf8_put(dst, size, &n, (cu >= 0xD800U && cu <= 0xDFFFU) ? (uint32_t)'?' : cu);
+            }
+        }
+        else
+        {
+            for (uint32_t i = 0U; i < len && src[i] != 0U; i++)
+            {
+                /* enc 3 = UTF-8 copied as is, enc 0 = Latin-1 widened to UTF-8 */
+                if (enc == 3U && n + 1U < size) dst[n++] = (char)src[i];
+                else if (enc != 3U)             ap_utf8_put(dst, size, &n, src[i]);
+            }
+        }
+    }
+    dst[n] = '\0';
+}
+
+static void ap_read_id3(void)
+{
+    uint8_t h[10];
+    UINT    br = 0U;
+    s_title[0]  = '\0';
+    s_artist[0] = '\0';
+    if (f_read(s_file, h, sizeof(h), &br) != FR_OK || br != sizeof(h) || memcmp(h, "ID3", 3) != 0 ||
+        h[3] < 2U || h[3] > 4U)
+    {
+        (void)f_lseek(s_file, 0U);
+        return;
+    }
+    uint8_t  ver  = h[3];
+    uint32_t end  = 10U + ap_be32(&h[6], true);
+    uint32_t pos  = 10U;
+    uint32_t hlen = (ver == 2U) ? 6U : 10U;
+    if ((h[5] & 0x40U) != 0U && ver >= 3U && f_read(s_file, h, 4U, &br) == FR_OK && br == 4U)
+    {
+        uint32_t ext = ap_be32(h, ver == 4U);
+        pos += (ver == 4U) ? ext : (ext + 4U);
+    }
+
+    uint8_t txt[128];
+    for (uint32_t frames = 0U; frames < 48U && pos + hlen <= end; frames++)
+    {
+        if (f_lseek(s_file, pos) != FR_OK || f_read(s_file, h, hlen, &br) != FR_OK || br != hlen || h[0] == 0U)
+        {
+            break;
+        }
+        uint32_t fsize = (ver == 2U) ? (((uint32_t)h[3] << 16) | ((uint32_t)h[4] << 8) | h[5])
+                                     : ap_be32(&h[4], ver == 4U);
+        bool is_title  = (ver == 2U) ? (memcmp(h, "TT2", 3) == 0) : (memcmp(h, "TIT2", 4) == 0);
+        bool is_artist = (ver == 2U) ? (memcmp(h, "TP1", 3) == 0) : (memcmp(h, "TPE1", 4) == 0);
+        if ((is_title || is_artist) && fsize > 1U)
+        {
+            uint32_t take = (fsize < sizeof(txt)) ? fsize : (uint32_t)sizeof(txt);
+            if (f_read(s_file, txt, take, &br) == FR_OK)
+            {
+                ap_id3_text(txt, br, is_title ? s_title : s_artist, AUDIO_PLAYER_TITLE_MAX);
+            }
+        }
+        if (s_title[0] != '\0' && s_artist[0] != '\0')
+        {
+            break;
+        }
+        pos += hlen + fsize;
+    }
+    (void)f_lseek(s_file, 0U);
 }
 
 static void ap_open(const char *path)
@@ -78,6 +206,7 @@ static void ap_open(const char *path)
         return;
     }
     snprintf(s_cur_path, sizeof(s_cur_path), "%s", path);
+    ap_read_id3();
     s_file_size  = (uint32_t)f_size(s_file);
     s_bytes_sent = 0U;
     s_buf_len    = 0U;
@@ -86,7 +215,126 @@ static void ap_open(const char *path)
     VS1053_WriteReg(VS1053_SCI_DECODE_TIME, 0U);
     VS1053_WriteReg(VS1053_SCI_DECODE_TIME, 0U);
     s_state = AUDIO_STATE_PLAYING;
+    s_track_seq++;
     printf("[AUDIO] Playing '/%s' (%lu bytes)\r\n", path, (unsigned long)s_file_size);
+}
+
+/* ---- Folder playlist: tracks are the audio files of the current track's folder, in directory order ---- */
+
+static const char *ap_basename(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return (slash != NULL) ? (slash + 1) : path;
+}
+
+static void ap_dirname(const char *path, char *dir, uint32_t size)
+{
+    const char *base = ap_basename(path);
+    uint32_t    len  = (base > path) ? (uint32_t)(base - path - 1) : 0U;
+    if (len >= size) len = size - 1U;
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+}
+
+static bool ap_next_entry(void)
+{
+    while (f_readdir(s_dir, s_fno) == FR_OK && s_fno->fname[0] != '\0')
+    {
+        if ((s_fno->fattrib & AM_DIR) == 0U && strlen(s_fno->fname) < AUDIO_NAME_MAX &&
+            AudioPlayer_IsAudioFile(s_fno->fname))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief Pick the neighbour of the current track (step +1/-1) or a random one (shuffle).
+ * @param wrap Continue from the other end of the folder instead of failing at the first/last track.
+ */
+static bool ap_pick_track(int32_t step, bool shuffle, bool wrap, char *out, uint32_t out_size)
+{
+    char dir[AUDIO_PLAYER_PATH_MAX];
+    char cur[AUDIO_NAME_MAX];
+    char edge[AUDIO_NAME_MAX] = "";  /* first (step +1) or last (step -1) track */
+    char pick[AUDIO_NAME_MAX] = "";
+    ap_dirname(s_cur_path, dir, sizeof(dir));
+    snprintf(cur, sizeof(cur), "%s", ap_basename(s_cur_path));
+
+    uint32_t count = 0U;
+    uint32_t cur_idx = 0xFFFFFFFFU;
+    bool     prev_was_cur = false;
+    bool     found = false;
+    if (f_opendir(s_dir, dir) != FR_OK)
+    {
+        return false;
+    }
+    while (ap_next_entry())
+    {
+        bool is_cur = (strcmp(s_fno->fname, cur) == 0);
+        if (!shuffle && step > 0)
+        {
+            if (count == 0U) snprintf(edge, sizeof(edge), "%s", s_fno->fname);
+            if (prev_was_cur && pick[0] == '\0') snprintf(pick, sizeof(pick), "%s", s_fno->fname);
+        }
+        else if (!shuffle)
+        {
+            /* Until the current track shows up, pick trails one entry behind it ("" if it is the first) */
+            if (is_cur)      found = true;
+            else if (!found) snprintf(pick, sizeof(pick), "%s", s_fno->fname);
+            snprintf(edge, sizeof(edge), "%s", s_fno->fname);
+        }
+        if (is_cur) cur_idx = count;
+        prev_was_cur = is_cur;
+        count++;
+    }
+    (void)f_closedir(s_dir);
+
+    if (count == 0U)
+    {
+        return false;
+    }
+    if (shuffle)
+    {
+        uint32_t r = AppSvc_Random() % count;
+        if (count > 1U && r == cur_idx) r = (r + 1U) % count;
+        if (f_opendir(s_dir, dir) != FR_OK) return false;
+        for (uint32_t i = 0U; i <= r && ap_next_entry(); i++)
+        {
+            if (i == r) snprintf(pick, sizeof(pick), "%s", s_fno->fname);
+        }
+        (void)f_closedir(s_dir);
+    }
+    if (pick[0] == '\0')
+    {
+        if (!wrap) return false;
+        snprintf(pick, sizeof(pick), "%s", edge);
+    }
+    if (dir[0] != '\0') snprintf(out, out_size, "%s/%s", dir, pick);
+    else                snprintf(out, out_size, "%s", pick);
+    return pick[0] != '\0';
+}
+
+/* Next track after a manual skip (wrap) or at the end of a track (follow the play mode) */
+static void ap_advance(bool manual)
+{
+    char next[AUDIO_PLAYER_PATH_MAX];
+    AudioPlayer_Mode_t mode = s_mode;
+    bool ok;
+    if (!manual && mode == AUDIO_MODE_REPEAT_ONE)
+    {
+        snprintf(next, sizeof(next), "%s", s_cur_path);
+        ok = true;
+    }
+    else
+    {
+        ok = ap_pick_track(1, mode == AUDIO_MODE_SHUFFLE, manual || mode != AUDIO_MODE_NORMAL, next, sizeof(next));
+    }
+    if (ok)
+    {
+        ap_open(next);
+    }
 }
 
 static void ap_handle_cmd(void)
@@ -125,7 +373,43 @@ static void ap_handle_cmd(void)
             {
                 s_state = AUDIO_STATE_PLAYING;
             }
+            else if (s_cur_path[0] != '\0')
+            {
+                ap_open(s_cur_path); /* Play after Stop resumes the last track from the start */
+            }
+            s_track_seq++;
             break;
+
+        case AP_CMD_NEXT:
+        case AP_CMD_PREV:
+        {
+            if (s_cur_path[0] == '\0')
+            {
+                break;
+            }
+            uint32_t sec = (s_state != AUDIO_STATE_IDLE) ? VS1053_ReadReg(VS1053_SCI_DECODE_TIME) : 0U;
+            char target[AUDIO_PLAYER_PATH_MAX];
+            bool ok;
+            if (cmd == AP_CMD_PREV && sec >= AUDIO_PREV_RESTART_SEC)
+            {
+                snprintf(target, sizeof(target), "%s", s_cur_path);
+                ok = true;
+            }
+            else
+            {
+                ok = ap_pick_track((cmd == AP_CMD_NEXT) ? 1 : -1, s_mode == AUDIO_MODE_SHUFFLE, true,
+                                   target, sizeof(target));
+            }
+            if (ok)
+            {
+                if (s_state != AUDIO_STATE_IDLE)
+                {
+                    ap_close(true);
+                }
+                ap_open(target);
+            }
+            break;
+        }
 
         default:
             break;
@@ -170,6 +454,10 @@ static bool ap_feed(void)
             }
             ap_close(fr != FR_OK);
             printf("[AUDIO] Finished '/%s'\r\n", s_cur_path);
+            if (fr == FR_OK && s_cmd == AP_CMD_NONE)
+            {
+                ap_advance(false);
+            }
             return false;
         }
         s_buf_len = br;
@@ -371,6 +659,67 @@ void AudioPlayer_TogglePause(void)
     ap_post(AP_CMD_PAUSE, NULL);
 }
 
+void AudioPlayer_Next(void)
+{
+    ap_post(AP_CMD_NEXT, NULL);
+}
+
+void AudioPlayer_Prev(void)
+{
+    ap_post(AP_CMD_PREV, NULL);
+}
+
+void AudioPlayer_SetMode(AudioPlayer_Mode_t mode)
+{
+    if (mode < AUDIO_MODE_COUNT)
+    {
+        s_mode = mode;
+        s_track_seq++;
+    }
+}
+
+AudioPlayer_Mode_t AudioPlayer_GetMode(void)
+{
+    return s_mode;
+}
+
+const char *AudioPlayer_ModeName(AudioPlayer_Mode_t mode)
+{
+    static const char *const s_names[AUDIO_MODE_COUNT] = { "Normal", "Repeat all", "Repeat one", "Shuffle" };
+    return (mode < AUDIO_MODE_COUNT) ? s_names[mode] : "?";
+}
+
+uint32_t AudioPlayer_GetTrackSeq(void)
+{
+    return s_track_seq;
+}
+
+bool AudioPlayer_IsAudioFile(const char *name)
+{
+    static const char *const s_exts[] = { ".mp3", ".ogg", ".wav", ".wma", ".aac", ".m4a", ".mid", ".midi", ".flac" };
+    size_t nlen = (name != NULL) ? strlen(name) : 0U;
+    for (uint32_t i = 0U; i < sizeof(s_exts) / sizeof(s_exts[0]); i++)
+    {
+        size_t elen = strlen(s_exts[i]);
+        if (nlen > elen)
+        {
+            const char *tail = &name[nlen - elen];
+            bool        eq   = true;
+            for (size_t k = 0U; k < elen && eq; k++)
+            {
+                char c = tail[k];
+                if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+                eq = (c == s_exts[i][k]);
+            }
+            if (eq)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool AudioPlayer_PlaySysSound(uint8_t kind)
 {
     if (s_task == NULL || !VS1053_IsPresent() || s_state != AUDIO_STATE_IDLE)
@@ -409,6 +758,18 @@ static const char *ap_format_name(uint16_t hdat1)
     return "-";
 }
 
+static bool ap_is_ascii(const char *s)
+{
+    for (; *s != '\0'; s++)
+    {
+        if ((uint8_t)*s >= 0x80U)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 void AudioPlayer_GetStatus(AudioPlayer_Status_t *st)
 {
     if (st == NULL)
@@ -417,18 +778,40 @@ void AudioPlayer_GetStatus(AudioPlayer_Status_t *st)
     }
     memset(st, 0, sizeof(*st));
     st->state      = s_state;
+    st->mode       = s_mode;
+    st->track_seq  = s_track_seq;
     st->file_size  = s_file_size;
     st->bytes_sent = s_bytes_sent;
     st->format     = "-";
     snprintf(st->path, sizeof(st->path), "%s", s_cur_path);
+
+    /* Title: ID3 TIT2, or the file name without extension (also when the UI font lacks the tag's glyphs) */
+    const char *base = ap_basename(s_cur_path);
+    if (s_title[0] != '\0' && (ap_is_ascii(s_title) || !ap_is_ascii(base)))
+    {
+        snprintf(st->title, sizeof(st->title), "%s", s_title);
+        if (ap_is_ascii(s_artist) || !ap_is_ascii(base))
+        {
+            snprintf(st->artist, sizeof(st->artist), "%s", s_artist);
+        }
+    }
+    else
+    {
+        snprintf(st->title, sizeof(st->title), "%s", base);
+        char *dot = strrchr(st->title, '.');
+        if (dot != NULL) *dot = '\0';
+    }
+
     if (st->state == AUDIO_STATE_IDLE || !VS1053_IsPresent())
     {
         return;
     }
     uint16_t audata = VS1053_ReadReg(VS1053_SCI_AUDATA);
+    uint32_t brate  = VS1053_GetByteRate();
     st->decode_sec  = VS1053_ReadReg(VS1053_SCI_DECODE_TIME);
     st->sample_rate = audata & 0xFFFEU;
     st->stereo      = (audata & 0x0001U) != 0U;
-    st->kbps        = (VS1053_GetByteRate() * 8U) / 1000U;
+    st->kbps        = (brate * 8U) / 1000U;
+    st->duration_sec = (brate > 0U) ? (s_file_size / brate) : 0U;
     st->format      = ap_format_name(VS1053_ReadReg(VS1053_SCI_HDAT1));
 }

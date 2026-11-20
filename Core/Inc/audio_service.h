@@ -43,6 +43,9 @@ AudioSvc_SysMode_t AudioSvc_GetSysMode(void);
 void               AudioSvc_SetSysMode(AudioSvc_SysMode_t mode);
 const char        *AudioSvc_SysModeName(AudioSvc_SysMode_t mode);
 
+/** @brief Normal -> Repeat all -> Repeat one -> Shuffle, applied to the player and saved. */
+void               AudioSvc_CyclePlayMode(void);
+
 #ifdef __cplusplus
 }
 #endif

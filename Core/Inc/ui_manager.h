@@ -25,7 +25,8 @@ typedef enum {
     UI_SCREEN_SPEEDTEST,     /* Network & USART6 Companion Link Benchmark */
     UI_SCREEN_TIMER,         /* Stopwatch & Countdown Timer */
     UI_SCREEN_SCREENSAVER,   /* Idle Desk Clock & Weather / Sensor Station */
-    UI_SCREEN_SOUND          /* Volume, bass/treble and system sound routing */
+    UI_SCREEN_SOUND,         /* Volume, bass/treble and system sound routing */
+    UI_SCREEN_MUSIC          /* Music player: now playing, folder playlist, transport controls */
 } UI_Screen_t;
 
 /**
@@ -44,6 +45,9 @@ void UIManager_Update(void);
  * @param screen Target screen ID
  */
 void UIManager_ShowScreen(UI_Screen_t screen);
+
+/** @brief Select the Home page shown by the next UI_SCREEN_HOME build: 0 Launcher, 1 Widgets, 2 Media. */
+void UIManager_SetHomePage(uint8_t col);
 
 /**
  * @brief Notify UI Manager that async directory scan in g_dir_cache is ready

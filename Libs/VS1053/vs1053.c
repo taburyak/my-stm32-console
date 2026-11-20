@@ -20,6 +20,7 @@
 #define VS1053_SDI_CHUNK        32U
 #define VS1053_ENDFILL_BYTES    2052U
 #define VS1053_CANCEL_TRIES     64U    /* 64 * 32 B = 2048 B, the datasheet limit before a soft reset */
+#define VS1053_INIT_ATTEMPTS    3U
 
 /* SC_MULT = 3.0x: CLKI = 12.288 MHz * 3 = 36.864 MHz */
 #define VS1053_CLOCKF_VALUE     0x6000U
@@ -222,12 +223,10 @@ static bool vs_soft_reset(uint16_t extra_mode)
     return VS1053_ReadReg(VS1053_SCI_CLOCKF) == VS1053_CLOCKF_VALUE;
 }
 
-bool VS1053_Init(SPI_HandleTypeDef *hspi)
+static bool vs_init_once(void)
 {
-    s_spi     = hspi;
     s_present = false;
     s_version = 0U;
-    vs_create_rtos_objects();
     vs_lock();
 
 #ifdef VS1053_INIT_XRESET_PIN
@@ -312,6 +311,22 @@ bool VS1053_Init(SPI_HandleTypeDef *hspi)
 out:
     vs_unlock();
     return ok;
+}
+
+bool VS1053_Init(SPI_HandleTypeDef *hspi)
+{
+    s_spi = hspi;
+    vs_create_rtos_objects();
+    /* The breakout occasionally misses the first reset right after power-up / SWD reset: retry */
+    for (uint32_t attempt = 1U; attempt <= VS1053_INIT_ATTEMPTS; attempt++)
+    {
+        if (vs_init_once())
+        {
+            return true;
+        }
+        HAL_Delay(20);
+    }
+    return false;
 }
 
 bool VS1053_IsPresent(void)

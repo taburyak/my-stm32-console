@@ -21,7 +21,8 @@ typedef struct
     uint8_t bass;
     uint8_t treble_biased; /* treble + 8 */
     uint8_t sys_mode;
-    uint8_t reserved[2];
+    uint8_t play_mode;     /* AudioPlayer_Mode_t */
+    uint8_t reserved;
     uint8_t check;
 } AudioSvc_Config_t;
 
@@ -72,7 +73,8 @@ void AudioSvc_Init(void)
     bool valid = (AT24Cxx_Read(AUDIO_EEPROM_ADDR, &c, sizeof(c)) == HAL_OK) &&
                  (c.magic == AUDIO_EEPROM_MAGIC) && (c.check == cfg_check(&c)) &&
                  (c.volume <= AUDIO_VOLUME_MAX) && (c.bass <= (uint8_t)AUDIO_BASS_MAX) &&
-                 (c.treble_biased <= (uint8_t)(AUDIO_TREBLE_MAX + 8)) && (c.sys_mode < (uint8_t)AUDIO_SYS_COUNT);
+                 (c.treble_biased <= (uint8_t)(AUDIO_TREBLE_MAX + 8)) && (c.sys_mode < (uint8_t)AUDIO_SYS_COUNT) &&
+                 (c.play_mode < (uint8_t)AUDIO_MODE_COUNT);
     if (!valid)
     {
         memset(&c, 0, sizeof(c));
@@ -86,6 +88,7 @@ void AudioSvc_Init(void)
 
     Beeper_SetMuted(s_cfg.sys_mode == (uint8_t)AUDIO_SYS_OFF);
     Beeper_SetSysSoundHook(sys_sound_hook);
+    AudioPlayer_SetMode((AudioPlayer_Mode_t)s_cfg.play_mode);
     AudioSvc_Apply();
     printf("[AUDIO] Settings %s: volume=%u%% bass=%u treble=%d sys=%s\r\n", valid ? "loaded" : "defaults",
            (unsigned int)s_cfg.volume, (unsigned int)s_cfg.bass, (int)AudioSvc_GetTreble(),
@@ -156,4 +159,11 @@ const char *AudioSvc_SysModeName(AudioSvc_SysMode_t mode)
 {
     static const char *const s_names[AUDIO_SYS_COUNT] = { "Off", "Buzzer", "Speaker" };
     return (mode < AUDIO_SYS_COUNT) ? s_names[mode] : "?";
+}
+
+void AudioSvc_CyclePlayMode(void)
+{
+    s_cfg.play_mode = (uint8_t)((s_cfg.play_mode + 1U) % (uint8_t)AUDIO_MODE_COUNT);
+    AudioPlayer_SetMode((AudioPlayer_Mode_t)s_cfg.play_mode);
+    AudioSvc_Save();
 }

@@ -92,9 +92,13 @@ static lv_obj_t * s_wifi_stat_lbl   = NULL;
 static lv_obj_t * s_home_tv         = NULL;
 static lv_obj_t * s_home_tile0      = NULL;
 static lv_obj_t * s_home_tile1      = NULL;
+static lv_obj_t * s_home_tile2      = NULL;
 static lv_obj_t * s_home_p0_btns[5] = {NULL};
-static lv_obj_t * s_home_p1_btns[5] = {NULL};
+static lv_obj_t * s_home_p1_btns[6] = {NULL};
+static lv_obj_t * s_home_p2_btns[6] = {NULL};
 static uint8_t    s_home_active_col = 0U;
+static uint32_t   s_home_media_seq  = 0U;
+static UI_Screen_t s_sound_return   = UI_SCREEN_SETTINGS;
 static uint32_t   s_last_wth_tick   = 0U;
 static uint32_t   s_last_spd_tick   = 0U;
 static int8_t     s_last_esp_state  = -2;
@@ -158,6 +162,10 @@ static void Build_Calendar_Screen(void);
 static void Build_SpeedTest_Screen(void);
 static void Build_Timer_Screen(void);
 static void Build_Sound_Screen(void);
+static void Build_Music_Screen(void);
+static void Music_Update(void);
+static void Screensaver_UpdateMusic(void);
+static const char *Home_PageTitle(uint8_t col);
 static void Build_Screensaver_Screen(void);
 static void Populate_File_List_From_Cache(void);
 static void Populate_Games_Grid(void);
@@ -198,6 +206,14 @@ static lv_obj_t   *s_snd_lbl_vol    = NULL;
 static lv_obj_t   *s_snd_lbl_bass   = NULL;
 static lv_obj_t   *s_snd_lbl_treble = NULL;
 static lv_obj_t   *s_snd_lbl_sys    = NULL;
+static lv_obj_t   *s_mus_lbl_title  = NULL;
+static lv_obj_t   *s_mus_lbl_info   = NULL;
+static lv_obj_t   *s_mus_lbl_time   = NULL;
+static lv_obj_t   *s_mus_bar        = NULL;
+static lv_obj_t   *s_mus_list       = NULL;
+static lv_obj_t   *s_mus_lbl_play   = NULL;
+static lv_obj_t   *s_mus_lbl_mode   = NULL;
+static lv_obj_t   *s_ss_lbl_music   = NULL;
 
 /* ==========================================================================
  * EEPROM Settings Load / Save
@@ -270,6 +286,11 @@ static void Settings_SaveToEEPROM(void)
 uint8_t UIManager_GetThemeId(void)
 {
     return s_theme_id;
+}
+
+void UIManager_SetHomePage(uint8_t col)
+{
+    s_home_active_col = (col < 3U) ? col : 0U;
 }
 
 void UIManager_SetThemeId(uint8_t id)
@@ -719,8 +740,11 @@ void UIManager_Update(void)
     }
 
     const char *c_hot = TempSensor_IsOverheated()       ? " #FF2222 HOT!#" : "";
+    AudioPlayer_State_t mus_state = AudioPlayer_GetState();
+    const char *c_mus = (mus_state == AUDIO_STATE_PLAYING) ? "#FF40FF " LV_SYMBOL_AUDIO "# "
+                      : (mus_state == AUDIO_STATE_PAUSED)  ? "#90A4AE " LV_SYMBOL_PAUSE "# " : "";
 
-    lv_label_set_text_fmt(lbl_status_icons, "%s %s %s %s %s%s", c_sd, c_kbd, c_mse, c_pad, c_esp, c_hot);
+    lv_label_set_text_fmt(lbl_status_icons, "%s%s %s %s %s %s%s", c_mus, c_sd, c_kbd, c_mse, c_pad, c_esp, c_hot);
 
     if (current_screen == UI_SCREEN_WIFI && s_wifi_stat_lbl != NULL)
     {
@@ -781,6 +805,12 @@ void UIManager_Update(void)
     }
 
     Timer_Update();
+    Music_Update();
+    if (current_screen == UI_SCREEN_HOME && s_home_active_col == 2U && s_pending_screen < 0 &&
+        AudioPlayer_GetTrackSeq() != s_home_media_seq)
+    {
+        s_pending_screen = (int8_t)UI_SCREEN_HOME; /* refresh the Music tile's now-playing text */
+    }
 
     /* Idle Screensaver / Desk Weather Clock state machine */
     uint32_t ss_timeout   = s_ss_timeouts_ms[s_ss_timeout_idx % SS_TIMEOUT_COUNT];
@@ -810,6 +840,7 @@ void UIManager_Update(void)
             {
                 lv_label_set_text_fmt(s_ss_lbl_clock, "%02u:%02u:%02u", hrs, mins, secs);
             }
+            Screensaver_UpdateMusic();
             if (s_ss_lbl_date != NULL)
             {
                 static const char * const s_wd[8] = { "", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
@@ -895,8 +926,10 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_home_tv          = NULL;
     s_home_tile0       = NULL;
     s_home_tile1       = NULL;
+    s_home_tile2       = NULL;
     memset(s_home_p0_btns, 0, sizeof(s_home_p0_btns));
     memset(s_home_p1_btns, 0, sizeof(s_home_p1_btns));
+    memset(s_home_p2_btns, 0, sizeof(s_home_p2_btns));
     memset(s_ext_btns, 0, sizeof(s_ext_btns));
     games_grid_obj     = NULL;
     lbl_time_set       = NULL;
@@ -913,6 +946,18 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     s_snd_lbl_bass      = NULL;
     s_snd_lbl_treble    = NULL;
     s_snd_lbl_sys       = NULL;
+    s_mus_lbl_title     = NULL;
+    s_mus_lbl_info      = NULL;
+    s_mus_lbl_time      = NULL;
+    s_mus_bar           = NULL;
+    s_mus_list          = NULL;
+    s_mus_lbl_play      = NULL;
+    s_mus_lbl_mode      = NULL;
+    s_ss_lbl_music      = NULL;
+    if (screen == UI_SCREEN_SOUND && previous_screen != UI_SCREEN_SOUND)
+    {
+        s_sound_return = (previous_screen == UI_SCREEN_HOME) ? UI_SCREEN_HOME : UI_SCREEN_SETTINGS;
+    }
 
     lv_group_t * grp = lv_group_get_default();
     if (grp != NULL)
@@ -925,7 +970,7 @@ void UIManager_ShowScreen(UI_Screen_t screen)
     switch (screen)
     {
         case UI_SCREEN_HOME:
-            lv_label_set_text(lbl_screen_title, s_home_active_col == 0U ? "STM32 OS" : "Widgets");
+            lv_label_set_text(lbl_screen_title, Home_PageTitle(s_home_active_col));
             Build_Home_Screen();
             break;
 
@@ -982,6 +1027,11 @@ void UIManager_ShowScreen(UI_Screen_t screen)
         case UI_SCREEN_SOUND:
             lv_label_set_text(lbl_screen_title, "Sound");
             Build_Sound_Screen();
+            break;
+
+        case UI_SCREEN_MUSIC:
+            lv_label_set_text(lbl_screen_title, "Music");
+            Build_Music_Screen();
             break;
 
         default:
@@ -1138,6 +1188,12 @@ static void Create_Weather_Graphic(lv_obj_t *parent, int16_t x, int16_t y, uint8
     }
 }
 
+static const char *Home_PageTitle(uint8_t col)
+{
+    static const char *const s_titles[3] = { "STM32 OS", "Widgets", "Media" };
+    return s_titles[(col < 3U) ? col : 0U];
+}
+
 static void Sync_Home_Group_To_Active_Page(void)
 {
     lv_group_t * grp = lv_group_get_default();
@@ -1148,45 +1204,48 @@ static void Sync_Home_Group_To_Active_Page(void)
 
     lv_group_remove_all_objs(grp);
 
-    if (s_home_active_col == 0U)
+    lv_obj_t **btns = s_home_p0_btns;
+    uint32_t   count = sizeof(s_home_p0_btns) / sizeof(s_home_p0_btns[0]);
+    if (s_home_active_col == 1U)
     {
-        for (uint8_t i = 0U; i < 5U; i++)
+        btns  = s_home_p1_btns;
+        count = sizeof(s_home_p1_btns) / sizeof(s_home_p1_btns[0]);
+    }
+    else if (s_home_active_col == 2U)
+    {
+        btns  = s_home_p2_btns;
+        count = sizeof(s_home_p2_btns) / sizeof(s_home_p2_btns[0]);
+    }
+    for (uint32_t i = 0U; i < count; i++)
+    {
+        if (btns[i] != NULL)
         {
-            if (s_home_p0_btns[i] != NULL)
-            {
-                lv_group_add_obj(grp, s_home_p0_btns[i]);
-            }
-        }
-        if (s_home_p0_btns[0] != NULL)
-        {
-            lv_group_focus_obj(s_home_p0_btns[0]);
+            lv_group_add_obj(grp, btns[i]);
         }
     }
-    else
+    if (btns[0] != NULL)
     {
-        for (uint8_t i = 0U; i < 5U; i++)
-        {
-            if (s_home_p1_btns[i] != NULL)
-            {
-                lv_group_add_obj(grp, s_home_p1_btns[i]);
-            }
-        }
-        if (s_home_p1_btns[0] != NULL)
-        {
-            lv_group_focus_obj(s_home_p1_btns[0]);
-        }
+        lv_group_focus_obj(btns[0]);
     }
+}
+
+static void Home_GoToPage(uint8_t col)
+{
+    s_home_active_col = col;
+    lv_obj_set_tile_id(s_home_tv, col, 0, LV_ANIM_ON);
+    lv_label_set_text(lbl_screen_title, Home_PageTitle(col));
+    Sync_Home_Group_To_Active_Page();
 }
 
 static void home_tileview_changed_cb(lv_event_t * e)
 {
     lv_obj_t * tv = lv_event_get_target(e);
     lv_obj_t * act = lv_tileview_get_tile_act(tv);
-    uint8_t new_col = (act == s_home_tile1) ? 1U : 0U;
+    uint8_t new_col = (act == s_home_tile1) ? 1U : ((act == s_home_tile2) ? 2U : 0U);
     if (new_col != s_home_active_col)
     {
         s_home_active_col = new_col;
-        lv_label_set_text(lbl_screen_title, s_home_active_col == 0U ? "STM32 OS" : "Widgets");
+        lv_label_set_text(lbl_screen_title, Home_PageTitle(s_home_active_col));
         Sync_Home_Group_To_Active_Page();
     }
 }
@@ -1194,36 +1253,26 @@ static void home_tileview_changed_cb(lv_event_t * e)
 static void home_page_switch_cb(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col == 1U)
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col != 0U)
     {
-        s_home_active_col = 0U;
         Beeper_Click();
-        lv_obj_set_tile_id(s_home_tv, 0, 0, LV_ANIM_ON);
-        lv_label_set_text(lbl_screen_title, "STM32 OS");
-        Sync_Home_Group_To_Active_Page();
+        Home_GoToPage(0U);
         return;
     }
     if (code == LV_EVENT_CLICKED && s_home_tv != NULL)
     {
-        uint8_t target_col = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-        s_home_active_col = target_col;
         Beeper_Click();
-        lv_obj_set_tile_id(s_home_tv, target_col, 0, LV_ANIM_ON);
-        lv_label_set_text(lbl_screen_title, target_col == 0U ? "STM32 OS" : "Widgets");
-        Sync_Home_Group_To_Active_Page();
+        Home_GoToPage((uint8_t)(uintptr_t)lv_event_get_user_data(e));
     }
 }
 
 static void home_icon_event_cb(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col == 1U)
+    if (code == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC && s_home_tv != NULL && s_home_active_col != 0U)
     {
-        s_home_active_col = 0U;
         Beeper_Click();
-        lv_obj_set_tile_id(s_home_tv, 0, 0, LV_ANIM_ON);
-        lv_label_set_text(lbl_screen_title, "STM32 OS");
-        Sync_Home_Group_To_Active_Page();
+        Home_GoToPage(0U);
         return;
     }
     if (code == LV_EVENT_CLICKED)
@@ -1280,6 +1329,115 @@ static bool Home_TryWallpaper(const char *path)
     return false;
 }
 
+static lv_obj_t *Home_CreateNavBtn(lv_obj_t *tile, int16_t x, const char *txt, uint32_t border_hex, uint8_t col)
+{
+    lv_obj_t * btn = lv_btn_create(tile);
+    lv_obj_set_size(btn, 136, 20);
+    lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, x, -2);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1B2234), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(border_hex), 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(btn, 2, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x324164), LV_STATE_FOCUSED);
+    lv_obj_t * lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, txt);
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(btn, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)col);
+    lv_obj_add_event_cb(btn, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)col);
+    return btn;
+}
+
+/* Copy at most max_chars UTF-8 characters, adding ".." when the text is cut */
+static void Ui_Ellipsize(char *dst, size_t dst_size, const char *src, uint32_t max_chars)
+{
+    size_t   n = 0U;
+    uint32_t chars = 0U;
+    while (src[n] != '\0' && n + 4U < dst_size)
+    {
+        if (((uint8_t)src[n] & 0xC0U) != 0x80U)
+        {
+            if (chars == max_chars)
+            {
+                break;
+            }
+            chars++;
+        }
+        dst[n] = src[n];
+        n++;
+    }
+    while (n > 0U && ((uint8_t)src[n] & 0xC0U) == 0x80U)
+    {
+        n--; /* never stop inside a multi-byte character */
+    }
+    dst[n] = '\0';
+    if (src[n] != '\0')
+    {
+        strcat(dst, "..");
+    }
+}
+
+/* Placeholder tile for a future feature: dimmed, not clickable and kept out of the focus group */
+static void Home_MakeTilePlaceholder(lv_obj_t *btn)
+{
+    lv_obj_remove_event_cb(btn, home_icon_event_cb);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1B2234), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_50, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(0x455A64), 0);
+}
+
+static void Build_Media_Page(lv_obj_t *tile)
+{
+    CCMRAM_BUF static AudioPlayer_Status_t st;
+    AudioPlayer_GetStatus(&st);
+    s_home_media_seq = st.track_seq;
+
+    /* Tile [0]: Music player with now-playing summary */
+    lv_obj_t * m_btn = Create_Desktop_Shortcut(tile, 16, 10, LV_SYMBOL_AUDIO, "Music", 0xFF40FFU, UI_SCREEN_MUSIC);
+    lv_obj_t * m_lbl = lv_obj_get_child(m_btn, 0);
+    lv_label_set_recolor(m_lbl, true);
+    char title[40];
+    if (st.state != AUDIO_STATE_IDLE)
+    {
+        Ui_Ellipsize(title, sizeof(title), st.title, 14U);
+        lv_label_set_text_fmt(m_lbl, "#FF40FF " LV_SYMBOL_AUDIO " Music#\n#FFFFFF %s#\n#90A4AE %s#", title,
+                              (st.state == AUDIO_STATE_PLAYING) ? LV_SYMBOL_PLAY " Playing" : LV_SYMBOL_PAUSE " Paused");
+    }
+    else
+    {
+        lv_label_set_text_fmt(m_lbl, "#FF40FF " LV_SYMBOL_AUDIO " Music#\n#FFFFFF SD Player#\n#90A4AE %s#",
+                              VS1053_IsPresent() ? "Tap to browse" : "No VS1053");
+    }
+    s_home_p2_btns[0] = m_btn;
+
+    /* Tile [1]: Internet radio (roadmap audio step 4) */
+    lv_obj_t * r_btn = Create_Desktop_Shortcut(tile, 168, 10, LV_SYMBOL_WIFI, "Radio", 0x455A64U, UI_SCREEN_HOME);
+    lv_obj_t * r_lbl = lv_obj_get_child(r_btn, 0);
+    lv_label_set_recolor(r_lbl, true);
+    lv_label_set_text(r_lbl, "#90A4AE " LV_SYMBOL_WIFI " Radio#\n#607D8B Internet#\n#607D8B Coming soon#");
+    Home_MakeTilePlaceholder(r_btn);
+
+    /* Tile [2]: Sound settings */
+    lv_obj_t * s_btn = Create_Desktop_Shortcut(tile, 16, 102, LV_SYMBOL_VOLUME_MAX, "Sound", 0x00E5FFU, UI_SCREEN_SOUND);
+    lv_obj_t * s_lbl = lv_obj_get_child(s_btn, 0);
+    lv_label_set_recolor(s_lbl, true);
+    lv_label_set_text_fmt(s_lbl, "#00E5FF " LV_SYMBOL_VOLUME_MAX " Sound#\n#FFFFFF Volume %u%%#\n#90A4AE Sys: %s#",
+                          (unsigned int)AudioSvc_GetVolume(), AudioSvc_SysModeName(AudioSvc_GetSysMode()));
+    s_home_p2_btns[1] = s_btn;
+
+    /* Tile [3]: reserved (voice recorder / visualizer) */
+    lv_obj_t * x_btn = Create_Desktop_Shortcut(tile, 168, 102, LV_SYMBOL_PLUS, "More", 0x455A64U, UI_SCREEN_HOME);
+    lv_obj_t * x_lbl = lv_obj_get_child(x_btn, 0);
+    lv_label_set_recolor(x_lbl, true);
+    lv_label_set_text(x_lbl, "#90A4AE " LV_SYMBOL_PLUS " More#\n#607D8B Recorder#\n#607D8B Coming soon#");
+    Home_MakeTilePlaceholder(x_btn);
+
+    s_home_p2_btns[2] = Home_CreateNavBtn(tile, 92, LV_SYMBOL_LEFT " . . o  Widgets", 0xFF40FFU, 1U);
+}
+
 static void Build_Home_Screen(void)
 {
     static const char * const wall_candidates[] = {
@@ -1309,33 +1467,18 @@ static void Build_Home_Screen(void)
     lv_obj_add_event_cb(s_home_tv, home_tileview_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     s_home_tile0 = lv_tileview_add_tile(s_home_tv, 0, 0, LV_DIR_RIGHT);
-    s_home_tile1 = lv_tileview_add_tile(s_home_tv, 1, 0, LV_DIR_LEFT);
+    s_home_tile1 = lv_tileview_add_tile(s_home_tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    s_home_tile2 = lv_tileview_add_tile(s_home_tv, 2, 0, LV_DIR_LEFT);
     lv_obj_set_style_bg_opa(s_home_tile0, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_opa(s_home_tile1, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(s_home_tile2, LV_OPA_TRANSP, 0);
 
     /* ---- Page 1 (Tile 0): 4 Main Launcher Shortcuts ---- */
     s_home_p0_btns[0] = Create_Desktop_Shortcut(s_home_tile0, 16,  10, LV_SYMBOL_DIRECTORY, "SD Files",    0x00E5FF, UI_SCREEN_FILES);
     s_home_p0_btns[1] = Create_Desktop_Shortcut(s_home_tile0, 168, 10, LV_SYMBOL_PLAY,      "Games",       0x00FF66, UI_SCREEN_GAMES);
     s_home_p0_btns[2] = Create_Desktop_Shortcut(s_home_tile0, 16,  102, LV_SYMBOL_SETTINGS, "Settings",    0xFFAE00, UI_SCREEN_SETTINGS);
     s_home_p0_btns[3] = Create_Desktop_Shortcut(s_home_tile0, 168, 102, LV_SYMBOL_LIST,     "System Info", 0xB388FF, UI_SCREEN_SYSINFO);
-
-    lv_obj_t * btn_to_p2 = lv_btn_create(s_home_tile0);
-    lv_obj_set_size(btn_to_p2, 136, 20);
-    lv_obj_align(btn_to_p2, LV_ALIGN_BOTTOM_MID, 0, -2);
-    lv_obj_clear_flag(btn_to_p2, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_style_bg_color(btn_to_p2, lv_color_hex(0x1B2234), 0);
-    lv_obj_set_style_bg_opa(btn_to_p2, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(btn_to_p2, 1, 0);
-    lv_obj_set_style_border_color(btn_to_p2, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_border_color(btn_to_p2, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(btn_to_p2, 2, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_color(btn_to_p2, lv_color_hex(0x324164), LV_STATE_FOCUSED);
-    lv_obj_t * lbl_p2 = lv_label_create(btn_to_p2);
-    lv_label_set_text(lbl_p2, "Widgets  o . " LV_SYMBOL_RIGHT);
-    lv_obj_center(lbl_p2);
-    lv_obj_add_event_cb(btn_to_p2, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)1U);
-    lv_obj_add_event_cb(btn_to_p2, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)1U);
-    s_home_p0_btns[4] = btn_to_p2;
+    s_home_p0_btns[4] = Home_CreateNavBtn(s_home_tile0, 92, "Widgets  o . . " LV_SYMBOL_RIGHT, 0x00E5FFU, 1U);
 
     /* ---- Page 2 (Tile 1): Standardized 2x2 4-Tile Widgets Grid ---- */
     const ESP_WeatherInfo_t   *wth = ESPCompanion_GetWeather();
@@ -1448,27 +1591,15 @@ static void Build_Home_Screen(void)
     }
     s_home_p1_btns[3] = r_btn;
 
-    lv_obj_t * btn_to_p1 = lv_btn_create(s_home_tile1);
-    lv_obj_set_size(btn_to_p1, 136, 20);
-    lv_obj_align(btn_to_p1, LV_ALIGN_BOTTOM_MID, 0, -2);
-    lv_obj_clear_flag(btn_to_p1, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_style_bg_color(btn_to_p1, lv_color_hex(0x1B2234), 0);
-    lv_obj_set_style_bg_opa(btn_to_p1, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(btn_to_p1, 1, 0);
-    lv_obj_set_style_border_color(btn_to_p1, lv_color_hex(0x00FF66), 0);
-    lv_obj_set_style_border_color(btn_to_p1, lv_color_hex(0xFFFFFF), LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(btn_to_p1, 2, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_color(btn_to_p1, lv_color_hex(0x324164), LV_STATE_FOCUSED);
-    lv_obj_t * lbl_p1 = lv_label_create(btn_to_p1);
-    lv_label_set_text(lbl_p1, LV_SYMBOL_LEFT " . o  Launcher");
-    lv_obj_center(lbl_p1);
-    lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)0U);
-    lv_obj_add_event_cb(btn_to_p1, home_page_switch_cb, LV_EVENT_KEY, (void *)(uintptr_t)0U);
-    s_home_p1_btns[4] = btn_to_p1;
+    /* Page 2 has neighbours on both sides: two half-width nav buttons under the tile columns */
+    s_home_p1_btns[4] = Home_CreateNavBtn(s_home_tile1, 16, LV_SYMBOL_LEFT " Launcher", 0x00FF66U, 0U);
+    s_home_p1_btns[5] = Home_CreateNavBtn(s_home_tile1, 168, ". o .  Media " LV_SYMBOL_RIGHT, 0xFF40FFU, 2U);
 
-    if (s_home_active_col == 1U)
+    Build_Media_Page(s_home_tile2);
+
+    if (s_home_active_col != 0U)
     {
-        lv_obj_set_tile_id(s_home_tv, 1, 0, LV_ANIM_OFF);
+        lv_obj_set_tile_id(s_home_tv, s_home_active_col, 0, LV_ANIM_OFF);
     }
 
     Sync_Home_Group_To_Active_Page();
@@ -2777,19 +2908,6 @@ typedef enum {
     FILE_ACT_AUDIO_STOP
 } File_Action_t;
 
-static bool Is_Audio_File(const char *name)
-{
-    static const char *const s_exts[] = { ".mp3", ".ogg", ".wav", ".wma", ".aac", ".m4a", ".mid", ".midi", ".flac" };
-    for (uint32_t i = 0U; i < sizeof(s_exts) / sizeof(s_exts[0]); i++)
-    {
-        if (Ends_With_IgnoreCase(name, s_exts[i]))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void file_action_btn_cb(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -2945,7 +3063,7 @@ static void Open_File_Action_Menu(const char *rel_path, const char *item_name)
     lv_obj_t *btn_primary2 = NULL;
     lv_obj_t *btn_primary3 = NULL;
 
-    if (Is_Audio_File(item_name))
+    if (AudioPlayer_IsAudioFile(item_name))
     {
         btn_primary1 = Create_Action_Btn(workspace_cont, 8,   44, 96, 38, LV_SYMBOL_PLAY " Play",   0x00A859, FILE_ACT_AUDIO_PLAY);
         btn_primary2 = Create_Action_Btn(workspace_cont, 112, 44, 96, 38, LV_SYMBOL_PAUSE " Pause", 0x0277BD, FILE_ACT_AUDIO_PAUSE);
@@ -3850,7 +3968,11 @@ static void sound_btn_cb(lv_event_t * e)
             break;
         case SND_ACT_BACK:
             Beeper_Click();
-            s_pending_screen = (int8_t)UI_SCREEN_SETTINGS;
+            if (s_sound_return == UI_SCREEN_HOME)
+            {
+                s_home_active_col = 2U;
+            }
+            s_pending_screen = (int8_t)s_sound_return;
             return;
         default:
             break;
@@ -3931,6 +4053,342 @@ static void Build_Sound_Screen(void)
     {
         lv_group_focus_obj(vol_up);
     }
+}
+
+/* ==========================================================================
+ * Music Player Screen (folder playlist on top of the background AudioPlayer task)
+ * ========================================================================== */
+
+typedef enum {
+    MUS_ACT_PREV = 1,
+    MUS_ACT_PLAY_PAUSE,
+    MUS_ACT_NEXT,
+    MUS_ACT_STOP,
+    MUS_ACT_MODE,
+    MUS_ACT_BACK
+} Music_Action_t;
+
+#define MUS_LIST_MAX 48U
+
+CCMRAM_BUF static DIR                  s_mus_dir_obj;
+CCMRAM_BUF static AudioPlayer_Status_t s_mus_st;
+static char     s_music_dir[96]  = "";
+static uint32_t s_mus_count      = 0U;
+static uint32_t s_mus_seq        = 0xFFFFFFFFU;
+static uint32_t s_mus_last_tick  = 0U;
+
+static const char *Music_ModeSymbol(AudioPlayer_Mode_t mode)
+{
+    switch (mode)
+    {
+        case AUDIO_MODE_REPEAT_ALL: return LV_SYMBOL_LOOP;
+        case AUDIO_MODE_REPEAT_ONE: return LV_SYMBOL_LOOP "1";
+        case AUDIO_MODE_SHUFFLE:    return LV_SYMBOL_SHUFFLE;
+        default:                    return LV_SYMBOL_RIGHT LV_SYMBOL_RIGHT;
+    }
+}
+
+/* Folder of a FatFs path ("" = root) */
+static void Music_DirOf(const char *path, char *dir, size_t size)
+{
+    const char *slash = strrchr(path, '/');
+    size_t len = (slash != NULL) ? (size_t)(slash - path) : 0U;
+    if (len >= size) len = size - 1U;
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+}
+
+static void Music_PlayListItem(lv_obj_t *btn)
+{
+    const char *name = (s_mus_list != NULL && btn != NULL) ? lv_list_get_btn_text(s_mus_list, btn) : NULL;
+    if (name == NULL)
+    {
+        return;
+    }
+    char path[AUDIO_PLAYER_PATH_MAX];
+    if (s_music_dir[0] != '\0') snprintf(path, sizeof(path), "%s/%s", s_music_dir, name);
+    else                        snprintf(path, sizeof(path), "%s", name);
+    if (!AudioPlayer_Play(path))
+    {
+        Beeper_ErrorAlert();
+    }
+}
+
+static void music_key_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_KEY && lv_event_get_key(e) == LV_KEY_ESC)
+    {
+        Beeper_Click();
+        s_home_active_col = 2U;
+        s_pending_screen = (int8_t)UI_SCREEN_HOME;
+    }
+}
+
+static void music_list_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        Music_PlayListItem(lv_event_get_target(e));
+    }
+}
+
+static void music_btn_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+    Music_Action_t act = (Music_Action_t)(uintptr_t)lv_event_get_user_data(e);
+    switch (act)
+    {
+        case MUS_ACT_PREV: AudioPlayer_Prev(); break;
+        case MUS_ACT_NEXT: AudioPlayer_Next(); break;
+        case MUS_ACT_STOP: AudioPlayer_Stop(); break;
+        case MUS_ACT_MODE:
+            Beeper_Click();
+            AudioSvc_CyclePlayMode();
+            break;
+        case MUS_ACT_PLAY_PAUSE:
+            if (AudioPlayer_GetState() == AUDIO_STATE_IDLE && s_mus_st.path[0] == '\0')
+            {
+                /* Nothing played yet: start the first track of the folder */
+                if (s_mus_count > 0U && s_mus_list != NULL)
+                {
+                    Music_PlayListItem(lv_obj_get_child(s_mus_list, 0));
+                }
+            }
+            else
+            {
+                AudioPlayer_TogglePause();
+            }
+            break;
+        case MUS_ACT_BACK:
+            Beeper_Click();
+            s_home_active_col = 2U;
+            s_pending_screen = (int8_t)UI_SCREEN_HOME;
+            break;
+        default:
+            break;
+    }
+}
+
+static lv_obj_t *Music_CreateBtn(int16_t x, int16_t y, int16_t w, int16_t h, const char *txt, Music_Action_t act,
+                                 uint32_t bg)
+{
+    lv_obj_t *btn = lv_btn_create(workspace_cont);
+    lv_obj_set_size(btn, w, h);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(bg), 0);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, txt);
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(btn, music_btn_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)act);
+    lv_obj_add_event_cb(btn, music_key_cb, LV_EVENT_KEY, NULL);
+    return btn;
+}
+
+static void Music_Refresh(bool force)
+{
+    if (s_mus_lbl_title == NULL)
+    {
+        return;
+    }
+    AudioPlayer_GetStatus(&s_mus_st);
+    bool changed = force || (s_mus_st.track_seq != s_mus_seq);
+    s_mus_seq = s_mus_st.track_seq;
+
+    if (changed)
+    {
+        bool active = (s_mus_st.state != AUDIO_STATE_IDLE);
+        lv_label_set_text(s_mus_lbl_title, (s_mus_st.title[0] != '\0') ? s_mus_st.title : "No track selected");
+        lv_label_set_text(s_mus_lbl_play, (s_mus_st.state == AUDIO_STATE_PLAYING) ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+        lv_label_set_text(s_mus_lbl_mode, Music_ModeSymbol(s_mus_st.mode));
+
+        /* Highlight the playing file in the folder list */
+        const char *base = strrchr(s_mus_st.path, '/');
+        base = (base != NULL) ? (base + 1) : s_mus_st.path;
+        uint32_t cnt = (s_mus_list != NULL) ? lv_obj_get_child_cnt(s_mus_list) : 0U;
+        if (!active && s_mus_list != NULL)
+        {
+            lv_obj_scroll_to_y(s_mus_list, 0, LV_ANIM_OFF);
+        }
+        for (uint32_t i = 0U; i < cnt; i++)
+        {
+            lv_obj_t *b = lv_obj_get_child(s_mus_list, (int32_t)i);
+            const char *t = lv_list_get_btn_text(s_mus_list, b);
+            if (active && t != NULL && strcmp(t, base) == 0)
+            {
+                lv_obj_add_state(b, LV_STATE_CHECKED);
+                lv_obj_scroll_to_view(b, LV_ANIM_OFF);
+            }
+            else
+            {
+                lv_obj_clear_state(b, LV_STATE_CHECKED);
+            }
+        }
+    }
+
+    uint32_t pos = s_mus_st.decode_sec;
+    uint32_t dur = s_mus_st.duration_sec;
+    if (s_mus_st.state == AUDIO_STATE_IDLE)
+    {
+        lv_label_set_text_fmt(s_mus_lbl_info, "%s  -  %s", AudioPlayer_ModeName(s_mus_st.mode),
+                              VS1053_IsPresent() ? "stopped" : "VS1053 not detected");
+        lv_label_set_text(s_mus_lbl_time, "--:--");
+        lv_bar_set_value(s_mus_bar, 0, LV_ANIM_OFF);
+        return;
+    }
+    if (s_mus_st.artist[0] != '\0')
+    {
+        lv_label_set_text_fmt(s_mus_lbl_info, "%s  -  %s %lu kbps", s_mus_st.artist, s_mus_st.format,
+                              (unsigned long)s_mus_st.kbps);
+    }
+    else
+    {
+        lv_label_set_text_fmt(s_mus_lbl_info, "%s %lu kbps  %lu Hz %s", s_mus_st.format, (unsigned long)s_mus_st.kbps,
+                              (unsigned long)s_mus_st.sample_rate, s_mus_st.stereo ? "stereo" : "mono");
+    }
+    lv_label_set_text_fmt(s_mus_lbl_time, "%02lu:%02lu / %02lu:%02lu", (unsigned long)(pos / 60U),
+                          (unsigned long)(pos % 60U), (unsigned long)(dur / 60U), (unsigned long)(dur % 60U));
+    uint32_t pct = (s_mus_st.file_size > 0U) ?
+                   (uint32_t)(((uint64_t)s_mus_st.bytes_sent * 100U) / s_mus_st.file_size) : 0U;
+    lv_bar_set_value(s_mus_bar, (int32_t)((pct > 100U) ? 100U : pct), LV_ANIM_OFF);
+}
+
+static void Music_Update(void)
+{
+    if (current_screen != UI_SCREEN_MUSIC || s_mus_lbl_title == NULL || (HAL_GetTick() - s_mus_last_tick) < 500U)
+    {
+        return;
+    }
+    s_mus_last_tick = HAL_GetTick();
+    Music_Refresh(false);
+
+    /* A track from another folder was started (e.g. from SD Explorer): rebuild the playlist */
+    char dir[sizeof(s_music_dir)];
+    Music_DirOf(s_mus_st.path, dir, sizeof(dir));
+    if (s_mus_st.state != AUDIO_STATE_IDLE && strcmp(dir, s_music_dir) != 0)
+    {
+        s_pending_screen = (int8_t)UI_SCREEN_MUSIC;
+    }
+}
+
+static void Build_Music_Screen(void)
+{
+    uint32_t accent = s_themes[s_theme_id % THEME_COUNT].title_col;
+    AudioPlayer_GetStatus(&s_mus_st);
+    if (s_mus_st.path[0] != '\0')
+    {
+        Music_DirOf(s_mus_st.path, s_music_dir, sizeof(s_music_dir));
+    }
+    else if (f_stat("Music", &s_ui_fno) == FR_OK && (s_ui_fno.fattrib & AM_DIR) != 0U)
+    {
+        snprintf(s_music_dir, sizeof(s_music_dir), "Music");
+    }
+    else
+    {
+        s_music_dir[0] = '\0';
+    }
+
+    lv_obj_t *back = Music_CreateBtn(6, 4, 60, 26, LV_SYMBOL_LEFT " Back", MUS_ACT_BACK, 0x37474F);
+    lv_obj_t *lbl_dir = lv_label_create(workspace_cont);
+    lv_obj_set_style_text_color(lbl_dir, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_pos(lbl_dir, 74, 9);
+    lv_obj_set_width(lbl_dir, 240);
+    lv_label_set_long_mode(lbl_dir, LV_LABEL_LONG_DOT);
+    lv_label_set_text_fmt(lbl_dir, LV_SYMBOL_DIRECTORY " /%s", s_music_dir);
+
+    /* Now-playing card */
+    lv_obj_t *card = lv_obj_create(workspace_cont);
+    lv_obj_set_size(card, 308, 62);
+    lv_obj_set_pos(card, 6, 34);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x101826), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(accent), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_pad_all(card, 4, 0);
+
+    s_mus_lbl_title = lv_label_create(card);
+    lv_obj_set_style_text_color(s_mus_lbl_title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(s_mus_lbl_title, 296);
+    lv_obj_set_pos(s_mus_lbl_title, 0, 0);
+    lv_label_set_long_mode(s_mus_lbl_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+
+    s_mus_lbl_info = lv_label_create(card);
+    lv_obj_set_style_text_color(s_mus_lbl_info, lv_color_hex(0x90A4AE), 0);
+    lv_obj_set_width(s_mus_lbl_info, 296);
+    lv_obj_set_pos(s_mus_lbl_info, 0, 18);
+    lv_label_set_long_mode(s_mus_lbl_info, LV_LABEL_LONG_DOT);
+
+    s_mus_bar = lv_bar_create(card);
+    lv_obj_set_size(s_mus_bar, 180, 8);
+    lv_obj_set_pos(s_mus_bar, 0, 42);
+    lv_bar_set_range(s_mus_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_mus_bar, lv_color_hex(accent), LV_PART_INDICATOR);
+
+    s_mus_lbl_time = lv_label_create(card);
+    lv_obj_set_style_text_color(s_mus_lbl_time, lv_color_hex(accent), 0);
+    lv_obj_set_width(s_mus_lbl_time, 112);
+    lv_obj_set_style_text_align(s_mus_lbl_time, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_pos(s_mus_lbl_time, 184, 37);
+
+    /* Folder playlist */
+    s_mus_list = lv_list_create(workspace_cont);
+    lv_obj_set_size(s_mus_list, 308, 78);
+    lv_obj_set_pos(s_mus_list, 6, 100);
+    lv_obj_set_style_pad_all(s_mus_list, 2, 0);
+    uint32_t count = 0U;
+    if (SDCard_IsMounted() && f_opendir(&s_mus_dir_obj, s_music_dir) == FR_OK)
+    {
+        while (count < MUS_LIST_MAX && f_readdir(&s_mus_dir_obj, &s_ui_fno) == FR_OK && s_ui_fno.fname[0] != '\0')
+        {
+            if ((s_ui_fno.fattrib & AM_DIR) == 0U && AudioPlayer_IsAudioFile(s_ui_fno.fname))
+            {
+                lv_obj_t *b = lv_list_add_btn(s_mus_list, LV_SYMBOL_AUDIO, s_ui_fno.fname);
+                lv_obj_set_style_pad_ver(b, 4, 0);
+                lv_obj_set_style_bg_color(b, lv_color_hex(0x00695C), LV_STATE_CHECKED);
+                lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_CHECKED);
+                lv_obj_add_event_cb(b, music_list_cb, LV_EVENT_CLICKED, NULL);
+                lv_obj_add_event_cb(b, music_key_cb, LV_EVENT_KEY, NULL);
+                count++;
+            }
+        }
+        (void)f_closedir(&s_mus_dir_obj);
+    }
+    s_mus_count = count;
+    if (count == 0U)
+    {
+        lv_list_add_text(s_mus_list, SDCard_IsMounted() ? "No audio files here (mp3, ogg, wav, mid...)"
+                                                        : "SD card not mounted");
+    }
+
+    /* Transport controls */
+    lv_obj_t *prev = Music_CreateBtn(6,   182, 58, 30, LV_SYMBOL_PREV, MUS_ACT_PREV, 0x455A64);
+    lv_obj_t *play = Music_CreateBtn(68,  182, 58, 30, LV_SYMBOL_PLAY, MUS_ACT_PLAY_PAUSE, 0x00A859);
+    lv_obj_t *next = Music_CreateBtn(130, 182, 58, 30, LV_SYMBOL_NEXT, MUS_ACT_NEXT, 0x455A64);
+    lv_obj_t *stop = Music_CreateBtn(192, 182, 58, 30, LV_SYMBOL_STOP, MUS_ACT_STOP, 0x8E2424);
+    lv_obj_t *mode = Music_CreateBtn(254, 182, 60, 30, "", MUS_ACT_MODE, 0x0277BD);
+    s_mus_lbl_play = lv_obj_get_child(play, 0);
+    s_mus_lbl_mode = lv_obj_get_child(mode, 0);
+
+    lv_group_t *grp = lv_group_get_default();
+    if (grp != NULL)
+    {
+        lv_group_add_obj(grp, prev);
+        lv_group_add_obj(grp, play);
+        lv_group_add_obj(grp, next);
+        lv_group_add_obj(grp, stop);
+        lv_group_add_obj(grp, mode);
+        for (uint32_t i = 0U; i < count; i++)
+        {
+            lv_group_add_obj(grp, lv_obj_get_child(s_mus_list, (int32_t)i));
+        }
+        lv_group_add_obj(grp, back);
+        lv_group_focus_obj(play);
+    }
+
+    Music_Refresh(true);
+    s_mus_last_tick = HAL_GetTick();
 }
 
 static lv_obj_t* Create_Setting_Btn(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, int16_t h,
@@ -5380,6 +5838,27 @@ static void screensaver_wake_cb(lv_event_t * e)
     }
 }
 
+static void Screensaver_UpdateMusic(void)
+{
+    static uint32_t last_tick = 0U;
+    if (s_ss_lbl_music == NULL || (HAL_GetTick() - last_tick) < 1000U)
+    {
+        return;
+    }
+    last_tick = HAL_GetTick();
+    CCMRAM_BUF static AudioPlayer_Status_t st;
+    AudioPlayer_GetStatus(&st);
+    if (st.state == AUDIO_STATE_IDLE)
+    {
+        lv_label_set_text(s_ss_lbl_music, "");
+        return;
+    }
+    lv_label_set_text_fmt(s_ss_lbl_music, "%s %s%s%s  %02lu:%02lu",
+                          (st.state == AUDIO_STATE_PLAYING) ? LV_SYMBOL_AUDIO : LV_SYMBOL_PAUSE, st.title,
+                          (st.artist[0] != '\0') ? " - " : "", st.artist,
+                          (unsigned long)(st.decode_sec / 60U), (unsigned long)(st.decode_sec % 60U));
+}
+
 static void Build_Screensaver_Screen(void)
 {
     bool esp_online = ESPCompanion_IsConnected();
@@ -5446,6 +5925,16 @@ static void Build_Screensaver_Screen(void)
     lv_obj_set_pos(s_ss_lbl_clock, 10, 42);
     lv_obj_set_style_text_align(s_ss_lbl_clock, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text_fmt(s_ss_lbl_clock, "%02u:%02u:%02u", hrs, mins, secs);
+
+    /* Now playing (between the clock and the weather card), filled by Screensaver_UpdateMusic() */
+    s_ss_lbl_music = lv_label_create(ovl);
+    lv_obj_set_style_text_color(s_ss_lbl_music, lv_color_hex(0xFF40FF), 0);
+    lv_obj_set_width(s_ss_lbl_music, 300);
+    lv_obj_set_pos(s_ss_lbl_music, 10, 76);
+    lv_obj_set_style_text_align(s_ss_lbl_music, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_ss_lbl_music, LV_LABEL_LONG_DOT);
+    lv_label_set_text(s_ss_lbl_music, "");
+    Screensaver_UpdateMusic();
 
     /* Bottom Weather & Local Sensor Card */
     lv_obj_t * card = lv_obj_create(ovl);

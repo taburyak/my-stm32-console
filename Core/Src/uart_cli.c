@@ -11,6 +11,7 @@
 #include "audio_player.h"
 #include "audio_service.h"
 #include "beeper.h"
+#include "ui_manager.h"
 #include "memory_map.h"
 #include "ccmram.h"
 #include "lvgl.h"
@@ -204,9 +205,10 @@ static void cmd_help(void)
         "  df | mem               Detailed RAM, LVGL pool, heap & SD usage\r\n"
         "  run <app> / stop       Launch .bin/.c app or stop running app\r\n"
         "  sysinfo / temp / shot  Diagnostics, temperatures, 320x240 screenshot\r\n"
+        "  ui <home|widgets|media|music|sound|settings|files|games>  Switch console screen\r\n"
         "  snd [info|init|test [hz] [sec]|diff [on|off]]  VS1053 diagnostics\r\n"
         "  snd vol [0-100] | bass [0-15] | treble [-8..7] | sys [off|buzzer|speaker]  Saved\r\n"
-        "  snd play <file> | stop | pause | status   Play MP3/Ogg/AAC/WMA/WAV/MIDI from SD\r\n"
+        "  snd play <file> | stop | pause | next | prev | mode [cycle] | status   SD player\r\n"
         "  esp <status|wifi [ssid pass]|wth|sync|speedtest|hudkeep 0|1>\r\n"
         "  fwupdate[-fast]        Receive fw_update.bin via XMODEM-1K (-fast: 230400)\r\n"
         "  clear | reboot         Clear terminal or reset console\r\n"
@@ -1134,6 +1136,33 @@ static void cmd_fwupdate(bool fast)
     NVIC_SystemReset();
 }
 
+/* The CLI runs in StartDefaultTask together with LVGL, so screens can be switched directly */
+static void cmd_ui(const char *arg)
+{
+    static const struct { const char *name; UI_Screen_t screen; uint8_t page; } s_ui_map[] = {
+        { "home", UI_SCREEN_HOME, 0U },       { "widgets", UI_SCREEN_HOME, 1U },
+        { "media", UI_SCREEN_HOME, 2U },      { "music", UI_SCREEN_MUSIC, 0U },
+        { "sound", UI_SCREEN_SOUND, 0U },     { "settings", UI_SCREEN_SETTINGS, 0U },
+        { "files", UI_SCREEN_FILES, 0U },     { "games", UI_SCREEN_GAMES, 0U },
+    };
+    const char *name = skip_ws(arg);
+    for (uint32_t i = 0U; i < sizeof(s_ui_map) / sizeof(s_ui_map[0]); i++)
+    {
+        if (str_eq_ci(name, s_ui_map[i].name))
+        {
+            uint32_t t0 = HAL_GetTick();
+            if (s_ui_map[i].screen == UI_SCREEN_HOME)
+            {
+                UIManager_SetHomePage(s_ui_map[i].page);
+            }
+            UIManager_ShowScreen(s_ui_map[i].screen);
+            printf("Screen '%s' built in %lu ms\r\n", s_ui_map[i].name, (unsigned long)(HAL_GetTick() - t0));
+            return;
+        }
+    }
+    cli_puts("Usage: ui <home|widgets|media|music|sound|settings|files|games>\r\n");
+}
+
 static void cmd_snd(const char *arg)
 {
     const char *sub = skip_ws(arg);
@@ -1190,19 +1219,37 @@ static void cmd_snd(const char *arg)
     {
         AudioPlayer_TogglePause();
     }
+    else if (str_eq_ci(word, "next"))
+    {
+        AudioPlayer_Next();
+    }
+    else if (str_eq_ci(word, "prev"))
+    {
+        AudioPlayer_Prev();
+    }
+    else if (str_eq_ci(word, "mode"))
+    {
+        if (*val != '\0')
+        {
+            AudioSvc_CyclePlayMode();
+        }
+        printf("Play mode: %s\r\n", AudioPlayer_ModeName(AudioPlayer_GetMode()));
+    }
     else if (str_eq_ci(word, "status"))
     {
         CCMRAM_BUF static AudioPlayer_Status_t st;
         AudioPlayer_GetStatus(&st);
         static const char *const s_names[] = { "idle", "playing", "paused" };
-        printf("State: %s\r\n", s_names[st.state]);
+        printf("State: %s  (mode: %s)\r\n", s_names[st.state], AudioPlayer_ModeName(st.mode));
         if (st.state != AUDIO_STATE_IDLE)
         {
             uint32_t pct = (st.file_size > 0U) ? (uint32_t)(((uint64_t)st.bytes_sent * 100U) / st.file_size) : 0U;
+            printf("Track: %s%s%s\r\n", st.title, (st.artist[0] != '\0') ? " - " : "", st.artist);
             printf("File:  /%s (%lu%% of %lu KB)\r\n", st.path, (unsigned long)pct,
                    (unsigned long)(st.file_size / 1024U));
-            printf("Time:  %02lu:%02lu  %s %lu Hz %s %lu kbps\r\n", (unsigned long)(st.decode_sec / 60U),
-                   (unsigned long)(st.decode_sec % 60U), st.format, (unsigned long)st.sample_rate,
+            printf("Time:  %02lu:%02lu / %02lu:%02lu  %s %lu Hz %s %lu kbps\r\n", (unsigned long)(st.decode_sec / 60U),
+                   (unsigned long)(st.decode_sec % 60U), (unsigned long)(st.duration_sec / 60U),
+                   (unsigned long)(st.duration_sec % 60U), st.format, (unsigned long)st.sample_rate,
                    st.stereo ? "stereo" : "mono", (unsigned long)st.kbps);
         }
     }
@@ -1385,6 +1432,10 @@ static void cli_exec(char *line)
     else if (str_eq_ci(cmd, "snd"))
     {
         cmd_snd(arg);
+    }
+    else if (str_eq_ci(cmd, "ui"))
+    {
+        cmd_ui(arg);
     }
     else if (str_eq_ci(cmd, "fwupdate"))
     {
