@@ -120,7 +120,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Libs/tinyusb/src/host/hub.c
     Libs/tinyusb/src/class/hid/hid_host.c
     Libs/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
-    Libs/tinyusb/src/portable/synopsys/dwc2/hcd_dwc2.c
+    Libs/tinyusb_patch/hcd_dwc2.c
     Libs/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
     Core/Src/ui_manager.c
     Core/Src/app_loader.c

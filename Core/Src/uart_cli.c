@@ -1429,6 +1429,17 @@ static void cli_exec(char *line)
     {
         cmd_esp(arg);
     }
+    else if (str_eq_ci(cmd, "wdtest"))
+    {
+        /* Diagnostics: hang the GUI/CLI task without feeding IWDG; the watchdog must reset in ~4 s */
+        cli_puts("Hanging without IWDG refresh, expect a reset in ~4 s...\r\n");
+        osDelay(20);
+        uint32_t t0 = HAL_GetTick();
+        while ((HAL_GetTick() - t0) < 15000U)
+        {
+        }
+        cli_puts("ERR: still alive after 15 s - IWDG is NOT running!\r\n");
+    }
     else if (str_eq_ci(cmd, "snd"))
     {
         cmd_snd(arg);
@@ -1629,8 +1640,9 @@ void UARTCli_Poll(void)
                     cli_putc(' ');
                 }
             }
-            else if (b >= 0x20U && b <= 0x7EU)
+            else if (b >= 0x20U && b != 0x7FU)
             {
+                /* Bytes >= 0x80 pass through so CP850 / short (8.3) SD names can be typed */
                 if ((uint16_t)s_line_len + 1U < CLI_LINE_MAX)
                 {
                     s_line[s_line_len++] = (char)b;

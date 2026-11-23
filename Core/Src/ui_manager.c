@@ -4189,9 +4189,16 @@ typedef enum {
 
 #define MUS_LIST_MAX 48U
 
+/* user_data of playlist rows */
+#define MUS_ITEM_FILE   0U
+#define MUS_ITEM_FOLDER 1U
+#define MUS_ITEM_UP     2U
+
 CCMRAM_BUF static DIR                  s_mus_dir_obj;
 CCMRAM_BUF static AudioPlayer_Status_t s_mus_st;
-static char     s_music_dir[96]  = "";
+static char     s_music_dir[96]    = "";
+static char     s_music_browse[96] = "";  /* folder picked by the user ("" = follow the playing track) */
+static char     s_mus_track_dir[96] = ""; /* folder of the last track seen, to follow album changes */
 static uint32_t s_mus_count      = 0U;
 static uint32_t s_mus_seq        = 0xFFFFFFFFU;
 static uint32_t s_mus_last_tick  = 0U;
@@ -4245,10 +4252,52 @@ static void music_key_cb(lv_event_t * e)
 
 static void music_list_cb(lv_event_t * e)
 {
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED)
     {
-        Music_PlayListItem(lv_event_get_target(e));
+        return;
     }
+    lv_obj_t *btn  = lv_event_get_target(e);
+    uint32_t  kind = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    if (kind == MUS_ITEM_FILE)
+    {
+        Music_PlayListItem(btn);
+        return;
+    }
+    Beeper_Click();
+    if (kind == MUS_ITEM_UP)
+    {
+        Music_DirOf(s_music_dir, s_music_browse, sizeof(s_music_browse));
+    }
+    else
+    {
+        const char *name = lv_list_get_btn_text(s_mus_list, btn);
+        if (name == NULL)
+        {
+            return;
+        }
+        if (s_music_dir[0] != '\0') snprintf(s_music_browse, sizeof(s_music_browse), "%.47s/%.47s", s_music_dir, name);
+        else                        snprintf(s_music_browse, sizeof(s_music_browse), "%s", name);
+    }
+    if (s_music_browse[0] == '\0')
+    {
+        snprintf(s_music_browse, sizeof(s_music_browse), "/"); /* SD root */
+    }
+    s_pending_screen = (int8_t)UI_SCREEN_MUSIC;
+}
+
+/* First track row of the playlist (folders and ".." come first), NULL if the folder has no tracks */
+static lv_obj_t *Music_FirstTrackRow(void)
+{
+    uint32_t cnt = (s_mus_list != NULL) ? lv_obj_get_child_cnt(s_mus_list) : 0U;
+    for (uint32_t i = 0U; i < cnt; i++)
+    {
+        lv_obj_t *b = lv_obj_get_child(s_mus_list, (int32_t)i);
+        if (lv_obj_check_type(b, &lv_list_btn_class) && lv_obj_has_flag(b, LV_OBJ_FLAG_USER_1))
+        {
+            return b;
+        }
+    }
+    return NULL;
 }
 
 static void music_btn_cb(lv_event_t * e)
@@ -4271,9 +4320,14 @@ static void music_btn_cb(lv_event_t * e)
             if (AudioPlayer_GetState() == AUDIO_STATE_IDLE && s_mus_st.path[0] == '\0')
             {
                 /* Nothing played yet: start the first track of the folder */
-                if (s_mus_count > 0U && s_mus_list != NULL)
+                lv_obj_t *first = Music_FirstTrackRow();
+                if (first != NULL)
                 {
-                    Music_PlayListItem(lv_obj_get_child(s_mus_list, 0));
+                    Music_PlayListItem(first);
+                }
+                else
+                {
+                    AudioPlayer_TogglePause(); /* player falls back to SD:/Music and its sub-folders */
                 }
             }
             else
@@ -4335,7 +4389,7 @@ static void Music_Refresh(bool force)
         {
             lv_obj_t *b = lv_obj_get_child(s_mus_list, (int32_t)i);
             const char *t = lv_list_get_btn_text(s_mus_list, b);
-            if (active && t != NULL && strcmp(t, base) == 0)
+            if (active && t != NULL && lv_obj_has_flag(b, LV_OBJ_FLAG_USER_1) && strcmp(t, base) == 0)
             {
                 lv_obj_add_state(b, LV_STATE_CHECKED);
                 lv_obj_scroll_to_view(b, LV_ANIM_OFF);
@@ -4383,12 +4437,18 @@ static void Music_Update(void)
     s_mus_last_tick = HAL_GetTick();
     Music_Refresh(false);
 
-    /* A track from another folder was started (e.g. from SD Explorer): rebuild the playlist */
+    /* The playing album changed (auto-advance to another folder, SD Explorer, keyboard Play):
+     * follow it, but leave the user's own browsing alone while the same album keeps playing */
     char dir[sizeof(s_music_dir)];
     Music_DirOf(s_mus_st.path, dir, sizeof(dir));
-    if (s_mus_st.state != AUDIO_STATE_IDLE && strcmp(dir, s_music_dir) != 0)
+    if (s_mus_st.state != AUDIO_STATE_IDLE && strcmp(dir, s_mus_track_dir) != 0)
     {
-        s_pending_screen = (int8_t)UI_SCREEN_MUSIC;
+        snprintf(s_mus_track_dir, sizeof(s_mus_track_dir), "%s", dir);
+        if (strcmp(dir, s_music_dir) != 0)
+        {
+            s_music_browse[0] = '\0';
+            s_pending_screen  = (int8_t)UI_SCREEN_MUSIC;
+        }
     }
 }
 
@@ -4396,9 +4456,18 @@ static void Build_Music_Screen(void)
 {
     uint32_t accent = s_themes[s_theme_id % THEME_COUNT].title_col;
     AudioPlayer_GetStatus(&s_mus_st);
-    if (s_mus_st.path[0] != '\0')
+    Music_DirOf(s_mus_st.path, s_mus_track_dir, sizeof(s_mus_track_dir));
+    if (strcmp(s_music_browse, "/") == 0)
     {
-        Music_DirOf(s_mus_st.path, s_music_dir, sizeof(s_music_dir));
+        s_music_dir[0] = '\0';
+    }
+    else if (s_music_browse[0] != '\0')
+    {
+        snprintf(s_music_dir, sizeof(s_music_dir), "%s", s_music_browse);
+    }
+    else if (s_mus_st.path[0] != '\0')
+    {
+        snprintf(s_music_dir, sizeof(s_music_dir), "%s", s_mus_track_dir);
     }
     else if (f_stat("Music", &s_ui_fno) == FR_OK && (s_ui_fno.fattrib & AM_DIR) != 0U)
     {
@@ -4451,31 +4520,54 @@ static void Build_Music_Screen(void)
     lv_obj_set_style_text_align(s_mus_lbl_time, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_pos(s_mus_lbl_time, 184, 37);
 
-    /* Folder playlist */
+    /* Folder playlist: ".." first, then sub-folders (albums), then tracks */
     s_mus_list = lv_list_create(workspace_cont);
     lv_obj_set_size(s_mus_list, 308, 78);
     lv_obj_set_pos(s_mus_list, 6, 100);
     lv_obj_set_style_pad_all(s_mus_list, 2, 0);
     uint32_t count = 0U;
-    if (SDCard_IsMounted() && f_opendir(&s_mus_dir_obj, s_music_dir) == FR_OK)
+    uint32_t rows  = 0U;
+    if (s_music_dir[0] != '\0')
     {
-        while (count < MUS_LIST_MAX && f_readdir(&s_mus_dir_obj, &s_ui_fno) == FR_OK && s_ui_fno.fname[0] != '\0')
+        lv_obj_t *up = lv_list_add_btn(s_mus_list, LV_SYMBOL_UP, "..");
+        lv_obj_set_style_pad_ver(up, 4, 0);
+        lv_obj_add_event_cb(up, music_list_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)MUS_ITEM_UP);
+        lv_obj_add_event_cb(up, music_key_cb, LV_EVENT_KEY, NULL);
+        rows++;
+    }
+    for (uint32_t pass = 0U; pass < 2U && SDCard_IsMounted(); pass++)
+    {
+        if (f_opendir(&s_mus_dir_obj, s_music_dir) != FR_OK)
         {
-            if ((s_ui_fno.fattrib & AM_DIR) == 0U && AudioPlayer_IsAudioFile(s_ui_fno.fname))
+            break;
+        }
+        while (rows < MUS_LIST_MAX && f_readdir(&s_mus_dir_obj, &s_ui_fno) == FR_OK && s_ui_fno.fname[0] != '\0')
+        {
+            bool is_dir  = (s_ui_fno.fattrib & AM_DIR) != 0U;
+            bool is_hide = (s_ui_fno.fattrib & (AM_HID | AM_SYS)) != 0U || s_ui_fno.fname[0] == '.';
+            if (is_hide || (pass == 0U && !is_dir) ||
+                (pass == 1U && (is_dir || !AudioPlayer_IsAudioFile(s_ui_fno.fname))))
             {
-                lv_obj_t *b = lv_list_add_btn(s_mus_list, LV_SYMBOL_AUDIO, s_ui_fno.fname);
-                lv_obj_set_style_pad_ver(b, 4, 0);
+                continue;
+            }
+            lv_obj_t *b = lv_list_add_btn(s_mus_list, is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_AUDIO, s_ui_fno.fname);
+            lv_obj_set_style_pad_ver(b, 4, 0);
+            lv_obj_add_event_cb(b, music_list_cb, LV_EVENT_CLICKED,
+                                (void *)(uintptr_t)(is_dir ? MUS_ITEM_FOLDER : MUS_ITEM_FILE));
+            lv_obj_add_event_cb(b, music_key_cb, LV_EVENT_KEY, NULL);
+            if (!is_dir)
+            {
+                lv_obj_add_flag(b, LV_OBJ_FLAG_USER_1); /* track row: highlight target */
                 lv_obj_set_style_bg_color(b, lv_color_hex(0x00695C), LV_STATE_CHECKED);
                 lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_CHECKED);
-                lv_obj_add_event_cb(b, music_list_cb, LV_EVENT_CLICKED, NULL);
-                lv_obj_add_event_cb(b, music_key_cb, LV_EVENT_KEY, NULL);
                 count++;
             }
+            rows++;
         }
         (void)f_closedir(&s_mus_dir_obj);
     }
     s_mus_count = count;
-    if (count == 0U)
+    if (rows == 0U)
     {
         lv_list_add_text(s_mus_list, SDCard_IsMounted() ? "No audio files here (mp3, ogg, wav, mid...)"
                                                         : "SD card not mounted");
@@ -4498,7 +4590,7 @@ static void Build_Music_Screen(void)
         lv_group_add_obj(grp, next);
         lv_group_add_obj(grp, stop);
         lv_group_add_obj(grp, mode);
-        for (uint32_t i = 0U; i < count; i++)
+        for (uint32_t i = 0U; i < rows; i++)
         {
             lv_group_add_obj(grp, lv_obj_get_child(s_mus_list, (int32_t)i));
         }

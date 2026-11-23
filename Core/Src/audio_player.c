@@ -379,10 +379,34 @@ static void ap_handle_cmd(void)
             }
             else
             {
-                /* Nothing played yet (e.g. keyboard Play key): first track of SD:/Music, else of the root */
+                /* Nothing played yet (e.g. keyboard Play key): first track of SD:/Music,
+                 * else of its first album sub-folder that has tracks, else of the SD root */
                 char first[AUDIO_PLAYER_PATH_MAX];
+                bool ok = false;
                 snprintf(s_cur_path, sizeof(s_cur_path), "Music/");
-                bool ok = ap_pick_track(1, false, true, first, sizeof(first));
+                ok = ap_pick_track(1, false, true, first, sizeof(first));
+                for (uint32_t sub = 0U; !ok && sub < 16U; sub++)
+                {
+                    bool found = false;
+                    if (f_opendir(s_dir, "Music") == FR_OK)
+                    {
+                        uint32_t idx = 0U;
+                        while (!found && f_readdir(s_dir, s_fno) == FR_OK && s_fno->fname[0] != '\0')
+                        {
+                            if ((s_fno->fattrib & AM_DIR) != 0U && idx++ == sub)
+                            {
+                                snprintf(s_cur_path, sizeof(s_cur_path), "Music/%.100s/", s_fno->fname);
+                                found = true;
+                            }
+                        }
+                        (void)f_closedir(s_dir);
+                    }
+                    if (!found)
+                    {
+                        break;
+                    }
+                    ok = ap_pick_track(1, false, true, first, sizeof(first));
+                }
                 if (!ok)
                 {
                     s_cur_path[0] = '\0';

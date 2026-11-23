@@ -739,6 +739,11 @@ void ESPCompanion_Init(void)
         huart6.RxState   = HAL_UART_STATE_READY;
 
         (void)HAL_UART_Receive_DMA(&huart6, s_rx_dma_buf, sizeof(s_rx_dma_buf));
+
+        /* The companion survives console resets: drop any Game HUD / LED override and screensaver
+         * left over from before the reset so its screen matches the freshly booted console */
+        s_game_hud_dirty = false;
+        Send_Raw_Line("\nSTM32:GHUD_KEEP,0\nSTM32:GHUD_EXIT\nSTM32:IDLE,0\n");
     }
 }
 
